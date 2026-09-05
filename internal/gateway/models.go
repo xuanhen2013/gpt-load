@@ -163,7 +163,15 @@ func (handler *Handler) writeVisibleModelList(
 	accessKey state.AccessKeyView,
 	value protocol.Protocol,
 ) {
-	body, err := buildVisibleModelList(snapshot, accessKey, value, handler.modelListLimit)
+	_, codexRequested := ginContext.Request.URL.Query()["client_version"]
+	codexRequested = codexRequested && value == protocol.OpenAICompletions
+	var body []byte
+	var err error
+	if codexRequested {
+		body, err = buildCodexModelList(snapshot, accessKey, ginContext.Query("client_version"), handler.modelListLimit)
+	} else {
+		body, err = buildVisibleModelList(snapshot, accessKey, value, handler.modelListLimit)
+	}
 	if err != nil {
 		_ = handler.writeReason(ginContext, reasonModelListTooLarge)
 		return
@@ -171,6 +179,9 @@ func (handler *Handler) writeVisibleModelList(
 	headers := http.Header{
 		"Content-Length": {strconv.Itoa(len(body))},
 		"Content-Type":   {"application/json; charset=utf-8"},
+	}
+	if codexRequested {
+		headers.Set("Cache-Control", "private, no-store")
 	}
 	if err := handler.writeBufferedResponse(ginContext, http.StatusOK, headers, body); err != nil {
 		return

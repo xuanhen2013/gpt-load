@@ -140,6 +140,10 @@ Each channel declares exactly which protocols and capabilities it can execute. G
 
 Embeddings initially uses the native OpenAI-compatible wire only on the OpenAI, OpenRouter, and OpenAI Compatible API-key channels; subscription channels and protocol conversion are not supported. An AccessKey without a protocol filter keeps its existing “all enabled protocols” behavior and therefore gains Embeddings access after upgrade. Least-privilege deployments should configure an explicit protocol filter.
 
+### Codex catalog (custom build)
+
+This custom build supports the Codex model catalog: `GET /v1/models?client_version=0.153.1` returns full `models` metadata; requests without the parameter keep the OpenAI format. Existing AccessKey authentication and permissions apply. Only Responses-create routes with verified metadata are included. Metadata is pinned to Codex `rust-v0.153.1`, with no online refresh during requests. See [catalog notes](docs/codex-model-catalog.md).
+
 ### Built-in channels
 
 - **Official and cloud** — OpenAI, Anthropic, Gemini, xAI, Azure OpenAI, AWS Bedrock, Google Vertex AI

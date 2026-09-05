@@ -57,6 +57,8 @@ ENV HOST=0.0.0.0
 ENV DATA_DIR=/app/data
 COPY LICENSE THIRD_PARTY_NOTICES.md /app/licenses/
 COPY LICENSES/Apache-2.0.txt /app/licenses/Apache-2.0.txt
+COPY LICENSES/Codex-Apache-2.0.txt /app/licenses/Codex-Apache-2.0.txt
+COPY LICENSES/Codex-NOTICE.txt /app/licenses/Codex-NOTICE.txt
 COPY LICENSES/Inno-Setup.txt /app/licenses/Inno-Setup.txt
 COPY LICENSES/MIT.txt /app/licenses/MIT.txt
 COPY LICENSES/MPL-2.0.txt /app/licenses/MPL-2.0.txt

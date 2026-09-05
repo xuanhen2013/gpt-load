@@ -5,6 +5,19 @@ components that require specific attribution, carry obligations beyond
 attribution, or are modified by GPT-Load. Each release also ships a CycloneDX
 SBOM (`bom.cdx.json`) inventorying the resolved Go module graph.
 
+## OpenAI Codex model catalog (custom build)
+
+- Source: `openai/codex`, `codex-rs/models-manager/models.json`
+- Tag: `rust-v0.153.1`
+- Revision: `985641272869835d01d025ed2a218fbbce35fa9f`
+- License: Apache License 2.0
+
+The catalog is embedded unmodified in `internal/gateway/codex_catalog.json`.
+At response time GPT-Load filters by permissions and routes, adjusts public
+aliases, exposes permitted Astra routes, and filters older-client capabilities.
+The complete upstream license is in `LICENSES/Codex-Apache-2.0.txt`, and
+the upstream notice is preserved in `LICENSES/Codex-NOTICE.txt`.
+
 ## Bifrost Core
 
 - Module: `github.com/maximhq/bifrost/core`

@@ -48,6 +48,7 @@ func TestHandlerBlocksAllDataPlaneRoutesUntilPeriodicQuotaRecovers(t *testing.T)
 		body   string
 	}{
 		{method: http.MethodGet, path: "/v1/models"},
+		{method: http.MethodGet, path: "/v1/models?client_version=0.153.1"},
 		{method: http.MethodPost, path: "/v1/chat/completions", body: `{"model":"gpt-4o"}`},
 	} {
 		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))

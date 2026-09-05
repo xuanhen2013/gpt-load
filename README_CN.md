@@ -140,6 +140,10 @@ Codex、Claude、Antigravity 的 OAuth 客户端使用固定回调端口。Compo
 
 Embeddings 首期只在 OpenAI、OpenRouter 和 OpenAI Compatible API Key 渠道提供原生 OpenAI-compatible Wire，不支持订阅渠道或协议互转。未设置协议过滤器的 AccessKey 会按既有语义允许全部已启用协议，升级后也会获得 Embeddings 访问能力；最小权限部署请显式配置协议过滤器。
 
+### Codex 目录（定制版本）
+
+本定制版本支持 Codex 模型目录：`GET /v1/models?client_version=0.153.1` 返回完整的 `models` 元数据；不带该参数时保留原 OpenAI 格式。目录沿用 AccessKey 鉴权与权限过滤，只包含可创建 Responses 且具有已验证元数据的模型。元数据固定于 Codex `rust-v0.153.1`，不会在请求中在线刷新。详见 [Codex 目录说明](docs/codex-model-catalog.md)。
+
 ### 内置渠道
 
 - **官方与云平台**：OpenAI、Anthropic、Gemini、xAI、Azure OpenAI、AWS Bedrock、Google Vertex AI

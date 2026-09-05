@@ -140,6 +140,10 @@ SSH やリモートブラウザ経由で操作する場合、ブラウザの `lo
 
 Embeddings は初期段階では OpenAI、OpenRouter、OpenAI Compatible の API Key チャネルでのみネイティブな OpenAI 互換ワイヤーを提供し、サブスクリプションチャネルとプロトコル変換には対応していません。プロトコルフィルターを設定していない AccessKey は既存の「有効なプロトコルをすべて許可する」動作を維持するため、アップグレード後に Embeddings へのアクセス権も得ます。最小権限で運用する場合は、プロトコルフィルターを明示的に設定してください。
 
+### Codex カタログ（カスタム版）
+
+このカスタム版は Codex モデルカタログに対応します。`GET /v1/models?client_version=0.153.1` は完全な `models` メタデータを返し、パラメーターがない場合は既存の OpenAI 形式を維持します。既存の AccessKey 認証と権限を適用し、検証済みメタデータを持つ Responses 作成ルートのみを掲載します。メタデータは Codex `rust-v0.153.1` に固定され、リクエスト時のオンライン更新は行いません。[詳細](docs/codex-model-catalog.md)。
+
 ### 組み込みチャネル
 
 - **公式・クラウド**：OpenAI、Anthropic、Gemini、xAI、Azure OpenAI、AWS Bedrock、Google Vertex AI
