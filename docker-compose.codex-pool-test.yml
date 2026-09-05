@@ -1,0 +1,10 @@
+# Merge with docker-compose.yml. Build this branch instead of pulling upstream.
+# Use a separate Compose project so the test instance has its own data volume.
+services:
+  gpt-load:
+    image: gpt-load:codex-connection-pool-test
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: 2.0.0-dev-codex-connection-pool

@@ -251,6 +251,7 @@ func normalizeUpstreamError(err error) error {
 
 // ExecuteRequest is the canonical request accepted by the embedded CPA bridge.
 type ExecuteRequest struct {
+	IdentityGeneration   uint64
 	Model                string
 	Payload              []byte
 	Format               string
@@ -300,7 +301,12 @@ type executor struct {
 
 // NewExecutor creates the production Codex bridge executor.
 func NewExecutor() Executor {
-	return &executor{bridge: cpaembedded.NewCodexHTTPExecutor()}
+	return NewExecutorWithConnectionReuse(false)
+}
+
+// NewExecutorWithConnectionReuse enables the optional Codex transport pool.
+func NewExecutorWithConnectionReuse(enabled bool) Executor {
+	return &executor{bridge: cpaembedded.NewCodexHTTPExecutorWithConnectionReuse(enabled)}
 }
 
 func (e *executor) Execute(
@@ -388,6 +394,7 @@ func (e *executor) ExecuteStream(
 
 func executeRequestToBridge(value ExecuteRequest) cpaembedded.ExecuteRequest {
 	return cpaembedded.ExecuteRequest{
+		IdentityGeneration:   value.IdentityGeneration,
 		Model:                value.Model,
 		Payload:              append([]byte(nil), value.Payload...),
 		Format:               value.Format,
@@ -446,3 +453,30 @@ func normalizeAuthorizationError(err error) error {
 }
 
 var _ Executor = (*executor)(nil)
+
+// RequestContext captures transport state before credential preparation.
+func (e *executor) RequestContext(ctx context.Context) context.Context {
+	if bridge, ok := e.bridge.(interface {
+		RequestContext(context.Context) context.Context
+	}); ok {
+		return bridge.RequestContext(ctx)
+	}
+	return ctx
+}
+
+// RetireCredential drains connections associated with a removed or changed identity.
+func (e *executor) RetireCredential(id string) {
+	if bridge, ok := e.bridge.(interface{ RetireCredential(string) }); ok {
+		bridge.RetireCredential(id)
+	}
+}
+
+// BeginShutdown rejects new pooled work and drains active responses.
+func (e *executor) BeginShutdown() <-chan struct{} {
+	if bridge, ok := e.bridge.(interface{ BeginShutdown() <-chan struct{} }); ok {
+		return bridge.BeginShutdown()
+	}
+	done := make(chan struct{})
+	close(done)
+	return done
+}

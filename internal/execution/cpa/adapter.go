@@ -72,11 +72,16 @@ func (a *Adapter) recordPassiveQuotaObservation(
 
 // NewAdapter creates the shared CPA subscription execution adapter.
 func NewAdapter(credentials *subscription.CredentialManager, channels *channel.Registry) *Adapter {
+	return NewAdapterWithCodexConnectionReuse(credentials, channels, false)
+}
+
+// NewAdapterWithCodexConnectionReuse configures the process-owned Codex pool.
+func NewAdapterWithCodexConnectionReuse(credentials *subscription.CredentialManager, channels *channel.Registry, enabled bool) *Adapter {
 	return &Adapter{
 		credentials: credentials,
 		channels:    channels,
 		providers: indexProviderBridges(
-			newCodexProviderBridge(),
+			newCodexProviderBridgeWithConnectionReuse(enabled),
 			newClaudeProviderBridge(),
 			newAntigravityProviderBridge(),
 			newGrokProviderBridge(),
@@ -108,6 +113,11 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 	provider, err := a.validateSpec(spec)
 	if err != nil {
 		return unaryNotSent(execution.ErrorKindInvalidRequest, "unsupported subscription request", "", err)
+	}
+	if scoped, ok := provider.(interface {
+		RequestContext(context.Context) context.Context
+	}); ok {
+		ctx = scoped.RequestContext(ctx)
 	}
 	proxySettings, err := proxySettingsForAttempt(spec.Proxy)
 	if err != nil {
@@ -272,6 +282,11 @@ func (a *Adapter) ExecuteStream(
 	}
 	if countTokensOperation(spec.Operation) {
 		return streamNotSent(execution.ErrorKindInvalidRequest, "count tokens does not support streaming", "")
+	}
+	if scoped, ok := provider.(interface {
+		RequestContext(context.Context) context.Context
+	}); ok {
+		ctx = scoped.RequestContext(ctx)
 	}
 	proxySettings, err := proxySettingsForAttempt(spec.Proxy)
 	if err != nil {
@@ -522,7 +537,8 @@ func bridgeRequest(
 		headers = rebuilt.Header.Clone()
 	}
 	return providerRequest{
-		AttemptID: spec.AttemptID, Model: spec.UpstreamModel, Payload: payload,
+		IdentityGeneration: spec.Credential.IdentityGeneration,
+		AttemptID:          spec.AttemptID, Model: spec.UpstreamModel, Payload: payload,
 		Format: formatFor(spec.ClientProtocol), RequestPath: requestPath, Headers: headers,
 		OriginalRequest:      append([]byte(nil), payload...),
 		ContinuityKey:        spec.ContinuityKey,

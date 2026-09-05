@@ -142,6 +142,7 @@ type HTTPExecutor interface {
 }
 
 type ExecuteRequest struct {
+	IdentityGeneration   uint64
 	AttemptID            string
 	Model                string
 	Payload              []byte
@@ -371,14 +372,24 @@ func NewCodexAuth(id string, credential CodexCredential, baseURL string) *clipro
 // CodexHTTPExecutor is an execution-only wrapper around CPA's stateless HTTP
 // Codex executor. It rejects redirects before net/http can replay a POST.
 type CodexHTTPExecutor struct {
+	pool  *codexTransportPool
 	cfg   *internalconfig.Config
 	inner *internalexecutor.CodexExecutor
 }
 
 // NewCodexHTTPExecutor constructs an HTTP-only executor with no CPA manager.
 func NewCodexHTTPExecutor() *CodexHTTPExecutor {
+	return NewCodexHTTPExecutorWithConnectionReuse(false)
+}
+
+// NewCodexHTTPExecutorWithConnectionReuse opts into shared Codex HTTP/2 connections.
+func NewCodexHTTPExecutorWithConnectionReuse(enabled bool) *CodexHTTPExecutor {
 	cfg := &internalconfig.Config{Codex: internalconfig.CodexConfig{StreamBootstrapBuffering: true}}
-	return &CodexHTTPExecutor{cfg: cfg, inner: internalexecutor.NewCodexExecutor(cfg)}
+	executor := &CodexHTTPExecutor{cfg: cfg, inner: internalexecutor.NewCodexExecutor(cfg)}
+	if enabled {
+		executor.pool = newCodexTransportPool()
+	}
+	return executor
 }
 
 func (e *CodexHTTPExecutor) Identifier() string { return ProviderCodex }
@@ -388,7 +399,7 @@ func (e *CodexHTTPExecutor) ExecuteCanonical(ctx context.Context, credentialID s
 	auth := NewCodexAuth(credentialID, credential, "")
 	auth.ProxyURL = request.ProxyURL
 	observation := newExecutionObservation(request)
-	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment)
+	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, request.IdentityGeneration)
 	response, err := e.inner.Execute(executionCtx, authWithoutProxyURL(auth), cliproxyexecutor.Request{
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: format,
 	}, codexExecutionOptions(request, format, false))
@@ -412,7 +423,7 @@ func (e *CodexHTTPExecutor) CountTokensCanonical(ctx context.Context, credential
 	auth := NewCodexAuth(credentialID, credential, "")
 	auth.ProxyURL = request.ProxyURL
 	observation := newExecutionObservation(request)
-	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment)
+	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, request.IdentityGeneration)
 	response, err := e.inner.CountTokens(executionCtx, authWithoutProxyURL(auth), cliproxyexecutor.Request{
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: format,
 	}, codexExecutionOptions(request, format, false))
@@ -467,7 +478,7 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 	auth := NewCodexAuth(credentialID, credential, "")
 	auth.ProxyURL = request.ProxyURL
 	observation := newExecutionObservation(request)
-	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment)
+	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, request.IdentityGeneration)
 	response, err := e.inner.ExecuteStream(executionCtx, authWithoutProxyURL(auth), cliproxyexecutor.Request{
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: format,
 	}, codexExecutionOptions(request, format, true))
@@ -722,11 +733,19 @@ func (e *CodexHTTPExecutor) executionContext(
 	auth *cliproxyauth.Auth,
 	observation *executionObservation,
 	proxyFromEnvironment bool,
+	identityGeneration ...uint64,
 ) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	transport := executionRoundTripper(ctx, e.cfg, auth, proxyFromEnvironment)
+	if e.pool != nil {
+		var generation uint64
+		if len(identityGeneration) > 0 {
+			generation = identityGeneration[0]
+		}
+		transport = e.pool.roundTripper(ctx, auth, generation, proxyFromEnvironment, transport)
+	}
 	return context.WithValue(ctx, "cliproxy.roundtripper", noRedirectRoundTripper{base: transport, observation: observation})
 }
 

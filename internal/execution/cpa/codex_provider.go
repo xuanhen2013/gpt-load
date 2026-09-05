@@ -39,7 +39,11 @@ func (err *codexBootstrapRejectionError) Unwrap() error { return err.cause }
 const localTokenCountHeader = "X-GPT-Load-Token-Count"
 
 func newCodexProviderBridge() *codexProviderBridge {
-	return &codexProviderBridge{executor: codex.NewExecutor()}
+	return newCodexProviderBridgeWithConnectionReuse(false)
+}
+
+func newCodexProviderBridgeWithConnectionReuse(enabled bool) *codexProviderBridge {
+	return &codexProviderBridge{executor: codex.NewExecutorWithConnectionReuse(enabled)}
 }
 
 func (*codexProviderBridge) ProviderKind() channel.ProviderKind {
@@ -97,7 +101,8 @@ func (bridge *codexProviderBridge) CountTokensLocal(
 		return providerResponse{}, errors.New("Codex provider bridge is unavailable")
 	}
 	response, err := bridge.executor.CountTokens(ctx, "local-token-count", codex.Credential{}, codex.ExecuteRequest{
-		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
+		IdentityGeneration: request.IdentityGeneration,
+		Model:              request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
 		RequestPath: request.RequestPath,
 		Headers:     request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
 		ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
@@ -299,7 +304,8 @@ func (bridge *codexProviderBridge) Execute(
 		return providerResponse{}, errors.New("Codex provider bridge credential mismatch")
 	}
 	response, err := bridge.executor.Execute(ctx, credentialID, codexCredential.value, codex.ExecuteRequest{
-		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
+		IdentityGeneration: request.IdentityGeneration,
+		Model:              request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
 		RequestPath: request.RequestPath,
 		Headers:     request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
 		ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
@@ -324,7 +330,8 @@ func (bridge *codexProviderBridge) ExecuteStream(
 		return nil, errors.New("Codex provider bridge credential mismatch")
 	}
 	response, err := bridge.executor.ExecuteStream(ctx, credentialID, codexCredential.value, codex.ExecuteRequest{
-		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
+		IdentityGeneration: request.IdentityGeneration,
+		Model:              request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
 		RequestPath: request.RequestPath,
 		Headers:     request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
 		ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
@@ -489,3 +496,27 @@ func codexModelCapacityError(err error) bool {
 
 var _ providerBridge = (*codexProviderBridge)(nil)
 var _ providerLocalTokenCounter = (*codexProviderBridge)(nil)
+
+func (bridge *codexProviderBridge) RequestContext(ctx context.Context) context.Context {
+	if executor, ok := bridge.executor.(interface {
+		RequestContext(context.Context) context.Context
+	}); ok {
+		return executor.RequestContext(ctx)
+	}
+	return ctx
+}
+
+func (bridge *codexProviderBridge) RetireCredential(id string) {
+	if executor, ok := bridge.executor.(interface{ RetireCredential(string) }); ok {
+		executor.RetireCredential(id)
+	}
+}
+
+func (bridge *codexProviderBridge) BeginShutdown() <-chan struct{} {
+	if executor, ok := bridge.executor.(interface{ BeginShutdown() <-chan struct{} }); ok {
+		return executor.BeginShutdown()
+	}
+	done := make(chan struct{})
+	close(done)
+	return done
+}

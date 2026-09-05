@@ -475,9 +475,34 @@ func clearEnvironment(t *testing.T) {
 	for _, key := range []string{
 		"HOST", "PORT", "DATA_DIR", "DATABASE_DSN", "ENCRYPTION_KEY", "AUTH_KEY",
 		"LOG_LEVEL", "LOG_FORMAT", "GRACEFUL_SHUTDOWN_TIMEOUT",
-		"READ_TIMEOUT", "IDLE_TIMEOUT", "MODELS_DEV_AUTO_SYNC_ENABLED",
+		"READ_TIMEOUT", "IDLE_TIMEOUT", "MODELS_DEV_AUTO_SYNC_ENABLED", "CODEX_CONNECTION_REUSE_ENABLED",
 		"DATABASE_MAX_OPEN_CONNECTIONS", "DATABASE_MAX_IDLE_CONNECTIONS",
 	} {
 		t.Setenv(key, "")
+	}
+}
+
+func TestCodexConnectionReuseConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		value            string
+		enabled, invalid bool
+	}{{"", false, false}, {"false", false, false}, {"true", true, false}, {"invalid", false, true}} {
+		t.Run(test.value, func(t *testing.T) {
+			clearEnvironment(t)
+			t.Setenv("CODEX_CONNECTION_REUSE_ENABLED", test.value)
+			cfg, err := Load()
+			if test.invalid {
+				if err == nil || !strings.Contains(err.Error(), "CODEX_CONNECTION_REUSE_ENABLED") {
+					t.Fatalf("invalid setting: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.CodexConnectionReuseEnabled != test.enabled {
+				t.Fatalf("enabled=%v want %v", cfg.CodexConnectionReuseEnabled, test.enabled)
+			}
+		})
 	}
 }

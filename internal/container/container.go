@@ -177,10 +177,17 @@ func BuildContainer() (*dig.Container, error) {
 		},
 		newSubscriptionRuntime,
 		subscription.NewCredentialManager,
-		cpaexecutor.NewAdapter,
+		func(credentials *subscription.CredentialManager, channels *channel.Registry, cfg *config.Config) *cpaexecutor.Adapter {
+			if cfg.CodexConnectionReuseEnabled {
+				logrus.WithField("event", "codex_pool.enabled").Info("Codex connection reuse enabled (64 partitions, 60s idle, 30s connect budget)")
+			}
+			return cpaexecutor.NewAdapterWithCodexConnectionReuse(credentials, channels, cfg.CodexConnectionReuseEnabled)
+		},
 		newProviderAdapterRegistry,
 		func(registry *provideradapter.Registry) execution.Executor { return registry },
-		func(runtime *bifrostexecutor.RuntimeManager) app.ExecutionRuntime { return runtime },
+		func(runtime *bifrostexecutor.RuntimeManager, cpa *cpaexecutor.Adapter) app.ExecutionRuntime {
+			return &providerExecutionRuntime{primary: runtime, cpa: cpa}
+		},
 		gateway.NewExecutionForwarder,
 		func(forwarder *gateway.ExecutionForwarder) gateway.AttemptForwarder { return forwarder },
 		gateway.NewHandlerWithLifecycle,
