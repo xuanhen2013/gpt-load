@@ -59,12 +59,15 @@ export default {
       retryCountHelp:
         'Maximum extra retries after the initial upstream attempt; 0 disables retries.',
       account_concurrency_limit: 'Account concurrency limit',
+      account_concurrency_wait_timeout: 'Account concurrency wait timeout',
       codex_connection_reuse_enabled: 'Codex proxy TCP reuse',
       connectionReuseHelp:
         'Applies to new Codex outbound requests immediately; active requests drain normally.',
       restartToChange: 'Environment managed',
       accountConcurrencyHelp:
         'Maximum simultaneous upstream requests per account; 0 means unlimited.',
+      accountConcurrencyWaitHelp:
+        'Maximum time to wait for an account slot; 0 disables waiting. Default is 15 seconds.',
       blacklist_threshold: 'Consecutive-failure blacklist threshold',
       blacklistThresholdHelp:
         'A credential is blacklisted after this many consecutive failures; 0 disables automatic blacklisting.',

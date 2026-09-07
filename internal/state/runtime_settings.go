@@ -15,24 +15,25 @@ import (
 )
 
 const (
-	SettingFirstByteTimeout         = "first_byte_timeout"
-	SettingRequestTimeout           = "request_timeout"
-	SettingStreamIdleTimeout        = "stream_idle_timeout"
-	SettingHeaderRules              = "header_rules"
-	SettingCORS                     = "cors"
-	SettingResponseHeaderRules      = "response_header_rules"
-	SettingRetryCount               = "retry_count"
-	SettingRouteStrategy            = "route_strategy"
-	SettingBlacklistThreshold       = "blacklist_threshold"
-	SettingAffinityEnabled          = "affinity_enabled"
-	SettingAffinityTTL              = "affinity_ttl"
-	SettingAffinityCapacity         = "affinity_capacity"
-	SettingValidationInterval       = "validation_interval"
-	SettingRequestLogRetentionDays  = "request_log_retention_days"
-	SettingModelsDevAutoSyncEnabled = "models_dev_auto_sync_enabled"
-	SettingParameterOverrides       = "parameter_overrides"
-	SettingAccountConcurrencyLimit  = "account_concurrency_limit"
-	SettingCodexConnectionReuse     = "codex_connection_reuse_enabled"
+	SettingFirstByteTimeout              = "first_byte_timeout"
+	SettingRequestTimeout                = "request_timeout"
+	SettingStreamIdleTimeout             = "stream_idle_timeout"
+	SettingHeaderRules                   = "header_rules"
+	SettingCORS                          = "cors"
+	SettingResponseHeaderRules           = "response_header_rules"
+	SettingRetryCount                    = "retry_count"
+	SettingRouteStrategy                 = "route_strategy"
+	SettingBlacklistThreshold            = "blacklist_threshold"
+	SettingAffinityEnabled               = "affinity_enabled"
+	SettingAffinityTTL                   = "affinity_ttl"
+	SettingAffinityCapacity              = "affinity_capacity"
+	SettingValidationInterval            = "validation_interval"
+	SettingRequestLogRetentionDays       = "request_log_retention_days"
+	SettingModelsDevAutoSyncEnabled      = "models_dev_auto_sync_enabled"
+	SettingParameterOverrides            = "parameter_overrides"
+	SettingAccountConcurrencyLimit       = "account_concurrency_limit"
+	SettingAccountConcurrencyWaitTimeout = "account_concurrency_wait_timeout"
+	SettingCodexConnectionReuse          = "codex_connection_reuse_enabled"
 )
 
 type RouteStrategy string
@@ -69,6 +70,7 @@ type RuntimeSettings struct {
 	ModelsDevAutoSyncEnabled bool
 	// AccountConcurrencyLimit is a per-account default. Zero means unlimited.
 	AccountConcurrencyLimit        int
+	AccountConcurrencyWaitTimeout  time.Duration
 	CodexConnectionReuseEnabled    bool
 	CodexConnectionReuseConfigured bool
 }
@@ -101,6 +103,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		RequestLogRetentionDays:        defaultRequestLogRetentionDays,
 		ModelsDevAutoSyncEnabled:       true,
 		AccountConcurrencyLimit:        0,
+		AccountConcurrencyWaitTimeout:  15 * time.Second,
 		CodexConnectionReuseEnabled:    false,
 		CodexConnectionReuseConfigured: false,
 	}
@@ -236,6 +239,12 @@ func ResolveRuntimeSettings(settings config.Settings) (RuntimeSettings, error) {
 				return RuntimeSettings{}, err
 			}
 			resolved.AccountConcurrencyLimit = value
+		case SettingAccountConcurrencyWaitTimeout:
+			seconds, err := nonNegativeWholeNumber(key, value)
+			if err != nil {
+				return RuntimeSettings{}, err
+			}
+			resolved.AccountConcurrencyWaitTimeout = time.Duration(seconds) * time.Second
 		case SettingCodexConnectionReuse:
 			value, err := strictBoolean(key, value)
 			if err != nil {
@@ -374,6 +383,9 @@ func ValidateRuntimeSetting(key string, value any) error {
 		_, err := strictBoolean(key, value)
 		return err
 	case SettingAccountConcurrencyLimit:
+		_, err := nonNegativeWholeNumber(key, value)
+		return err
+	case SettingAccountConcurrencyWaitTimeout:
 		_, err := nonNegativeWholeNumber(key, value)
 		return err
 	case SettingCodexConnectionReuse:

@@ -33,6 +33,7 @@ const policyRows = [
 	{ key: 'retry_count', helpKey: 'retryCountHelp' },
 	{ key: 'blacklist_threshold', helpKey: 'blacklistThresholdHelp' },
 	{ key: 'account_concurrency_limit', helpKey: 'accountConcurrencyHelp' },
+	{ key: 'account_concurrency_wait_timeout', helpKey: 'accountConcurrencyWaitHelp' },
 ] as const
 
 function cloneDraft(): SettingsDraft {

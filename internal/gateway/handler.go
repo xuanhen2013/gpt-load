@@ -592,6 +592,7 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		requestAffinity,
 		recorder,
 		&quotaAdmission,
+		snapshot.Settings.AccountConcurrencyWaitTimeout,
 	)
 }
 
@@ -763,6 +764,7 @@ func (handler *Handler) executeAttempts(
 	requestAffinity requestAffinity,
 	recorder *requestRecorder,
 	quotaAdmission *requestAccessQuotaAdmission,
+	accountConcurrencyWaitTimeout time.Duration,
 ) {
 	stream := originalMetadata.Stream
 	operation := originalMetadata.Operation
@@ -1095,7 +1097,7 @@ func (handler *Handler) executeAttempts(
 			quotaAdmission.ticket = ticket
 			quotaAdmission.admitted = true
 		}
-		releaseAccount, admitted := handler.accountConcurrency.tryAcquire(accountKey, accountLimit)
+		releaseAccount, admitted := handler.accountConcurrency.tryAcquire(ginContext.Request.Context(), accountKey, accountLimit, accountConcurrencyWaitTimeout)
 		if !admitted {
 			accountConcurrencyLimited = true
 			continue

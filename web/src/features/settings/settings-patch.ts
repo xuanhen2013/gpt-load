@@ -31,6 +31,7 @@ const requestForwardingKeys: RuntimeSettingKey[] = [
   'header_rules',
   'validation_interval',
   'account_concurrency_limit',
+  'account_concurrency_wait_timeout',
   'codex_connection_reuse_enabled',
 ]
 const logsMaintenanceKeys: RuntimeSettingKey[] = ['request_log_retention_days']

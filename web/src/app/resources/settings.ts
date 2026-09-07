@@ -40,6 +40,7 @@ export const runtimeSettingKeys = [
   'request_log_retention_days',
   'models_dev_auto_sync_enabled',
   'account_concurrency_limit',
+  'account_concurrency_wait_timeout',
   'codex_connection_reuse_enabled',
 ] as const
 
@@ -59,7 +60,7 @@ export type TimeoutSettingKey = Exclude<
   | 'codex_connection_reuse_enabled'
 >
 export type PolicyCountSettingKey =
-  'retry_count' | 'blacklist_threshold' | 'account_concurrency_limit'
+  'retry_count' | 'blacklist_threshold' | 'account_concurrency_limit' | 'account_concurrency_wait_timeout'
 
 export interface CORSConfigDto {
   enabled: boolean
@@ -88,6 +89,7 @@ export interface SettingsValues {
   request_log_retention_days: number
   models_dev_auto_sync_enabled: boolean
   account_concurrency_limit: number
+  account_concurrency_wait_timeout: number
   codex_connection_reuse_enabled: boolean
   proxy_config: ProxyViewDto
 }
@@ -224,6 +226,7 @@ export function projectSettings(value: unknown): SettingsDto {
       account_concurrency_limit: projectSafeInteger(values.account_concurrency_limit, {
         minimum: 0,
       }),
+      account_concurrency_wait_timeout: projectSafeInteger(values.account_concurrency_wait_timeout, { minimum: 0 }),
       codex_connection_reuse_enabled: projectBoolean(values.codex_connection_reuse_enabled),
       proxy_config: projectProxyView(values.proxy_config),
     },
