@@ -127,6 +127,7 @@ func IsRuntimeSettingKey(key string) bool {
 		SettingRequestLogRetentionDays,
 		SettingModelsDevAutoSyncEnabled,
 		SettingAccountConcurrencyLimit,
+		SettingAccountConcurrencyWaitTimeout,
 		SettingCodexConnectionReuse:
 		return true
 	default:
