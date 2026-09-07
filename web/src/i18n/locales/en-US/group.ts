@@ -324,7 +324,8 @@ export default {
         retryCountHelp:
           'Maximum extra retries after the initial upstream attempt; 0 disables retries.',
         account_concurrency_limit: 'Account concurrency limit',
-        accountConcurrencyHelp: 'Per-account limit for this Group; inherit the global value unless overridden with a positive integer.',
+        accountConcurrencyHelp:
+          'Per-account limit for this Group; leave it inherited or set 0 for unlimited.',
         blacklist_threshold: 'Consecutive-failure blacklist threshold',
         blacklistThresholdHelp:
           'A credential is blacklisted after this many consecutive failures; 0 disables automatic blacklisting.',
@@ -427,8 +428,10 @@ export default {
         inherited: 'Inherited from Group',
         custom: 'Per-account override',
         edit: 'Edit account concurrency limit',
+        mode: 'Account concurrency mode',
         input: 'Account concurrency limit',
-        inheritPlaceholder: 'Leave blank to inherit from the Group',
+        inheritPlaceholder: 'Blank inherits; 0 means unlimited',
+        invalid: 'Enter 0 or a positive whole number.',
       },
       recent: '{success} success · {failure} failure',
       recentSuccessOnly: '{success} success',

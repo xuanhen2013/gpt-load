@@ -36,6 +36,10 @@ type runtimeTargetReconciler interface {
 	Reconcile([]RuntimeTarget) error
 }
 
+type codexConnectionReuseSetter interface {
+	SetCodexConnectionReuse(bool)
+}
+
 // Registry is an immutable ProviderKind-to-adapter dispatcher.
 type Registry struct {
 	channels *channel.Registry
@@ -229,6 +233,20 @@ func (registry *Registry) ReconcileTargets(targets []RuntimeTarget) error {
 		}
 	}
 	return nil
+}
+
+// SetCodexConnectionReuse applies the process-wide Codex transport setting to
+// the adapter that owns the Codex provider. Adapters without that capability
+// are ignored so the registry remains provider-neutral.
+func (registry *Registry) SetCodexConnectionReuse(enabled bool) {
+	if registry == nil {
+		return
+	}
+	for _, adapter := range registry.unique {
+		if setter, ok := adapter.(codexConnectionReuseSetter); ok {
+			setter.SetCodexConnectionReuse(enabled)
+		}
+	}
 }
 
 // RetireCredential releases adapter-owned state exactly once per adapter.

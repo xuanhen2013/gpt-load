@@ -7,7 +7,13 @@ func (a *Adapter) RetireCredential(id uint) {
 	if a == nil {
 		return
 	}
+	a.providersMu.RLock()
+	providers := make([]providerBridge, 0, len(a.providers))
 	for _, provider := range a.providers {
+		providers = append(providers, provider)
+	}
+	a.providersMu.RUnlock()
+	for _, provider := range providers {
 		if retire, ok := provider.(interface{ RetireCredential(string) }); ok {
 			retire.RetireCredential(strconv.FormatUint(uint64(id), 10))
 		}
@@ -19,7 +25,13 @@ func (a *Adapter) RetireCredential(id uint) {
 func (a *Adapter) BeginShutdown() <-chan struct{} {
 	pending := make([]<-chan struct{}, 0)
 	if a != nil {
+		a.providersMu.RLock()
+		providers := make([]providerBridge, 0, len(a.providers))
 		for _, provider := range a.providers {
+			providers = append(providers, provider)
+		}
+		a.providersMu.RUnlock()
+		for _, provider := range providers {
 			if shutdown, ok := provider.(interface{ BeginShutdown() <-chan struct{} }); ok {
 				pending = append(pending, shutdown.BeginShutdown())
 			}

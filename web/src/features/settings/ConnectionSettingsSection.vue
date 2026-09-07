@@ -10,6 +10,8 @@ import type {
   TimeoutSettingKey,
 } from '@/app/resources/settings'
 import ProxyOverrideControl from '@/components/config/ProxyOverrideControl.vue'
+import RuntimeOverrideRow from '@/components/config/RuntimeOverrideRow.vue'
+import AppSwitch from '@/components/ui/AppSwitch.vue'
 import AppTextInput from '@/components/ui/AppTextInput.vue'
 import CompactFieldError from '@/components/ui/CompactFieldError.vue'
 import { formatInteger } from '@/lib/format'
@@ -98,6 +100,12 @@ function toggleOverride(key: RuntimeSettingKey): void {
   publish(key, setSettingsOverride(props.base.settings, props.draft, key, !hasOverride(key)))
 }
 
+function setCodexConnectionReuse(value: boolean): void {
+  const draft = cloneDraft()
+  draft.values.codex_connection_reuse_enabled = value
+  publish('codex_connection_reuse_enabled', draft)
+}
+
 function sourceLabel(key: RuntimeSettingKey): string {
   if (hasOverride(key)) return t('settings.runtime.overrideSource')
   if (isPendingRestore(key)) return t('settings.runtime.pendingRestoreSource')
@@ -136,6 +144,79 @@ function timeoutError(key: TimeoutSettingKey): string | undefined {
     </header>
 
     <div class="settings-connection__rows">
+      <div class="settings-connection__entry">
+        <RuntimeOverrideRow
+          appearance="ledger"
+          :label="t('settings.runtime.codex_connection_reuse_enabled')"
+          :detail="
+            hasOverride('codex_connection_reuse_enabled')
+              ? t('settings.runtime.overrideValue')
+              : isPendingRestore('codex_connection_reuse_enabled')
+                ? t('settings.runtime.resetPending')
+                : base.settings.values.codex_connection_reuse_enabled
+                  ? t('settings.runtime.enabledValue')
+                  : t('settings.runtime.disabledValue')
+          "
+          :value-label="
+            hasOverride('codex_connection_reuse_enabled') ||
+            isPendingRestore('codex_connection_reuse_enabled')
+              ? undefined
+              : t('settings.runtime.environmentSource')
+          "
+          :source-label="
+            hasOverride('codex_connection_reuse_enabled')
+              ? t('settings.runtime.overrideSource')
+              : isPendingRestore('codex_connection_reuse_enabled')
+                ? t('settings.runtime.pendingRestoreSource')
+                : t('settings.runtime.environmentSource')
+          "
+          :action-label="
+            hasOverride('codex_connection_reuse_enabled')
+              ? t('settings.runtime.restoreDefault')
+              : t('settings.runtime.override')
+          "
+          :overridden="hasOverride('codex_connection_reuse_enabled')"
+          :pending-restore="isPendingRestore('codex_connection_reuse_enabled')"
+          :disabled="disabled"
+          :divided="false"
+          @toggle="toggleOverride('codex_connection_reuse_enabled')"
+        >
+          <template #value>
+            <div class="settings-connection__boolean">
+              <AppSwitch
+                v-if="hasOverride('codex_connection_reuse_enabled')"
+                :model-value="draft.values.codex_connection_reuse_enabled"
+                :disabled="disabled"
+                :label="
+                  t('settings.runtime.valueFor', {
+                    field: t('settings.runtime.codex_connection_reuse_enabled'),
+                  })
+                "
+                @update:model-value="setCodexConnectionReuse"
+              />
+              <strong v-else-if="isPendingRestore('codex_connection_reuse_enabled')">{{
+                t('settings.runtime.resetPending')
+              }}</strong>
+              <strong v-else>
+                {{
+                  base.settings.values.codex_connection_reuse_enabled
+                    ? t('settings.runtime.enabled')
+                    : t('settings.runtime.disabled')
+                }}
+              </strong>
+              <small
+                v-if="
+                  !hasOverride('codex_connection_reuse_enabled') &&
+                  !isPendingRestore('codex_connection_reuse_enabled')
+                "
+              >
+                {{ t('settings.runtime.currentEffective') }}
+              </small>
+              <small>{{ t('settings.runtime.connectionReuseHelp') }}</small>
+            </div>
+          </template>
+        </RuntimeOverrideRow>
+      </div>
       <SettingRow
         :label="t('common.proxy.title')"
         :value="proxyValue"
@@ -215,6 +296,12 @@ function timeoutError(key: TimeoutSettingKey): string | undefined {
 }
 
 .settings-connection__rows {
+  gap: var(--space-1);
+}
+
+.settings-connection__boolean {
+  display: grid;
+  justify-items: start;
   gap: var(--space-1);
 }
 

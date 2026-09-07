@@ -168,10 +168,11 @@ func BuildContainer() (*dig.Container, error) {
 		func(registry *channel.Registry) (*bifrostexecutor.RuntimeManager, error) {
 			return bifrostexecutor.NewManagedRuntime(registry)
 		},
-		func(adapters *provideradapter.Registry, quotaRuntime *accessquota.Runtime) *state.Manager {
+		func(adapters *provideradapter.Registry, quotaRuntime *accessquota.Runtime, cfg *config.Config) *state.Manager {
 			manager := state.NewManager()
 			manager.SetSnapshotReconciler(runtimeSnapshotReconciler{
 				adapters: adapters, accessQuota: quotaRuntime,
+				codexConnectionReuseDefault: cfg.CodexConnectionReuseEnabled,
 			})
 			return manager
 		},
@@ -262,8 +263,9 @@ func newSystemOutboundProxyProvider(manager *state.Manager) httpclient.OutboundP
 }
 
 type runtimeSnapshotReconciler struct {
-	adapters    *provideradapter.Registry
-	accessQuota *accessquota.Runtime
+	adapters                    *provideradapter.Registry
+	accessQuota                 *accessquota.Runtime
+	codexConnectionReuseDefault bool
 }
 
 func newSubscriptionRuntime(registry *channel.Registry) (*subscriptionruntime.Runtime, error) {
@@ -316,6 +318,11 @@ func (reconciler runtimeSnapshotReconciler) ReconcileConfigSnapshot(snapshot *st
 	if err := reconciler.adapters.ReconcileTargets(targets); err != nil {
 		return err
 	}
+	useReuse := reconciler.codexConnectionReuseDefault
+	if snapshot != nil && snapshot.Settings.CodexConnectionReuseConfigured {
+		useReuse = snapshot.Settings.CodexConnectionReuseEnabled
+	}
+	reconciler.adapters.SetCodexConnectionReuse(useReuse)
 	return reconciler.accessQuota.Reconcile(snapshot.AccessQuotaDefinitions())
 }
 

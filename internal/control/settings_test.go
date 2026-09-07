@@ -280,6 +280,46 @@ func TestUpdateSettingsResolvesRetryAndBlacklistPolicies(t *testing.T) {
 	}
 }
 
+func TestUpdateSettingsResolvesAccountConcurrencyAndCodexReuse(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+
+	updated, err := fixture.service.UpdateSettings(t.Context(), SettingsUpdateRequest{
+		Settings: map[string]json.RawMessage{
+			state.SettingAccountConcurrencyLimit: json.RawMessage("4"),
+			state.SettingCodexConnectionReuse:    json.RawMessage("true"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Values.AccountConcurrencyLimit != 4 || !updated.Values.CodexConnectionReuseEnabled {
+		t.Fatalf("values = %#v", updated.Values)
+	}
+	if !reflect.DeepEqual(updated.Overrides, []string{
+		state.SettingAccountConcurrencyLimit,
+		state.SettingCodexConnectionReuse,
+	}) {
+		t.Fatalf("overrides = %#v", updated.Overrides)
+	}
+
+	reset, err := fixture.service.UpdateSettings(t.Context(), SettingsUpdateRequest{
+		Settings: map[string]json.RawMessage{
+			state.SettingAccountConcurrencyLimit: json.RawMessage("null"),
+			state.SettingCodexConnectionReuse:    json.RawMessage("null"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.Values.AccountConcurrencyLimit != 0 || reset.Values.CodexConnectionReuseEnabled {
+		t.Fatalf("reset values = %#v", reset.Values)
+	}
+	if len(reset.Overrides) != 0 {
+		t.Fatalf("reset overrides = %#v", reset.Overrides)
+	}
+}
+
 func assertSettingsPolicyJSON(
 	t *testing.T,
 	values SettingsValuesResponse,

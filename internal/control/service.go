@@ -47,6 +47,7 @@ type Service struct {
 	catalogRuntime                    *catalog.Runtime
 	catalogSync                       *CatalogSyncCoordinator
 	modelsDevAutoSyncOverride         *bool
+	codexConnectionReuseEnabled       bool
 	environmentProxy                  *outboundproxy.Config
 	encryption                        encryption.Service
 	executor                          execution.Executor
@@ -252,6 +253,7 @@ func NewService(
 	}
 	if cfg != nil {
 		service.environmentProxy = outboundproxy.Environment()
+		service.codexConnectionReuseEnabled = cfg.CodexConnectionReuseEnabled
 	}
 	if subscriptionCredentials != nil {
 		service.prepareSubscriptionCredential = subscriptionCredentials.PrepareForControl

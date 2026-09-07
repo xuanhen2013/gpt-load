@@ -593,7 +593,13 @@ export function projectCredentialItem(value: unknown): CredentialItemDto {
       : { daily_usage: projectDailyUsage(record.daily_usage) }),
     recovery,
     proxy: projectProxyView(record.proxy),
-    ...(record.account_concurrency_limit === undefined ? {} : { account_concurrency_limit: projectSafeInteger(record.account_concurrency_limit, { minimum: 1 }) }),
+    ...(record.account_concurrency_limit === undefined
+      ? {}
+      : {
+          account_concurrency_limit: projectSafeInteger(record.account_concurrency_limit, {
+            minimum: 0,
+          }),
+        }),
   }
 }
 
@@ -668,7 +674,13 @@ function normalizePatch(patch: CredentialPatch): CredentialPatch {
   const keys = Object.keys(patch)
   if (
     keys.length === 0 ||
-    keys.some((key) => key !== 'status' && key !== 'weight_manual' && key !== 'proxy' && key !== 'account_concurrency_limit')
+    keys.some(
+      (key) =>
+        key !== 'status' &&
+        key !== 'weight_manual' &&
+        key !== 'proxy' &&
+        key !== 'account_concurrency_limit',
+    )
   ) {
     throw new Error('INVALID_CREDENTIAL_PATCH')
   }
@@ -686,16 +698,17 @@ function normalizePatch(patch: CredentialPatch): CredentialPatch {
     }
     body.weight_manual = weight
   }
-	if (Object.prototype.hasOwnProperty.call(patch, 'proxy')) {
+  if (Object.prototype.hasOwnProperty.call(patch, 'proxy')) {
     const proxy = patch.proxy
     if (proxy === undefined) throw new Error('INVALID_CREDENTIAL_PROXY')
     body.proxy = proxy
-	}
-	if (Object.prototype.hasOwnProperty.call(patch, 'account_concurrency_limit')) {
-		const limit = patch.account_concurrency_limit
-		if (limit !== null && (limit === undefined || !Number.isSafeInteger(limit) || limit < 1)) throw new Error('INVALID_CREDENTIAL_CONCURRENCY')
-		body.account_concurrency_limit = limit
-	}
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'account_concurrency_limit')) {
+    const limit = patch.account_concurrency_limit
+    if (limit !== null && (limit === undefined || !Number.isSafeInteger(limit) || limit < 0))
+      throw new Error('INVALID_CREDENTIAL_CONCURRENCY')
+    body.account_concurrency_limit = limit
+  }
   return body
 }
 

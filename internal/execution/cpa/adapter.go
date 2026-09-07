@@ -41,9 +41,11 @@ var subscriptionResponseHeaderNames = [...]string{
 }
 
 type Adapter struct {
-	credentials credentialPreparer
-	channels    *channel.Registry
-	providers   map[channel.ProviderKind]providerBridge
+	credentials                 credentialPreparer
+	channels                    *channel.Registry
+	providersMu                 sync.RWMutex
+	providers                   map[channel.ProviderKind]providerBridge
+	codexConnectionReuseEnabled bool
 }
 
 type credentialPreparer interface {
@@ -86,6 +88,7 @@ func NewAdapterWithCodexConnectionReuse(credentials *subscription.CredentialMana
 			newAntigravityProviderBridge(),
 			newGrokProviderBridge(),
 		),
+		codexConnectionReuseEnabled: enabled,
 	}
 }
 
@@ -98,11 +101,45 @@ func (a *Adapter) ValidateRouteCapability(
 	if a == nil {
 		return fmt.Errorf("CPA adapter is unavailable")
 	}
-	provider, ok := a.providers[providerKind]
+	provider, ok := a.provider(providerKind)
 	if !ok || provider == nil {
 		return fmt.Errorf("provider %q is not implemented by CPA", providerKind)
 	}
 	return provider.ValidateRouteCapability(route)
+}
+
+func (a *Adapter) provider(providerKind channel.ProviderKind) (providerBridge, bool) {
+	if a == nil {
+		return nil, false
+	}
+	a.providersMu.RLock()
+	defer a.providersMu.RUnlock()
+	provider, ok := a.providers[providerKind]
+	return provider, ok
+}
+
+// SetCodexConnectionReuse swaps the Codex bridge at a runtime configuration
+// boundary. Existing requests keep their bridge and drain normally; new
+// requests use the newly configured transport pool.
+func (a *Adapter) SetCodexConnectionReuse(enabled bool) {
+	if a == nil {
+		return
+	}
+	a.providersMu.Lock()
+	if a.codexConnectionReuseEnabled == enabled {
+		a.providersMu.Unlock()
+		return
+	}
+	a.codexConnectionReuseEnabled = enabled
+	bridge := newCodexProviderBridgeWithConnectionReuse(enabled)
+	previous := a.providers[channel.ProviderCodex]
+	a.providers[channel.ProviderCodex] = bridge
+	a.providersMu.Unlock()
+	if previous != nil {
+		if shutdown, ok := previous.(interface{ BeginShutdown() <-chan struct{} }); ok {
+			go func() { <-shutdown.BeginShutdown() }()
+		}
+	}
 }
 
 func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (result execution.AttemptResult) {
@@ -470,7 +507,7 @@ func responseUsage(spec execution.AttemptSpec, body []byte) *execution.UsageEvid
 }
 
 func (a *Adapter) validateSpec(spec execution.AttemptSpec) (providerBridge, error) {
-	if a == nil || a.credentials == nil || a.channels == nil || len(a.providers) == 0 {
+	if a == nil || a.credentials == nil || a.channels == nil {
 		return nil, fmt.Errorf("subscription executor is unavailable")
 	}
 	if err := spec.Validate(); err != nil {
@@ -481,7 +518,7 @@ func (a *Adapter) validateSpec(spec execution.AttemptSpec) (providerBridge, erro
 	if !ok {
 		return nil, fmt.Errorf("subscription target has no provider binding")
 	}
-	provider, ok := a.providers[providerKind]
+	provider, ok := a.provider(providerKind)
 	if !ok || provider == nil {
 		return nil, fmt.Errorf("subscription target is not bound to this adapter")
 	}

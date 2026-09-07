@@ -40,6 +40,7 @@ export const runtimeSettingKeys = [
   'request_log_retention_days',
   'models_dev_auto_sync_enabled',
   'account_concurrency_limit',
+  'codex_connection_reuse_enabled',
 ] as const
 
 export type RuntimeSettingKey = (typeof runtimeSettingKeys)[number]
@@ -55,8 +56,10 @@ export type TimeoutSettingKey = Exclude<
   | 'affinity_capacity'
   | 'request_log_retention_days'
   | 'models_dev_auto_sync_enabled'
+  | 'codex_connection_reuse_enabled'
 >
-export type PolicyCountSettingKey = 'retry_count' | 'blacklist_threshold' | 'account_concurrency_limit'
+export type PolicyCountSettingKey =
+  'retry_count' | 'blacklist_threshold' | 'account_concurrency_limit'
 
 export interface CORSConfigDto {
   enabled: boolean
@@ -85,6 +88,7 @@ export interface SettingsValues {
   request_log_retention_days: number
   models_dev_auto_sync_enabled: boolean
   account_concurrency_limit: number
+  codex_connection_reuse_enabled: boolean
   proxy_config: ProxyViewDto
 }
 
@@ -111,6 +115,7 @@ export type SettingsPatch = Partial<{
   request_log_retention_days: number | null
   models_dev_auto_sync_enabled: boolean | null
   account_concurrency_limit: number | null
+  codex_connection_reuse_enabled: boolean | null
   proxy_config: ProxyMutation
 }>
 
@@ -216,7 +221,10 @@ export function projectSettings(value: unknown): SettingsDto {
         maximum: 365,
       }),
       models_dev_auto_sync_enabled: projectBoolean(values.models_dev_auto_sync_enabled),
-      account_concurrency_limit: projectSafeInteger(values.account_concurrency_limit, { minimum: 0 }),
+      account_concurrency_limit: projectSafeInteger(values.account_concurrency_limit, {
+        minimum: 0,
+      }),
+      codex_connection_reuse_enabled: projectBoolean(values.codex_connection_reuse_enabled),
       proxy_config: projectProxyView(values.proxy_config),
     },
     overrides,

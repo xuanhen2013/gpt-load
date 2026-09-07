@@ -1229,7 +1229,7 @@ async function mutateItem(
               ? { weight_manual: value === 'auto' ? null : Number(value) }
               : action === 'account-concurrency'
                 ? { account_concurrency_limit: value === '' ? null : Number(value) }
-              : { status: item.configured_status === 'active' ? 'disabled' : 'active' },
+                : { status: item.configured_status === 'active' ? 'disabled' : 'active' },
           )
   } catch {
     feedback.value = t(
@@ -1239,7 +1239,9 @@ async function mutateItem(
     return
   }
   try {
-    await reconcileItem(result, action !== 'weight' && action !== 'account-concurrency')
+    // The account limit is durable configuration too. Refetch the active page
+    // so the saved value is visible immediately and survives a later reload.
+    await reconcileItem(result, action !== 'weight')
   } finally {
     setPending(item.credential_id, action, false)
   }

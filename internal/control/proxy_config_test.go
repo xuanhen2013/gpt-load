@@ -136,6 +136,15 @@ func TestCredentialAccountConcurrencyLimitRoundTrip(t *testing.T) {
 	if !ok || ref.AccountConcurrencyLimit == nil || *ref.AccountConcurrencyLimit != limit {
 		t.Fatalf("runtime account limit = %#v, ok=%v", ref.AccountConcurrencyLimit, ok)
 	}
+	unlimited, err := fixture.service.UpdateGroupCredential(t.Context(), groupID, credentialID, CredentialUpdateRequest{
+		AccountConcurrencyLimit: optionalField[int]{Set: true, Value: 0},
+	})
+	if err != nil {
+		t.Fatalf("set unlimited account concurrency limit: %v", err)
+	}
+	if unlimited.AccountConcurrencyLimit == nil || *unlimited.AccountConcurrencyLimit != 0 {
+		t.Fatalf("unlimited account limit = %#v", unlimited.AccountConcurrencyLimit)
+	}
 	reset, err := fixture.service.UpdateGroupCredential(t.Context(), groupID, credentialID, CredentialUpdateRequest{
 		AccountConcurrencyLimit: optionalField[int]{Set: true, Null: true},
 	})

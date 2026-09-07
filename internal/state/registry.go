@@ -122,8 +122,8 @@ func ValidateCredentialEntries(entries []CredentialEntry) error {
 		if strings.TrimSpace(entry.Fingerprint) == "" {
 			return fmt.Errorf("credential %d fingerprint is required", entry.ID)
 		}
-		if entry.AccountConcurrencyLimit != nil && (*entry.AccountConcurrencyLimit < 1 || *entry.AccountConcurrencyLimit > MaxWeight) {
-			return fmt.Errorf("credential %d account concurrency limit must be between 1 and %d", entry.ID, MaxWeight)
+		if entry.AccountConcurrencyLimit != nil && *entry.AccountConcurrencyLimit < 0 {
+			return fmt.Errorf("credential %d account concurrency limit must be non-negative", entry.ID)
 		}
 		if _, duplicate := seen[entry.ID]; duplicate {
 			return fmt.Errorf("duplicate credential id %d", entry.ID)

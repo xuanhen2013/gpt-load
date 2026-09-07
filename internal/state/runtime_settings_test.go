@@ -741,12 +741,31 @@ func TestResolvedGroupSettingsOwnsHeaderRuleCopies(t *testing.T) {
 func TestAccountConcurrencyLimitInheritance(t *testing.T) {
 	base := DefaultRuntimeSettings()
 	global, err := ResolveRuntimeSettings(config.Settings{SettingAccountConcurrencyLimit: 4})
-	if err != nil { t.Fatal(err) }
-	if global.AccountConcurrencyLimit != 4 { t.Fatalf("global limit = %d", global.AccountConcurrencyLimit) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if global.AccountConcurrencyLimit != 4 {
+		t.Fatalf("global limit = %d", global.AccountConcurrencyLimit)
+	}
 	group, err := ResolveGroupRuntimeSettings(global, config.Settings{SettingAccountConcurrencyLimit: 2})
-	if err != nil { t.Fatal(err) }
-	if group.AccountConcurrencyLimit != 2 { t.Fatalf("group limit = %d", group.AccountConcurrencyLimit) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group.AccountConcurrencyLimit != 2 {
+		t.Fatalf("group limit = %d", group.AccountConcurrencyLimit)
+	}
+	groupUnlimited, err := ResolveGroupRuntimeSettings(global, config.Settings{SettingAccountConcurrencyLimit: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if groupUnlimited.AccountConcurrencyLimit != 0 {
+		t.Fatalf("group unlimited limit = %d", groupUnlimited.AccountConcurrencyLimit)
+	}
 	inherited, err := ResolveGroupRuntimeSettings(base, config.Settings{})
-	if err != nil { t.Fatal(err) }
-	if inherited.AccountConcurrencyLimit != 0 { t.Fatalf("default limit = %d", inherited.AccountConcurrencyLimit) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inherited.AccountConcurrencyLimit != 0 {
+		t.Fatalf("default limit = %d", inherited.AccountConcurrencyLimit)
+	}
 }

@@ -59,7 +59,12 @@ export default {
       retryCountHelp:
         'Maximum extra retries after the initial upstream attempt; 0 disables retries.',
       account_concurrency_limit: 'Account concurrency limit',
-      accountConcurrencyHelp: 'Maximum simultaneous upstream requests per account; 0 means unlimited.',
+      codex_connection_reuse_enabled: 'Codex proxy TCP reuse',
+      connectionReuseHelp:
+        'Applies to new Codex outbound requests immediately; active requests drain normally.',
+      restartToChange: 'Environment managed',
+      accountConcurrencyHelp:
+        'Maximum simultaneous upstream requests per account; 0 means unlimited.',
       blacklist_threshold: 'Consecutive-failure blacklist threshold',
       blacklistThresholdHelp:
         'A credential is blacklisted after this many consecutive failures; 0 disables automatic blacklisting.',

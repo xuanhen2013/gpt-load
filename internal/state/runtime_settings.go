@@ -32,6 +32,7 @@ const (
 	SettingModelsDevAutoSyncEnabled = "models_dev_auto_sync_enabled"
 	SettingParameterOverrides       = "parameter_overrides"
 	SettingAccountConcurrencyLimit  = "account_concurrency_limit"
+	SettingCodexConnectionReuse     = "codex_connection_reuse_enabled"
 )
 
 type RouteStrategy string
@@ -67,7 +68,9 @@ type RuntimeSettings struct {
 	RequestLogRetentionDays  int
 	ModelsDevAutoSyncEnabled bool
 	// AccountConcurrencyLimit is a per-account default. Zero means unlimited.
-	AccountConcurrencyLimit int
+	AccountConcurrencyLimit        int
+	CodexConnectionReuseEnabled    bool
+	CodexConnectionReuseConfigured bool
 }
 
 type ResolvedGroupSettings struct {
@@ -82,22 +85,24 @@ type ResolvedGroupSettings struct {
 
 func DefaultRuntimeSettings() RuntimeSettings {
 	return RuntimeSettings{
-		FirstByteTimeout:         120 * time.Second,
-		RequestTimeout:           600 * time.Second,
-		StreamIdleTimeout:        300 * time.Second,
-		HeaderRules:              HeaderRules{Set: map[string]string{}},
-		CORS:                     defaultCORSConfig(),
-		ResponseHeaderRules:      HeaderRules{Set: map[string]string{}},
-		RetryCount:               2,
-		RouteStrategy:            RouteStrategyNativeFirst,
-		BlacklistThreshold:       3,
-		AffinityEnabled:          true,
-		AffinityTTL:              time.Hour,
-		AffinityCapacity:         defaultAffinityCapacity,
-		ValidationInterval:       10 * time.Minute,
-		RequestLogRetentionDays:  defaultRequestLogRetentionDays,
-		ModelsDevAutoSyncEnabled: true,
-		AccountConcurrencyLimit:  0,
+		FirstByteTimeout:               120 * time.Second,
+		RequestTimeout:                 600 * time.Second,
+		StreamIdleTimeout:              300 * time.Second,
+		HeaderRules:                    HeaderRules{Set: map[string]string{}},
+		CORS:                           defaultCORSConfig(),
+		ResponseHeaderRules:            HeaderRules{Set: map[string]string{}},
+		RetryCount:                     2,
+		RouteStrategy:                  RouteStrategyNativeFirst,
+		BlacklistThreshold:             3,
+		AffinityEnabled:                true,
+		AffinityTTL:                    time.Hour,
+		AffinityCapacity:               defaultAffinityCapacity,
+		ValidationInterval:             10 * time.Minute,
+		RequestLogRetentionDays:        defaultRequestLogRetentionDays,
+		ModelsDevAutoSyncEnabled:       true,
+		AccountConcurrencyLimit:        0,
+		CodexConnectionReuseEnabled:    false,
+		CodexConnectionReuseConfigured: false,
 	}
 }
 
@@ -118,7 +123,8 @@ func IsRuntimeSettingKey(key string) bool {
 		SettingValidationInterval,
 		SettingRequestLogRetentionDays,
 		SettingModelsDevAutoSyncEnabled,
-		SettingAccountConcurrencyLimit:
+		SettingAccountConcurrencyLimit,
+		SettingCodexConnectionReuse:
 		return true
 	default:
 		return false
@@ -230,6 +236,13 @@ func ResolveRuntimeSettings(settings config.Settings) (RuntimeSettings, error) {
 				return RuntimeSettings{}, err
 			}
 			resolved.AccountConcurrencyLimit = value
+		case SettingCodexConnectionReuse:
+			value, err := strictBoolean(key, value)
+			if err != nil {
+				return RuntimeSettings{}, err
+			}
+			resolved.CodexConnectionReuseEnabled = value
+			resolved.CodexConnectionReuseConfigured = true
 		default:
 			return RuntimeSettings{}, fmt.Errorf("unknown runtime setting %q", key)
 		}
@@ -297,11 +310,13 @@ func ResolveGroupRuntimeSettings(
 			}
 			resolved.AffinityEnabled = parsed
 		case SettingAccountConcurrencyLimit:
-			parsed, err := positiveWholeNumber(key, value)
+			parsed, err := nonNegativeWholeNumber(key, value)
 			if err != nil {
 				return ResolvedGroupSettings{}, err
 			}
 			resolved.AccountConcurrencyLimit = parsed
+		case SettingCodexConnectionReuse:
+			return ResolvedGroupSettings{}, fmt.Errorf("runtime setting %q is system-only", key)
 		case SettingParameterOverrides:
 			parsed, err := parameteroverride.Compile(value)
 			if err != nil {
@@ -360,6 +375,9 @@ func ValidateRuntimeSetting(key string, value any) error {
 		return err
 	case SettingAccountConcurrencyLimit:
 		_, err := nonNegativeWholeNumber(key, value)
+		return err
+	case SettingCodexConnectionReuse:
+		_, err := strictBoolean(key, value)
 		return err
 	default:
 		return fmt.Errorf("unknown runtime setting %q", key)

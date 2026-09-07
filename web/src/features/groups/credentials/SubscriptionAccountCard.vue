@@ -82,6 +82,7 @@ const draftWeightMode = ref<'auto' | 'manual'>('auto')
 const draftWeight = ref('50')
 const accountConcurrencyEditing = ref(false)
 const draftAccountConcurrency = ref('')
+const draftAccountConcurrencyMode = ref<'inherit' | 'custom'>('inherit')
 const weightInputId = computed(() => `subscription-account-weight-${props.item.credential_id}`)
 
 // 自动权重等同代理的“继承”态，折叠时不加视觉噪音。
@@ -99,6 +100,23 @@ const manualWeightValid = computed(() => {
   if (draftWeightMode.value === 'auto') return true
   const value = Number(draftWeight.value)
   return Number.isInteger(value) && value >= 1 && value <= 100
+})
+const accountConcurrencyModeOptions = computed(() => [
+  {
+    value: 'inherit',
+    label: t('group.credentials.accountConcurrency.inherited'),
+    disabled: props.busy,
+  },
+  {
+    value: 'custom',
+    label: t('group.credentials.accountConcurrency.custom'),
+    disabled: props.busy,
+  },
+])
+const accountConcurrencyValid = computed(() => {
+  if (draftAccountConcurrencyMode.value === 'inherit') return true
+  const raw = String(draftAccountConcurrency.value).trim()
+  return /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw))
 })
 
 function resetWeightDraft(): void {
@@ -131,15 +149,22 @@ function saveWeight(): void {
 
 function editAccountConcurrency(): void {
   if (props.busy) return
-  draftAccountConcurrency.value = props.item.account_concurrency_limit === undefined ? '' : String(props.item.account_concurrency_limit)
+  draftAccountConcurrencyMode.value =
+    props.item.account_concurrency_limit === undefined ? 'inherit' : 'custom'
+  draftAccountConcurrency.value =
+    props.item.account_concurrency_limit === undefined
+      ? ''
+      : String(props.item.account_concurrency_limit)
   detailsExpanded.value = true
   accountConcurrencyEditing.value = true
 }
 
 function saveAccountConcurrency(): void {
-  if (props.busy) return
-  const raw = draftAccountConcurrency.value.trim()
-  if (raw !== '' && (!/^\d+$/.test(raw) || Number(raw) < 1 || !Number.isSafeInteger(Number(raw)))) return
+  if (props.busy || !accountConcurrencyValid.value) return
+  const raw =
+    draftAccountConcurrencyMode.value === 'inherit'
+      ? ''
+      : String(draftAccountConcurrency.value).trim()
   emit('account-concurrency', { item: props.item, value: raw })
   accountConcurrencyEditing.value = false
 }
@@ -1419,26 +1444,80 @@ function runMenuAction(
           :disabled="busy"
         />
         <div class="setting-panel">
-          <span class="setting-panel__title">{{ t('group.credentials.accountConcurrency.title') }}</span>
+          <span class="setting-panel__title">
+            {{ t('group.credentials.accountConcurrency.title') }}
+          </span>
           <div class="setting-panel__body">
             <template v-if="!accountConcurrencyEditing">
               <span class="setting-panel__tag">
-                {{ item.account_concurrency_limit === undefined ? t('group.credentials.accountConcurrency.inherited') : t('group.credentials.accountConcurrency.custom') }}
+                {{
+                  item.account_concurrency_limit === undefined
+                    ? t('group.credentials.accountConcurrency.inherited')
+                    : t('group.credentials.accountConcurrency.custom')
+                }}
               </span>
               <span class="setting-panel__value">
-                {{ item.account_concurrency_limit === undefined ? t('group.credentials.none') : n(item.account_concurrency_limit) }}
+                {{
+                  item.account_concurrency_limit === undefined
+                    ? t('group.credentials.none')
+                    : n(item.account_concurrency_limit)
+                }}
               </span>
-              <IconButton class="setting-panel__edit" variant="ghost" tone="action" size="xs" :label="t('group.credentials.accountConcurrency.edit')" :disabled="busy || displayDisabled" @click="editAccountConcurrency">
+              <IconButton
+                class="setting-panel__edit"
+                variant="ghost"
+                tone="action"
+                size="xs"
+                :label="t('group.credentials.accountConcurrency.edit')"
+                :disabled="busy || displayDisabled"
+                @click="editAccountConcurrency"
+              >
                 <PencilLine :size="12" aria-hidden="true" />
               </IconButton>
             </template>
             <form v-else class="setting-panel__form" @submit.prevent="saveAccountConcurrency">
-              <label class="sr-only" :for="`subscription-account-concurrency-${item.credential_id}`">{{ t('group.credentials.accountConcurrency.input') }}</label>
-              <input :id="`subscription-account-concurrency-${item.credential_id}`" v-model="draftAccountConcurrency" type="number" min="1" step="1" inputmode="numeric" :placeholder="t('group.credentials.accountConcurrency.inheritPlaceholder')" :disabled="busy" />
+              <SegmentedControl
+                v-model="draftAccountConcurrencyMode"
+                :label="t('group.credentials.accountConcurrency.mode')"
+                :options="accountConcurrencyModeOptions"
+                size="xs"
+              />
+              <label
+                class="sr-only"
+                :for="`subscription-account-concurrency-${item.credential_id}`"
+                >{{ t('group.credentials.accountConcurrency.input') }}</label
+              >
+              <input
+                :id="`subscription-account-concurrency-${item.credential_id}`"
+                v-model="draftAccountConcurrency"
+                :class="{ 'is-concealed': draftAccountConcurrencyMode === 'inherit' }"
+                type="number"
+                min="0"
+                step="1"
+                inputmode="numeric"
+                :placeholder="t('group.credentials.accountConcurrency.inheritPlaceholder')"
+                :disabled="busy || draftAccountConcurrencyMode === 'inherit'"
+                :tabindex="draftAccountConcurrencyMode === 'inherit' ? -1 : undefined"
+                :aria-hidden="draftAccountConcurrencyMode === 'inherit' ? 'true' : undefined"
+                :aria-invalid="!accountConcurrencyValid || undefined"
+              />
               <div class="setting-panel__actions">
-                <AppButton variant="ghost" size="compact" @click="accountConcurrencyEditing = false">{{ t('group.credentials.weightEditor.cancel') }}</AppButton>
-                <AppButton type="submit" size="compact" :disabled="busy">{{ t('group.credentials.weightEditor.save') }}</AppButton>
+                <AppButton
+                  variant="ghost"
+                  size="compact"
+                  @click="accountConcurrencyEditing = false"
+                  >{{ t('group.credentials.weightEditor.cancel') }}</AppButton
+                >
+                <AppButton
+                  type="submit"
+                  size="compact"
+                  :disabled="busy || !accountConcurrencyValid"
+                  >{{ t('group.credentials.weightEditor.save') }}</AppButton
+                >
               </div>
+              <p v-if="!accountConcurrencyValid" class="setting-panel__error" role="alert">
+                {{ t('group.credentials.accountConcurrency.invalid') }}
+              </p>
             </form>
           </div>
         </div>

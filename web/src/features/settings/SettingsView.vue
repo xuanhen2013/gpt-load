@@ -177,7 +177,11 @@ const invalidKeys = computed<RuntimeSettingKey[]>(() => {
       return !isValidRetention(current.values.request_log_retention_days)
     if (key === 'affinity_capacity')
       return !isValidAffinityCapacity(current.values.affinity_capacity)
-    if (key === 'retry_count' || key === 'blacklist_threshold')
+    if (
+      key === 'retry_count' ||
+      key === 'blacklist_threshold' ||
+      key === 'account_concurrency_limit'
+    )
       return !isValidNonNegativeInteger(current.values[key])
     return false
   })

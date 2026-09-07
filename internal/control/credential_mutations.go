@@ -52,7 +52,7 @@ func normalizeCredentialUpdate(
 	if request.AccountConcurrencyLimit.Set {
 		concurrencySet = true
 		if !request.AccountConcurrencyLimit.Null {
-			if request.AccountConcurrencyLimit.Value < 1 || request.AccountConcurrencyLimit.Value > state.MaxWeight {
+			if request.AccountConcurrencyLimit.Value < 0 {
 				return nil, nil, false, nil, false, nil, false, app_errors.ErrValidation
 			}
 			value := request.AccountConcurrencyLimit.Value

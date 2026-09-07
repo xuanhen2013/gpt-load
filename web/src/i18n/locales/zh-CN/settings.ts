@@ -57,6 +57,10 @@ export default {
       retry_count: '额外重试次数',
       retryCountHelp: '首次上游尝试失败后最多追加的重试次数；0 表示关闭重试。',
       account_concurrency_limit: '账号并发上限',
+      codex_connection_reuse_enabled: 'Codex 代理 TCP 复用',
+      connectionReuseHelp:
+        '只影响 Codex 出站请求；保存后立即切换新请求，正在进行的请求会自然结束。',
+      restartToChange: '由环境变量控制',
       accountConcurrencyHelp: '同一账号同时进行的上游请求数；0 表示不限。',
       blacklist_threshold: '连续失败拉黑阈值',
       blacklistThresholdHelp: '凭据达到该连续失败次数后自动拉黑；0 表示关闭自动拉黑。',

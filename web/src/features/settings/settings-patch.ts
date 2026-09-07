@@ -31,6 +31,7 @@ const requestForwardingKeys: RuntimeSettingKey[] = [
   'header_rules',
   'validation_interval',
   'account_concurrency_limit',
+  'codex_connection_reuse_enabled',
 ]
 const logsMaintenanceKeys: RuntimeSettingKey[] = ['request_log_retention_days']
 const affinityKeys: RuntimeSettingKey[] = ['affinity_enabled', 'affinity_ttl', 'affinity_capacity']
@@ -94,6 +95,8 @@ export function setSettingsOverride(
       next.values.header_rules = cloneHeaderRules(base.values.header_rules)
     } else if (key === 'response_header_rules') {
       next.values.response_header_rules = cloneHeaderRules(base.values.response_header_rules)
+    } else if (key === 'codex_connection_reuse_enabled') {
+      next.values.codex_connection_reuse_enabled = base.values.codex_connection_reuse_enabled
     } else {
       next.values[key] = base.values[key]
     }
@@ -329,7 +332,11 @@ export function validateSettingsSection(draft: SettingsDraft, section: SettingsS
     'stream_idle_timeout',
     'validation_interval',
   ]
-  const policyCounts: PolicyCountSettingKey[] = ['retry_count', 'blacklist_threshold']
+  const policyCounts: PolicyCountSettingKey[] = [
+    'retry_count',
+    'blacklist_threshold',
+    'account_concurrency_limit',
+  ]
   return (
     timeouts.every((key) => !draft.overrides.has(key) || isValidTimeout(draft.values[key])) &&
     policyCounts.every(
