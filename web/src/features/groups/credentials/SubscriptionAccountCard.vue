@@ -1478,6 +1478,7 @@ function runMenuAction(
             <form v-else class="setting-panel__form" @submit.prevent="saveAccountConcurrency">
               <SegmentedControl
                 v-model="draftAccountConcurrencyMode"
+                class="subscription-account__weight-mode"
                 :label="t('group.credentials.accountConcurrency.mode')"
                 :options="accountConcurrencyModeOptions"
                 size="xs"
@@ -1490,6 +1491,7 @@ function runMenuAction(
               <input
                 :id="`subscription-account-concurrency-${item.credential_id}`"
                 v-model="draftAccountConcurrency"
+                class="subscription-account__weight-input"
                 :class="{ 'is-concealed': draftAccountConcurrencyMode === 'inherit' }"
                 type="number"
                 min="0"

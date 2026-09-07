@@ -425,10 +425,10 @@ export default {
       },
       accountConcurrency: {
         title: 'Account concurrency limit',
-        inherited: 'Inherited from Group',
-        custom: 'Per-account override',
+        inherited: 'Inherit',
+        custom: 'Custom',
         edit: 'Edit account concurrency limit',
-        mode: 'Account concurrency mode',
+        mode: 'Account concurrency limit',
         input: 'Account concurrency limit',
         inheritPlaceholder: 'Blank inherits; 0 means unlimited',
         invalid: 'Enter 0 or a positive whole number.',

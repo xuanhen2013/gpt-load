@@ -433,9 +433,14 @@ function runMenuAction(action: 'test' | 'toggle' | 'restore' | 'remove'): void {
                     <PencilLine :size="12" aria-hidden="true" />
                   </IconButton>
                 </template>
-                <form v-else class="setting-panel__form" @submit.prevent="saveAccountConcurrency">
+                <form
+                  v-else
+                  class="setting-panel__form group-credential-record__weight-form"
+                  @submit.prevent="saveAccountConcurrency"
+                >
                   <SegmentedControl
                     v-model="draftAccountConcurrencyMode"
+                    class="group-credential-record__weight-mode"
                     :label="t('group.credentials.accountConcurrency.mode')"
                     :options="accountConcurrencyModeOptions"
                     size="xs"

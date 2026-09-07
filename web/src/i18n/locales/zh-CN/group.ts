@@ -411,10 +411,10 @@ export default {
       },
       accountConcurrency: {
         title: '账号并发上限',
-        inherited: '继承分组设置',
-        custom: '单账号覆盖',
+        inherited: '继承',
+        custom: '自定义',
         edit: '编辑账号并发上限',
-        mode: '账号并发配置方式',
+        mode: '账号并发上限',
         input: '账号并发上限',
         inheritPlaceholder: '留空表示继承；0 表示不限',
         invalid: '请输入 0 或正整数。',
