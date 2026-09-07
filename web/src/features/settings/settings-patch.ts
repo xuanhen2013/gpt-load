@@ -337,6 +337,7 @@ export function validateSettingsSection(draft: SettingsDraft, section: SettingsS
     'retry_count',
     'blacklist_threshold',
     'account_concurrency_limit',
+    'account_concurrency_wait_timeout',
   ]
   return (
     timeouts.every((key) => !draft.overrides.has(key) || isValidTimeout(draft.values[key])) &&

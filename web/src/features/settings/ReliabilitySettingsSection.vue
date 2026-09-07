@@ -158,7 +158,7 @@ function validationIntervalError(): string | undefined {
                 />
               </template>
             </CompactFieldError>
-            <span aria-hidden="true">{{ t('settings.runtime.countUnit') }}</span>
+            <span aria-hidden="true">{{ policy.key === 'account_concurrency_wait_timeout' ? t('settings.runtime.seconds') : t('settings.runtime.countUnit') }}</span>
           </div>
         </template>
       </SettingRow>
