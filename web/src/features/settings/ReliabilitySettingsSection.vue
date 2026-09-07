@@ -72,7 +72,7 @@ function actionLabel(key: RuntimeSettingKey): string {
 
 function policyValue(key: PolicyCountSettingKey): string {
   if (isPendingRestore(key)) return t('settings.runtime.resetPending')
-  return t('settings.runtime.effectiveCount', {
+  return t(key === 'account_concurrency_wait_timeout' ? 'settings.runtime.effectiveValue' : 'settings.runtime.effectiveCount', {
     value: formatInteger(props.base.settings.values[key], locale.value),
   })
 }
