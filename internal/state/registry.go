@@ -28,24 +28,26 @@ const (
 )
 
 type CredentialEntry struct {
-	ID                 uint
-	GroupID            uint
-	Version            uint64
-	IdentityGeneration uint64
-	Fingerprint        string
-	WeightManual       *int
-	WeightAuto         int
-	Status             CredentialStatus
-	AuthState          CredentialAuthState
-	CooldownUntil      time.Time
-	Blacklisted        bool
-	FailureCount       int
-	FailureGeneration  uint64
-	EncryptedValue     string
-	EncryptedProxy     string
-	ProxyFingerprint   string
-	quotaRemaining     *float64
-	quotaResetAt       time.Time
+	ID                      uint
+	GroupID                 uint
+	Version                 uint64
+	IdentityGeneration      uint64
+	Fingerprint             string
+	AccountKey              string
+	AccountConcurrencyLimit *int
+	WeightManual            *int
+	WeightAuto              int
+	Status                  CredentialStatus
+	AuthState               CredentialAuthState
+	CooldownUntil           time.Time
+	Blacklisted             bool
+	FailureCount            int
+	FailureGeneration       uint64
+	EncryptedValue          string
+	EncryptedProxy          string
+	ProxyFingerprint        string
+	quotaRemaining          *float64
+	quotaResetAt            time.Time
 }
 
 type CredentialMeta struct {
@@ -58,15 +60,17 @@ type CredentialMeta struct {
 }
 
 type CredentialRef struct {
-	ID                 uint
-	GroupID            uint
-	Version            uint64
-	IdentityGeneration uint64
-	Fingerprint        string
-	EncryptedValue     string
-	EncryptedProxy     string
-	ProxyFingerprint   string
-	FailureGeneration  uint64
+	ID                      uint
+	GroupID                 uint
+	Version                 uint64
+	IdentityGeneration      uint64
+	Fingerprint             string
+	AccountKey              string
+	AccountConcurrencyLimit *int
+	EncryptedValue          string
+	EncryptedProxy          string
+	ProxyFingerprint        string
+	FailureGeneration       uint64
 }
 
 type CredentialRegistry struct {
@@ -117,6 +121,9 @@ func ValidateCredentialEntries(entries []CredentialEntry) error {
 		}
 		if strings.TrimSpace(entry.Fingerprint) == "" {
 			return fmt.Errorf("credential %d fingerprint is required", entry.ID)
+		}
+		if entry.AccountConcurrencyLimit != nil && (*entry.AccountConcurrencyLimit < 1 || *entry.AccountConcurrencyLimit > MaxWeight) {
+			return fmt.Errorf("credential %d account concurrency limit must be between 1 and %d", entry.ID, MaxWeight)
 		}
 		if _, duplicate := seen[entry.ID]; duplicate {
 			return fmt.Errorf("duplicate credential id %d", entry.ID)
@@ -338,6 +345,16 @@ func samePersistedCredentialConfig(left, right CredentialEntry) bool {
 		left.ProxyFingerprint != right.ProxyFingerprint {
 		return false
 	}
+	if left.AccountKey != right.AccountKey {
+		return false
+	}
+	if left.AccountConcurrencyLimit == nil || right.AccountConcurrencyLimit == nil {
+		if left.AccountConcurrencyLimit != nil || right.AccountConcurrencyLimit != nil {
+			return false
+		}
+	} else if *left.AccountConcurrencyLimit != *right.AccountConcurrencyLimit {
+		return false
+	}
 	if left.WeightManual == nil || right.WeightManual == nil {
 		return left.WeightManual == nil && right.WeightManual == nil
 	}
@@ -520,6 +537,17 @@ func (r *CredentialRegistry) SetCredentialAuthState(credentialID uint, authState
 	return true
 }
 
+// CredentialAuthStateOf returns the runtime auth state of one credential.
+func (r *CredentialRegistry) CredentialAuthStateOf(credentialID uint) (CredentialAuthState, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.entryLocked(credentialID)
+	if !ok {
+		return "", false
+	}
+	return entry.AuthState.normalize(), true
+}
+
 // EncryptedCredentialData returns encrypted credential data for the selected
 // stable credential ID. Decryption belongs to the gateway execution boundary.
 func (r *CredentialRegistry) EncryptedCredentialData(credentialID uint) (string, bool) {
@@ -567,6 +595,7 @@ func (r *CredentialRegistry) CaptureActiveCredentialRefs(groupIDs []uint) []Cred
 				Fingerprint: entry.Fingerprint, EncryptedValue: entry.EncryptedValue,
 				EncryptedProxy: entry.EncryptedProxy, ProxyFingerprint: entry.ProxyFingerprint,
 				FailureGeneration: entry.FailureGeneration,
+				AccountKey:        entry.AccountKey, AccountConcurrencyLimit: cloneWeight(entry.AccountConcurrencyLimit),
 			})
 		}
 	}
@@ -634,6 +663,7 @@ func (r *CredentialRegistry) CredentialRef(credentialID uint) (CredentialRef, bo
 		IdentityGeneration: entry.IdentityGeneration, Fingerprint: entry.Fingerprint,
 		EncryptedValue: entry.EncryptedValue, EncryptedProxy: entry.EncryptedProxy,
 		ProxyFingerprint: entry.ProxyFingerprint, FailureGeneration: entry.FailureGeneration,
+		AccountKey: entry.AccountKey, AccountConcurrencyLimit: cloneWeight(entry.AccountConcurrencyLimit),
 	}, true
 }
 
@@ -971,6 +1001,7 @@ func (r *CredentialRegistry) BlacklistedCredentials() []CredentialRef {
 				Fingerprint: entry.Fingerprint, EncryptedValue: entry.EncryptedValue,
 				EncryptedProxy: entry.EncryptedProxy, ProxyFingerprint: entry.ProxyFingerprint,
 				FailureGeneration: entry.FailureGeneration,
+				AccountKey:        entry.AccountKey, AccountConcurrencyLimit: cloneWeight(entry.AccountConcurrencyLimit),
 			})
 		}
 	}
@@ -995,6 +1026,7 @@ func (r *CredentialRegistry) entryLocked(credentialID uint) (*CredentialEntry, b
 
 func cloneCredentialEntry(entry CredentialEntry) CredentialEntry {
 	entry.WeightManual = cloneWeight(entry.WeightManual)
+	entry.AccountConcurrencyLimit = cloneWeight(entry.AccountConcurrencyLimit)
 	entry.quotaRemaining = cloneFloat(entry.quotaRemaining)
 	entry.FailureGeneration = 0
 	if entry.WeightAuto == 0 {

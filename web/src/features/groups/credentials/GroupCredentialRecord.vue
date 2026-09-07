@@ -43,6 +43,7 @@ const emit = defineEmits<{
   'update:weightEditorOpen': [open: boolean]
   'open-weight': [item: CredentialItemDto]
   weight: [payload: { item: CredentialItemDto; value: string }]
+  'account-concurrency': [payload: { item: CredentialItemDto; value: string }]
   toggle: [item: CredentialItemDto]
   test: [item: CredentialItemDto]
   restore: [item: CredentialItemDto]
@@ -52,6 +53,8 @@ const { locale, n, t } = useI18n()
 const menuOpen = ref(false)
 const draftWeightMode = ref<'auto' | 'manual'>('auto')
 const draftWeight = ref('50')
+const accountConcurrencyEditing = ref(false)
+const draftAccountConcurrency = ref('')
 const detailId = computed(() => `group-credential-details-${props.item.credential_id}`)
 const weightInputId = computed(() => `group-credential-weight-${props.item.credential_id}`)
 const isProblem = computed(
@@ -111,6 +114,20 @@ function saveWeight(): void {
     value: draftWeightMode.value === 'auto' ? 'auto' : String(Number(draftWeight.value)),
   })
   emit('update:weightEditorOpen', false)
+}
+
+function editAccountConcurrency(): void {
+  if (props.busy) return
+  draftAccountConcurrency.value = props.item.account_concurrency_limit === undefined ? '' : String(props.item.account_concurrency_limit)
+  accountConcurrencyEditing.value = true
+}
+
+function saveAccountConcurrency(): void {
+  if (props.busy) return
+  const raw = draftAccountConcurrency.value.trim()
+  if (raw !== '' && (!/^\d+$/.test(raw) || Number(raw) < 1 || !Number.isSafeInteger(Number(raw)))) return
+  emit('account-concurrency', { item: props.item, value: raw })
+  accountConcurrencyEditing.value = false
 }
 
 // 权重列的值可点：展开该行并直接进入权重编辑，作为折叠区设置的发现入口。
@@ -308,9 +325,10 @@ function runMenuAction(action: 'test' | 'toggle' | 'restore' | 'remove'): void {
                 >
                   <SegmentedControl
                     v-model="draftWeightMode"
+                    class="group-credential-record__weight-mode"
                     :label="t('group.credentials.weightEditor.mode')"
                     :options="weightModeOptions"
-                    size="compact"
+                    size="xs"
                   />
                   <label class="sr-only" :for="weightInputId">
                     {{ t('group.credentials.weightEditor.value') }}
@@ -358,6 +376,30 @@ function runMenuAction(action: 'test' | 'toggle' | 'restore' | 'remove'): void {
               :supported="proxySupported"
               :disabled="busy"
             />
+            <div class="setting-panel">
+              <span class="setting-panel__title">{{ t('group.credentials.accountConcurrency.title') }}</span>
+              <div class="setting-panel__body">
+                <template v-if="!accountConcurrencyEditing">
+                  <span class="setting-panel__tag">
+                    {{ item.account_concurrency_limit === undefined ? t('group.credentials.accountConcurrency.inherited') : t('group.credentials.accountConcurrency.custom') }}
+                  </span>
+                  <span class="setting-panel__value">
+                    {{ item.account_concurrency_limit === undefined ? t('group.credentials.none') : n(item.account_concurrency_limit) }}
+                  </span>
+                  <IconButton class="setting-panel__edit" variant="ghost" tone="action" size="xs" :label="t('group.credentials.accountConcurrency.edit')" :disabled="busy || item.configured_status === 'disabled'" @click="editAccountConcurrency">
+                    <PencilLine :size="12" aria-hidden="true" />
+                  </IconButton>
+                </template>
+                <form v-else class="setting-panel__form" @submit.prevent="saveAccountConcurrency">
+                  <label class="sr-only" :for="`group-credential-concurrency-${item.credential_id}`">{{ t('group.credentials.accountConcurrency.input') }}</label>
+                  <input :id="`group-credential-concurrency-${item.credential_id}`" v-model="draftAccountConcurrency" type="number" min="1" step="1" inputmode="numeric" :placeholder="t('group.credentials.accountConcurrency.inheritPlaceholder')" :disabled="busy" />
+                  <div class="setting-panel__actions">
+                    <AppButton variant="ghost" size="compact" @click="accountConcurrencyEditing = false">{{ t('group.credentials.weightEditor.cancel') }}</AppButton>
+                    <AppButton type="submit" size="compact" :disabled="busy">{{ t('group.credentials.weightEditor.save') }}</AppButton>
+                  </div>
+                </form>
+              </div>
+            </div>
           </div>
 
           <div class="setting-panel">
@@ -529,6 +571,10 @@ function runMenuAction(action: 'test' | 'toggle' | 'restore' | 'remove'): void {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
   gap: 13px 16px;
+}
+
+.group-credential-record__weight-mode {
+  flex: none;
 }
 
 .group-credential-record__weight-form > input {

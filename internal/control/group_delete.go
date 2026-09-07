@@ -93,6 +93,9 @@ func (s *Service) DeleteGroup(ctx context.Context, groupID uint) error {
 		if err := tx.Delete(&group).Error; err != nil {
 			return app_errors.ParseDBError(err)
 		}
+		if err := tx.Where("credential_id IN ?", deletedCredentialIDs).Delete(&models.CredentialConcurrencyLimit{}).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
 		return nil
 	}, func() error {
 		s.registry.RemoveGroup(groupID)

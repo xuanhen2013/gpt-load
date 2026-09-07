@@ -101,12 +101,6 @@ function setTimeoutValue(key: TimeoutSettingKey, value: string): void {
   publish(key, draft)
 }
 
-function setInjectUsage(value: boolean): void {
-  const draft = cloneDraft()
-  draft.values.inject_usage_options = value
-  publish('inject_usage_options', draft)
-}
-
 function setPolicyCount(key: PolicyCountSettingKey, value: string): void {
   const draft = cloneDraft()
   draft.values[key] = Number(value)
@@ -308,62 +302,6 @@ function policyCountError(key: PolicyCountSettingKey): string | undefined {
                 </template>
               </CompactFieldError>
               <span aria-hidden="true">{{ t('settings.runtime.countUnit') }}</span>
-            </div>
-          </template>
-        </RuntimeOverrideRow>
-      </div>
-
-      <div class="settings-runtime__entry">
-        <RuntimeOverrideRow
-          appearance="ledger"
-          :label="t('settings.runtime.inject_usage_options')"
-          :detail="t('settings.runtime.injectUsageHelp')"
-          :source-label="
-            hasOverride('inject_usage_options')
-              ? t('settings.runtime.overrideSource')
-              : isPendingRestore('inject_usage_options')
-                ? t('settings.runtime.pendingRestoreSource')
-                : t('settings.runtime.defaultSource')
-          "
-          :action-label="
-            hasOverride('inject_usage_options')
-              ? t('settings.runtime.restoreDefault')
-              : t('settings.runtime.override')
-          "
-          :overridden="hasOverride('inject_usage_options')"
-          :pending-restore="isPendingRestore('inject_usage_options')"
-          :disabled="disabled"
-          @toggle="toggleOverride('inject_usage_options')"
-        >
-          <template #value>
-            <div class="settings-runtime__boolean">
-              <AppSwitch
-                v-if="hasOverride('inject_usage_options')"
-                :model-value="draft.values.inject_usage_options"
-                :disabled="disabled"
-                :label="
-                  t('settings.runtime.valueFor', {
-                    field: t('settings.runtime.inject_usage_options'),
-                  })
-                "
-                @update:model-value="setInjectUsage"
-              />
-              <strong v-else-if="isPendingRestore('inject_usage_options')">{{
-                t('settings.runtime.resetPending')
-              }}</strong>
-              <strong v-else>{{
-                base.settings.values.inject_usage_options
-                  ? t('settings.runtime.enabled')
-                  : t('settings.runtime.disabled')
-              }}</strong>
-              <small
-                v-if="
-                  !hasOverride('inject_usage_options') && !isPendingRestore('inject_usage_options')
-                "
-              >
-                {{ t('settings.runtime.currentEffective') }}
-              </small>
-              <small>{{ t('settings.runtime.injectUsageHelp') }}</small>
             </div>
           </template>
         </RuntimeOverrideRow>

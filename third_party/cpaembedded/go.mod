@@ -6,7 +6,7 @@ require (
 	github.com/andybalholm/brotli v1.2.3
 	github.com/google/uuid v1.6.0
 	github.com/refraction-networking/utls v1.8.2
-	github.com/router-for-me/CLIProxyAPI/v7 v7.2.151
+	github.com/router-for-me/CLIProxyAPI/v7 v7.2.152
 	github.com/sirupsen/logrus v1.9.3
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/sjson v1.2.5

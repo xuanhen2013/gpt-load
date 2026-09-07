@@ -6,19 +6,20 @@ import (
 )
 
 type CredentialRuntimeView struct {
-	ID                 uint
-	GroupID            uint
-	Version            uint64
-	IdentityGeneration uint64
-	WeightManual       *int
-	WeightAuto         int
-	Status             CredentialStatus
-	AuthState          CredentialAuthState
-	CooldownUntil      time.Time
-	Blacklisted        bool
-	FailureCount       int
-	QuotaRemaining     *float64
-	QuotaResetAt       time.Time
+	ID                      uint
+	GroupID                 uint
+	Version                 uint64
+	IdentityGeneration      uint64
+	WeightManual            *int
+	WeightAuto              int
+	AccountConcurrencyLimit *int
+	Status                  CredentialStatus
+	AuthState               CredentialAuthState
+	CooldownUntil           time.Time
+	Blacklisted             bool
+	FailureCount            int
+	QuotaRemaining          *float64
+	QuotaResetAt            time.Time
 }
 
 func (view CredentialRuntimeView) AuthReady() bool {
@@ -53,19 +54,20 @@ func (view CredentialRuntimeView) RuntimeState(now time.Time) CredentialRuntimeS
 
 func runtimeView(entry *CredentialEntry) CredentialRuntimeView {
 	return CredentialRuntimeView{
-		ID:                 entry.ID,
-		GroupID:            entry.GroupID,
-		Version:            entry.Version,
-		IdentityGeneration: entry.IdentityGeneration,
-		WeightManual:       cloneWeight(entry.WeightManual),
-		WeightAuto:         entry.WeightAuto,
-		Status:             entry.Status,
-		AuthState:          entry.AuthState.normalize(),
-		CooldownUntil:      entry.CooldownUntil,
-		Blacklisted:        entry.Blacklisted,
-		FailureCount:       entry.FailureCount,
-		QuotaRemaining:     cloneFloat(entry.quotaRemaining),
-		QuotaResetAt:       entry.quotaResetAt,
+		ID:                      entry.ID,
+		GroupID:                 entry.GroupID,
+		Version:                 entry.Version,
+		IdentityGeneration:      entry.IdentityGeneration,
+		WeightManual:            cloneWeight(entry.WeightManual),
+		WeightAuto:              entry.WeightAuto,
+		AccountConcurrencyLimit: cloneWeight(entry.AccountConcurrencyLimit),
+		Status:                  entry.Status,
+		AuthState:               entry.AuthState.normalize(),
+		CooldownUntil:           entry.CooldownUntil,
+		Blacklisted:             entry.Blacklisted,
+		FailureCount:            entry.FailureCount,
+		QuotaRemaining:          cloneFloat(entry.quotaRemaining),
+		QuotaResetAt:            entry.quotaResetAt,
 	}
 }
 

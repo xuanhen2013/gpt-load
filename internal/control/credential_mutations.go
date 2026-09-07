@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/health"
@@ -22,14 +23,14 @@ import (
 func normalizeCredentialUpdate(
 	request CredentialUpdateRequest,
 	encryptionService encryption.Service,
-) (status *state.CredentialStatus, weight *int, weightSet bool, proxy *string, proxySet bool, err error) {
-	if !request.Status.Set && !request.WeightManual.Set && !request.Proxy.Set {
-		return nil, nil, false, nil, false, app_errors.ErrBadRequest
+) (status *state.CredentialStatus, weight *int, weightSet bool, proxy *string, proxySet bool, concurrency *int, concurrencySet bool, err error) {
+	if !request.Status.Set && !request.WeightManual.Set && !request.Proxy.Set && !request.AccountConcurrencyLimit.Set {
+		return nil, nil, false, nil, false, nil, false, app_errors.ErrBadRequest
 	}
 	if request.Status.Set {
 		if request.Status.Null ||
 			(request.Status.Value != state.CredentialStatusActive && request.Status.Value != state.CredentialStatusDisabled) {
-			return nil, nil, false, nil, false, app_errors.ErrValidation
+			return nil, nil, false, nil, false, nil, false, app_errors.ErrValidation
 		}
 		value := request.Status.Value
 		status = &value
@@ -38,7 +39,7 @@ func normalizeCredentialUpdate(
 		weightSet = true
 		if !request.WeightManual.Null {
 			if request.WeightManual.Value < 1 || request.WeightManual.Value > state.MaxWeight {
-				return nil, nil, false, nil, false, app_errors.ErrValidation
+				return nil, nil, false, nil, false, nil, false, app_errors.ErrValidation
 			}
 			value := request.WeightManual.Value
 			weight = &value
@@ -46,9 +47,19 @@ func normalizeCredentialUpdate(
 	}
 	proxy, proxySet, err = normalizeProxyOverride(request.Proxy, encryptionService)
 	if err != nil {
-		return nil, nil, false, nil, false, err
+		return nil, nil, false, nil, false, nil, false, err
 	}
-	return status, weight, weightSet, proxy, proxySet, nil
+	if request.AccountConcurrencyLimit.Set {
+		concurrencySet = true
+		if !request.AccountConcurrencyLimit.Null {
+			if request.AccountConcurrencyLimit.Value < 1 || request.AccountConcurrencyLimit.Value > state.MaxWeight {
+				return nil, nil, false, nil, false, nil, false, app_errors.ErrValidation
+			}
+			value := request.AccountConcurrencyLimit.Value
+			concurrency = &value
+		}
+	}
+	return status, weight, weightSet, proxy, proxySet, concurrency, concurrencySet, nil
 }
 
 func nextCredentialUpdatedAtMS(now time.Time, previous int64) (int64, error) {
@@ -137,13 +148,14 @@ func (s *Service) UpdateGroupCredential(
 	if groupID == 0 || credentialID == 0 {
 		return CredentialItemResponse{}, app_errors.ErrBadRequest
 	}
-	status, weight, weightSet, proxy, proxySet, err := normalizeCredentialUpdate(request, s.encryption)
+	status, weight, weightSet, proxy, proxySet, concurrency, concurrencySet, err := normalizeCredentialUpdate(request, s.encryption)
 	if err != nil {
 		return CredentialItemResponse{}, err
 	}
 	var committed models.Credential
 	var committedGroup models.Group
 	var committedProxy, committedProxyFingerprint string
+	var committedConcurrency *int
 	committedProxyUpdate := false
 	err = s.writeCredentialConfig(ctx, groupID, credentialID, func(tx *gorm.DB) error {
 		group, err := loadGroupRow(tx, groupID)
@@ -162,6 +174,13 @@ func (s *Service) UpdateGroupCredential(
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return credentialNotFoundError()
 			}
+			return app_errors.ParseDBError(err)
+		}
+		var concurrencyRow models.CredentialConcurrencyLimit
+		if err := tx.Where("credential_id = ?", credentialID).Take(&concurrencyRow).Error; err == nil {
+			value := concurrencyRow.Limit
+			committedConcurrency = &value
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return app_errors.ParseDBError(err)
 		}
 		view, exists := findRuntimeCredential(s.registry.Snapshot(), credentialID)
@@ -184,6 +203,19 @@ func (s *Service) UpdateGroupCredential(
 		if proxySet {
 			committed.ProxyConfig = proxy
 			updates["proxy_config"] = proxy
+		}
+		if concurrencySet {
+			committedConcurrency = cloneInt(concurrency)
+			if concurrency == nil {
+				if err := tx.Where("credential_id = ?", credentialID).Delete(&models.CredentialConcurrencyLimit{}).Error; err != nil {
+					return app_errors.ParseDBError(err)
+				}
+			} else if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "credential_id"}},
+				DoUpdates: clause.AssignmentColumns([]string{"limit"}),
+			}).Create(&models.CredentialConcurrencyLimit{CredentialID: credentialID, Limit: *concurrency}).Error; err != nil {
+				return app_errors.ParseDBError(err)
+			}
 		}
 		committed.UpdatedAtMS = updatedAtMS
 		committedProxy, committedProxyFingerprint, err = storedProxyIdentity(s.encryption, committed.ProxyConfig)
@@ -213,6 +245,7 @@ func (s *Service) UpdateGroupCredential(
 		entry.EncryptedValue = committed.Data
 		entry.EncryptedProxy = committedProxy
 		entry.ProxyFingerprint = committedProxyFingerprint
+		entry.AccountConcurrencyLimit = cloneInt(committedConcurrency)
 		return s.registry.RestoreGroupCredentialEntriesExact(groupID, []state.CredentialEntry{entry})
 	})
 	if committedProxyUpdate {
@@ -248,6 +281,9 @@ func (s *Service) DeleteGroupCredential(ctx context.Context, groupID, credential
 			return err
 		}
 		if err := tx.Delete(&row).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
+		if err := tx.Where("credential_id = ?", credentialID).Delete(&models.CredentialConcurrencyLimit{}).Error; err != nil {
 			return app_errors.ParseDBError(err)
 		}
 		return nil
@@ -621,6 +657,11 @@ func (s *Service) BatchGroupCredentials(
 					})
 				case CredentialBatchDelete:
 					result = query.Delete(&models.Credential{})
+					if result.Error == nil {
+						if err := tx.Where("credential_id IN ?", ids).Delete(&models.CredentialConcurrencyLimit{}).Error; err != nil {
+							return app_errors.ParseDBError(err)
+						}
+					}
 				}
 				if result.Error != nil {
 					return app_errors.ParseDBError(result.Error)

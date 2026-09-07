@@ -14,6 +14,7 @@ import (
 	"gpt-load/internal/connection"
 	"gpt-load/internal/execution"
 	"gpt-load/internal/outboundproxy"
+	"gpt-load/internal/parameteroverride"
 	"gpt-load/internal/platform/config"
 	"gpt-load/internal/protocol"
 )
@@ -47,13 +48,15 @@ type GroupConfig struct {
 // CredentialConfig contains only non-secret credential metadata required to
 // validate a runtime configuration publication.
 type CredentialConfig struct {
-	ID                 uint
-	GroupID            uint
-	Status             CredentialStatus
-	WeightManual       *int
-	Version            uint64
-	IdentityGeneration uint64
-	Fingerprint        string
+	ID                      uint
+	GroupID                 uint
+	Status                  CredentialStatus
+	WeightManual            *int
+	Version                 uint64
+	IdentityGeneration      uint64
+	Fingerprint             string
+	AccountKey              string
+	AccountConcurrencyLimit *int
 }
 
 type ModelConfig struct {
@@ -121,23 +124,24 @@ type HeaderRules struct {
 }
 
 type GroupView struct {
-	ID                 uint
-	Name               string
-	ChannelID          channel.ID
-	ConnectionType     string
-	Params             json.RawMessage
-	ResolvedTarget     channel.ResolvedTarget
-	ValidationModel    string
-	ClientProtocols    []protocol.Protocol
-	Models             []ModelConfig
-	Timeouts           TimeoutConfig
-	HeaderRules        HeaderRules
-	InjectUsageOptions bool
-	RetryCount         int
-	BlacklistThreshold int
-	AffinityEnabled    bool
-	WeightManual       *int
-	Proxy              outboundproxy.Effective
+	ID                      uint
+	Name                    string
+	ChannelID               channel.ID
+	ConnectionType          string
+	Params                  json.RawMessage
+	ResolvedTarget          channel.ResolvedTarget
+	ValidationModel         string
+	ClientProtocols         []protocol.Protocol
+	Models                  []ModelConfig
+	Timeouts                TimeoutConfig
+	HeaderRules             HeaderRules
+	RetryCount              int
+	BlacklistThreshold      int
+	AffinityEnabled         bool
+	WeightManual            *int
+	Proxy                   outboundproxy.Effective
+	ParameterOverrides      parameteroverride.Rules
+	AccountConcurrencyLimit int
 }
 
 type GroupCatalogView struct {
@@ -217,19 +221,20 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 		}
 
 		view := GroupView{
-			ID:                 group.ID,
-			Name:               group.Name,
-			ValidationModel:    strings.TrimSpace(group.ValidationModel),
-			Models:             append([]ModelConfig(nil), group.Models...),
-			Timeouts:           resolved.Timeouts,
-			HeaderRules:        resolved.HeaderRules,
-			InjectUsageOptions: resolved.InjectUsageOptions,
-			RetryCount:         resolved.RetryCount,
-			BlacklistThreshold: resolved.BlacklistThreshold,
-			AffinityEnabled:    resolved.AffinityEnabled,
-			WeightManual:       cloneWeight(group.WeightManual),
-			ConnectionType:     connection.Normalize(group.ConnectionType),
-			Proxy:              groupProxy,
+			ID:                      group.ID,
+			Name:                    group.Name,
+			ValidationModel:         strings.TrimSpace(group.ValidationModel),
+			Models:                  append([]ModelConfig(nil), group.Models...),
+			Timeouts:                resolved.Timeouts,
+			HeaderRules:             resolved.HeaderRules,
+			RetryCount:              resolved.RetryCount,
+			BlacklistThreshold:      resolved.BlacklistThreshold,
+			AffinityEnabled:         resolved.AffinityEnabled,
+			AccountConcurrencyLimit: resolved.AccountConcurrencyLimit,
+			WeightManual:            cloneWeight(group.WeightManual),
+			ConnectionType:          connection.Normalize(group.ConnectionType),
+			Proxy:                   groupProxy,
+			ParameterOverrides:      resolved.ParameterOverrides,
 		}
 		params, err := input.ChannelRegistry.ValidateParams(group.ChannelID, group.Params)
 		if err != nil {

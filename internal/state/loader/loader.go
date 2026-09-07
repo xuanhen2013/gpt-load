@@ -40,6 +40,14 @@ type Loader struct {
 	accessQuota      *accessquota.Runtime
 }
 
+func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 type subscriptionCredentialCanonicalizer interface {
 	CanonicalCredential(channel.ID, []byte) ([]byte, error)
 }
@@ -69,11 +77,12 @@ func NewWithCredentialValidation(
 }
 
 type compileRows struct {
-	settings       []models.SystemSetting
-	groups         []models.Group
-	credentials    []models.Credential
-	accessKeys     []models.AccessKey
-	costLimitRules []models.AccessKeyCostLimitRule
+	settings          []models.SystemSetting
+	groups            []models.Group
+	credentials       []models.Credential
+	accessKeys        []models.AccessKey
+	costLimitRules    []models.AccessKeyCostLimitRule
+	concurrencyLimits map[uint]*int
 }
 
 type modelDTO struct {
@@ -252,6 +261,7 @@ func queryCompileRows(ctx context.Context, db *gorm.DB) (compileRows, error) {
 		Find(&rows.credentials).Error; err != nil {
 		return compileRows{}, fmt.Errorf("query credential metadata: %w", err)
 	}
+	rows.concurrencyLimits = queryConcurrencyLimits(db)
 	if err := db.
 		Select("id", "name", "key_hash", "key_suffix", "status", "filters", "rpm_limit", "expires_at_ms").
 		Order("id ASC").
@@ -275,6 +285,19 @@ func queryCredentials(ctx context.Context, db *gorm.DB) ([]models.Credential, er
 	return rows, nil
 }
 
+func queryConcurrencyLimits(db *gorm.DB) map[uint]*int {
+	result := make(map[uint]*int)
+	var rows []models.CredentialConcurrencyLimit
+	if err := db.Find(&rows).Error; err != nil {
+		return result
+	}
+	for _, row := range rows {
+		value := row.Limit
+		result[row.CredentialID] = &value
+	}
+	return result
+}
+
 // BuildCompileInput maps persisted configuration rows into a runtime compiler input.
 func BuildCompileInput(
 	ctx context.Context,
@@ -290,7 +313,7 @@ func BuildCompileInput(
 		return state.CompileInput{}, err
 	}
 	input.ChannelRegistry = selectChannelRegistry(registries)
-	input.Credentials = mapCredentialConfigs(rows.credentials, rows.groups)
+	input.Credentials = mapCredentialConfigs(rows.credentials, rows.groups, rows.concurrencyLimits)
 	input.AccessKeys, err = mapAccessKeys(rows.accessKeys, rows.costLimitRules)
 	if err != nil {
 		return state.CompileInput{}, err
@@ -315,7 +338,7 @@ func BuildCompileInputWithProxy(
 		return state.CompileInput{}, err
 	}
 	input.ChannelRegistry = selectChannelRegistry(registries)
-	input.Credentials = mapCredentialConfigs(rows.credentials, rows.groups)
+	input.Credentials = mapCredentialConfigs(rows.credentials, rows.groups, rows.concurrencyLimits)
 	input.AccessKeys, err = mapAccessKeys(rows.accessKeys, rows.costLimitRules)
 	if err != nil {
 		return state.CompileInput{}, err
@@ -348,7 +371,7 @@ func BuildGroupCredentialEntries(
 		Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("query group %d credentials: %w", groupID, err)
 	}
-	entries := mapCredentials(rows, []models.Group{group})
+	entries := mapCredentials(rows, []models.Group{group}, queryConcurrencyLimits(db))
 	if err := state.ValidateCredentialEntries(entries); err != nil {
 		return nil, fmt.Errorf("validate group %d credentials: %w", groupID, err)
 	}
@@ -380,7 +403,7 @@ func BuildGroupCredentialEntriesWithProxy(
 		Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("query group %d credentials: %w", groupID, err)
 	}
-	entries, err := mapCredentialsWithProxy(rows, []models.Group{group}, encryptionService)
+	entries, err := mapCredentialsWithProxy(rows, []models.Group{group}, encryptionService, queryConcurrencyLimits(db))
 	if err != nil {
 		return nil, fmt.Errorf("map group %d credentials: %w", groupID, err)
 	}
@@ -406,7 +429,7 @@ func BuildCredentialEntries(ctx context.Context, db *gorm.DB) ([]state.Credentia
 	if err != nil {
 		return nil, err
 	}
-	entries := mapCredentials(rows, groups)
+	entries := mapCredentials(rows, groups, queryConcurrencyLimits(db))
 	if err := state.ValidateCredentialEntries(entries); err != nil {
 		return nil, fmt.Errorf("validate credentials: %w", err)
 	}
@@ -430,7 +453,7 @@ func BuildCredentialEntriesWithProxy(
 	if err != nil {
 		return nil, err
 	}
-	entries, err := mapCredentialsWithProxy(rows, groups, encryptionService)
+	entries, err := mapCredentialsWithProxy(rows, groups, encryptionService, queryConcurrencyLimits(db))
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +475,7 @@ func (l *Loader) read(
 		return state.CompileInput{}, nil, nil, err
 	}
 	input.ChannelRegistry = l.channelRegistry
-	input.Credentials = mapCredentialConfigs(rows.credentials, rows.groups)
+	input.Credentials = mapCredentialConfigs(rows.credentials, rows.groups, rows.concurrencyLimits)
 	input.AccessKeys, err = mapAccessKeys(rows.accessKeys, rows.costLimitRules)
 	if err != nil {
 		return state.CompileInput{}, nil, nil, err
@@ -465,7 +488,7 @@ func (l *Loader) read(
 	if err != nil {
 		return state.CompileInput{}, nil, nil, err
 	}
-	entries, err := mapCredentialsWithProxy(credentials, rows.groups, l.encryption)
+	entries, err := mapCredentialsWithProxy(credentials, rows.groups, l.encryption, rows.concurrencyLimits)
 	if err != nil {
 		return state.CompileInput{}, nil, nil, err
 	}
@@ -745,6 +768,7 @@ func cloneInt64Pointer(value *int64) *int64 {
 func mapCredentialConfigs(
 	rows []models.Credential,
 	groups []models.Group,
+	limits map[uint]*int,
 ) []state.CredentialConfig {
 	targets := credentialTargets(groups)
 	result := make([]state.CredentialConfig, 0, len(rows))
@@ -760,13 +784,15 @@ func mapCredentialConfigs(
 				target.connectionType,
 				target.params,
 			),
-			Fingerprint: row.Fingerprint,
+			Fingerprint:             row.Fingerprint,
+			AccountKey:              row.IdentityFingerprint,
+			AccountConcurrencyLimit: cloneInt(limits[row.ID]),
 		})
 	}
 	return result
 }
 
-func mapCredentials(rows []models.Credential, groups []models.Group) []state.CredentialEntry {
+func mapCredentials(rows []models.Credential, groups []models.Group, limits map[uint]*int) []state.CredentialEntry {
 	targets := credentialTargets(groups)
 	result := make([]state.CredentialEntry, 0, len(rows))
 	for _, row := range rows {
@@ -781,6 +807,7 @@ func mapCredentials(rows []models.Credential, groups []models.Group) []state.Cre
 				target.params,
 			),
 			Fingerprint: row.Fingerprint, WeightManual: cloneWeight(row.WeightManual),
+			AccountKey: row.IdentityFingerprint, AccountConcurrencyLimit: cloneInt(limits[row.ID]),
 			WeightAuto: state.DefaultWeight,
 			Status:     state.CredentialStatus(row.Status), AuthState: state.CredentialAuthState(row.AuthState), EncryptedValue: row.Data,
 		})
@@ -792,8 +819,9 @@ func mapCredentialsWithProxy(
 	rows []models.Credential,
 	groups []models.Group,
 	encryptionService encryption.Service,
+	limits map[uint]*int,
 ) ([]state.CredentialEntry, error) {
-	entries := mapCredentials(rows, groups)
+	entries := mapCredentials(rows, groups, limits)
 	for index, row := range rows {
 		if row.ProxyConfig == nil {
 			continue

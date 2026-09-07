@@ -151,6 +151,7 @@ func mapCredentialRuntimeItem(
 		ConsecutiveFailureCount: stats.ConsecutiveFailure,
 		LastFailureCategory:     normalizeCredentialFailureCategory(stats.LastFailureCategory).String(),
 		LastStatusCode:          optionalHealthStatusCode(stats.LastStatusCode),
+		AccountConcurrencyLimit: cloneInt(view.AccountConcurrencyLimit),
 	}
 	switch bucket {
 	case healthBucketAvailable:

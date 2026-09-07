@@ -113,6 +113,40 @@ func TestGroupAndCredentialProxyUseFinalPrecedenceAndEncryptedStorage(t *testing
 	}
 }
 
+func TestCredentialAccountConcurrencyLimitRoundTrip(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	groupID := createGroupWithCredentials(t, fixture, "sk-concurrency-test")
+	items, err := fixture.service.ListGroupCredentials(t.Context(), groupID, CredentialCollectionQuery{Page: 1, PageSize: 20})
+	if err != nil || len(items.Items) != 1 {
+		t.Fatalf("ListGroupCredentials() = %#v, err=%v", items.Items, err)
+	}
+	credentialID := items.Items[0].CredentialID
+	limit := 3
+	updated, err := fixture.service.UpdateGroupCredential(t.Context(), groupID, credentialID, CredentialUpdateRequest{
+		AccountConcurrencyLimit: optionalField[int]{Set: true, Value: limit},
+	})
+	if err != nil {
+		t.Fatalf("set account concurrency limit: %v", err)
+	}
+	if updated.AccountConcurrencyLimit == nil || *updated.AccountConcurrencyLimit != limit {
+		t.Fatalf("updated account limit = %#v", updated.AccountConcurrencyLimit)
+	}
+	ref, ok := fixture.registry.CredentialRef(credentialID)
+	if !ok || ref.AccountConcurrencyLimit == nil || *ref.AccountConcurrencyLimit != limit {
+		t.Fatalf("runtime account limit = %#v, ok=%v", ref.AccountConcurrencyLimit, ok)
+	}
+	reset, err := fixture.service.UpdateGroupCredential(t.Context(), groupID, credentialID, CredentialUpdateRequest{
+		AccountConcurrencyLimit: optionalField[int]{Set: true, Null: true},
+	})
+	if err != nil {
+		t.Fatalf("reset account concurrency limit: %v", err)
+	}
+	if reset.AccountConcurrencyLimit != nil {
+		t.Fatalf("reset account limit = %#v, want nil", reset.AccountConcurrencyLimit)
+	}
+}
+
 func TestCredentialProxyUpdateRetiresRuntimeAfterCommittedRegistryRecovery(t *testing.T) {
 	t.Parallel()
 	fixture := newServiceFixture(t)

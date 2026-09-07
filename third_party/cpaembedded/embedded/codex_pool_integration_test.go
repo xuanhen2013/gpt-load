@@ -22,6 +22,7 @@ import (
 
 func TestCodexPoolCanonicalUnaryAndStreamingUseInjectedTransport(t *testing.T) {
 	var requests atomic.Int64
+	var userAgent atomic.Value
 	s := startH2(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Host != "" || r.URL.Path != "/backend-api/codex/responses" {
 			t.Errorf("unexpected path %s", r.URL)
@@ -29,6 +30,7 @@ func TestCodexPoolCanonicalUnaryAndStreamingUseInjectedTransport(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer synthetic-token" {
 			t.Error("missing request credential")
 		}
+		userAgent.Store(r.Header.Get("User-Agent"))
 		requests.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("X-Codex-Primary-Used-Percent", "12")
@@ -71,6 +73,9 @@ func TestCodexPoolCanonicalUnaryAndStreamingUseInjectedTransport(t *testing.T) {
 	}
 	if requests.Load() != 10 || p.connects.Load() != 1 {
 		t.Fatalf("requests=%d TCP=%d", requests.Load(), p.connects.Load())
+	}
+	if got := userAgent.Load().(string); got != "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)" {
+		t.Fatalf("Codex User-Agent = %q, want CPA v7.2.152 default", got)
 	}
 }
 

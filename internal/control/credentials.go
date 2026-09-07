@@ -31,9 +31,10 @@ type CredentialImportResult struct {
 }
 
 type CredentialUpdateRequest struct {
-	Status       optionalField[state.CredentialStatus] `json:"status"`
-	WeightManual optionalField[int]                    `json:"weight_manual"`
-	Proxy        optionalField[outboundproxy.Config]   `json:"proxy"`
+	Status                  optionalField[state.CredentialStatus] `json:"status"`
+	WeightManual            optionalField[int]                    `json:"weight_manual"`
+	Proxy                   optionalField[outboundproxy.Config]   `json:"proxy"`
+	AccountConcurrencyLimit optionalField[int]                    `json:"account_concurrency_limit"`
 }
 
 type CredentialRevealResult struct {
@@ -95,6 +96,7 @@ type CredentialItemResponse struct {
 	DailyUsage              *CredentialDailyUsageResponse  `json:"daily_usage,omitempty"`
 	Recovery                CredentialRecoveryResponse     `json:"recovery"`
 	Proxy                   outboundproxy.View             `json:"proxy"`
+	AccountConcurrencyLimit *int                           `json:"account_concurrency_limit,omitempty"`
 }
 
 // CredentialDailyUsageResponse 汇报固定 24 小时窗口内的上游尝试结果分布。

@@ -37,7 +37,7 @@ const (
 	defaultLoginTimeout  = 5 * time.Minute
 	defaultCodexBaseURL  = "https://chatgpt.com/backend-api/codex"
 	defaultCodexAPIBase  = "https://chatgpt.com/backend-api"
-	defaultModelsVersion = "0.144.1"
+	defaultModelsVersion = "0.153.3"
 	maxObservedBodyBytes = 32 << 20
 )
 
