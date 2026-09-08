@@ -235,6 +235,26 @@ func (s *Service) UpdateGroupSettings(
 			!s.channelRegistry.SupportsOutboundProxy(channel.ID(group.ChannelID)) {
 			return app_errors.ErrValidation
 		}
+		if request.Proxy.Set && !request.Proxy.Null {
+			candidate, normErr := outboundproxy.Normalize(request.Proxy.Value)
+			if normErr != nil {
+				return app_errors.ErrValidation
+			}
+			previous, decErr := decryptProxyOverride(s.encryption, group.ProxyConfig)
+			if decErr != nil {
+				return decErr
+			}
+			candidate = probeProxyForSave(ctx, candidate, previous)
+			encoded, encErr := outboundproxy.Encode(candidate)
+			if encErr != nil {
+				return app_errors.ErrValidation
+			}
+			ciphertext, cryptErr := s.encryption.Encrypt(encoded)
+			if cryptErr != nil {
+				return app_errors.ErrInternalServer
+			}
+			normalized.proxyConfig = &ciphertext
+		}
 
 		updates := make(map[string]any, 7)
 		if normalized.name != nil {

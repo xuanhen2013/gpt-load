@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"gpt-load/internal/channel"
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/execution"
 	platformheader "gpt-load/internal/platform/httpheader"
@@ -718,7 +719,9 @@ func newExecutionAttemptSpec(input ForwardInput) (execution.AttemptSpec, error) 
 		headers.Del(name)
 	}
 	sanitizeUpstreamRequestHeaders(headers)
-	headers.Set("Accept-Encoding", "identity")
+	if input.ChannelID != string(channel.Codex) {
+		headers.Set("Accept-Encoding", "identity")
+	}
 	spec := execution.NewAttemptSpec(execution.AttemptSpec{
 		RequestID:                input.RequestID,
 		AttemptID:                input.AttemptID,

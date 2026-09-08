@@ -12,9 +12,24 @@ import (
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/execution"
+	"gpt-load/internal/outboundproxy"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/subscription/providers/codex"
 )
+
+func proxyConfigID(proxyURL string) string {
+	if strings.TrimSpace(proxyURL) == "" {
+		return outboundproxy.ConfigID(outboundproxy.Config{Mode: outboundproxy.ModeDirect})
+	}
+	return outboundproxy.ConfigID(outboundproxy.Config{Mode: outboundproxy.ModeCustom, URL: proxyURL})
+}
+
+func proxyRegion(value *outboundproxy.RegionProbeResult) *codex.ProxyRegionResult {
+	if value == nil {
+		return nil
+	}
+	return &codex.ProxyRegionResult{DetectedRegion: value.DetectedRegion, DetectedIP: value.DetectedIP, DetectedAt: value.DetectedAt, DetectionStatus: value.DetectionStatus}
+}
 
 type codexProviderCredential struct {
 	value codex.Credential
@@ -43,7 +58,7 @@ func newCodexProviderBridge() *codexProviderBridge {
 }
 
 func newCodexProviderBridgeWithConnectionReuse(enabled bool) *codexProviderBridge {
-	return &codexProviderBridge{executor: codex.NewExecutorWithConnectionReuse(enabled)}
+	return &codexProviderBridge{executor: codex.NewExecutorWithIdentity(enabled, nil)}
 }
 
 func (*codexProviderBridge) ProviderKind() channel.ProviderKind {
@@ -106,6 +121,7 @@ func (bridge *codexProviderBridge) CountTokensLocal(
 		RequestPath: request.RequestPath,
 		Headers:     request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
 		ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
+		ProxyConfigID: request.ProxyConfigID, ProxyRegion: proxyRegion(request.ProxyRegion),
 	})
 	headers := response.Headers.Clone()
 	if headers == nil {
@@ -305,10 +321,12 @@ func (bridge *codexProviderBridge) Execute(
 	}
 	response, err := bridge.executor.Execute(ctx, credentialID, codexCredential.value, codex.ExecuteRequest{
 		IdentityGeneration: request.IdentityGeneration,
+		AccountID:          codexCredential.value.AccountID,
 		Model:              request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
 		RequestPath: request.RequestPath,
 		Headers:     request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
 		ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
+		ProxyConfigID: request.ProxyConfigID, ProxyRegion: proxyRegion(request.ProxyRegion),
 	})
 	return providerResponse{
 		Payload: append([]byte(nil), response.Payload...), Headers: response.Headers.Clone(),
@@ -331,10 +349,12 @@ func (bridge *codexProviderBridge) ExecuteStream(
 	}
 	response, err := bridge.executor.ExecuteStream(ctx, credentialID, codexCredential.value, codex.ExecuteRequest{
 		IdentityGeneration: request.IdentityGeneration,
+		AccountID:          codexCredential.value.AccountID,
 		Model:              request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
 		RequestPath: request.RequestPath,
 		Headers:     request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
 		ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
+		ProxyConfigID: request.ProxyConfigID, ProxyRegion: proxyRegion(request.ProxyRegion),
 	})
 	if response == nil {
 		return nil, err

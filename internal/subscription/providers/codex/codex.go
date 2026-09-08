@@ -252,6 +252,8 @@ func normalizeUpstreamError(err error) error {
 // ExecuteRequest is the canonical request accepted by the embedded CPA bridge.
 type ExecuteRequest struct {
 	IdentityGeneration   uint64
+	AccountID            string
+	ProxyConfigID        string
 	Model                string
 	Payload              []byte
 	Format               string
@@ -260,6 +262,13 @@ type ExecuteRequest struct {
 	OriginalRequest      []byte
 	ProxyURL             string
 	ProxyFromEnvironment bool
+	ProxyRegion          *ProxyRegionResult
+}
+
+type ProxyRegionResult struct {
+	DetectedRegion, DetectedIP string
+	DetectedAt                 time.Time
+	DetectionStatus            string
 }
 
 // ExecuteResponse is one converted non-streaming bridge response.
@@ -299,6 +308,14 @@ type executor struct {
 	bridge cpaembedded.HTTPExecutor
 }
 
+func (e *executor) SetIdentityConfig(identity *cpaembedded.CodexIdentityConfig) {
+	if setter, ok := e.bridge.(interface {
+		SetIdentityConfig(*cpaembedded.CodexIdentityConfig)
+	}); ok {
+		setter.SetIdentityConfig(identity)
+	}
+}
+
 // NewExecutor creates the production Codex bridge executor.
 func NewExecutor() Executor {
 	return NewExecutorWithConnectionReuse(false)
@@ -307,6 +324,17 @@ func NewExecutor() Executor {
 // NewExecutorWithConnectionReuse enables the optional Codex transport pool.
 func NewExecutorWithConnectionReuse(enabled bool) Executor {
 	return &executor{bridge: cpaembedded.NewCodexHTTPExecutorWithConnectionReuse(enabled)}
+}
+
+// NewExecutorWithIdentity creates a Codex executor with account-scoped desktop
+// identity enabled in the embedded bridge.
+func NewExecutorWithIdentity(enabled bool, identity *cpaembedded.CodexIdentityConfig) Executor {
+	if identity == nil {
+		identity = cpaembedded.NewCodexIdentityConfig(nil, "US")
+	}
+	bridge := cpaembedded.NewCodexHTTPExecutorWithConnectionReuse(enabled)
+	bridge.SetIdentityConfig(identity)
+	return &executor{bridge: bridge}
 }
 
 func (e *executor) Execute(
@@ -395,6 +423,8 @@ func (e *executor) ExecuteStream(
 func executeRequestToBridge(value ExecuteRequest) cpaembedded.ExecuteRequest {
 	return cpaembedded.ExecuteRequest{
 		IdentityGeneration:   value.IdentityGeneration,
+		AccountID:            value.AccountID,
+		ProxyConfigID:        value.ProxyConfigID,
 		Model:                value.Model,
 		Payload:              append([]byte(nil), value.Payload...),
 		Format:               value.Format,
@@ -403,6 +433,12 @@ func executeRequestToBridge(value ExecuteRequest) cpaembedded.ExecuteRequest {
 		OriginalRequest:      append([]byte(nil), value.OriginalRequest...),
 		ProxyURL:             value.ProxyURL,
 		ProxyFromEnvironment: value.ProxyFromEnvironment,
+		ProxyRegion: func() *cpaembedded.ProxyRegionResult {
+			if value.ProxyRegion == nil {
+				return nil
+			}
+			return &cpaembedded.ProxyRegionResult{DetectedRegion: value.ProxyRegion.DetectedRegion, DetectedIP: value.ProxyRegion.DetectedIP, DetectedAt: value.ProxyRegion.DetectedAt, DetectionStatus: value.ProxyRegion.DetectionStatus}
+		}(),
 	}
 }
 

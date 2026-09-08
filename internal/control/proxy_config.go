@@ -42,6 +42,14 @@ func normalizeProxyOverride(
 	return &ciphertext, true, nil
 }
 
+func probeProxyForSave(ctx context.Context, config outboundproxy.Config, previous *outboundproxy.Config) outboundproxy.Config {
+	var oldRegion *outboundproxy.RegionProbeResult
+	if previous != nil {
+		oldRegion = previous.Region
+	}
+	return outboundproxy.ProbeAndAttachRegion(ctx, config, oldRegion, "http://ip-api.com/json/?fields=query,countryCode")
+}
+
 func (s *Service) globalNetworkContext(
 	ctx context.Context,
 	db *gorm.DB,

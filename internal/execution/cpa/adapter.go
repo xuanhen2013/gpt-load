@@ -20,6 +20,7 @@ import (
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/execution"
 	"gpt-load/internal/execution/responsealias"
+	"gpt-load/internal/outboundproxy"
 	platformredact "gpt-load/internal/platform/redact"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
@@ -581,6 +582,8 @@ func bridgeRequest(
 		ContinuityKey:        spec.ContinuityKey,
 		ProxyURL:             proxySettings.URL,
 		ProxyFromEnvironment: proxySettings.FromEnvironment,
+		ProxyConfigID:        outboundproxy.ConfigID(spec.Proxy.Config),
+		ProxyRegion:          spec.Proxy.Config.Region,
 	}, nil
 }
 

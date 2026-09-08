@@ -3,6 +3,8 @@ package outboundproxy
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +13,17 @@ import (
 	"strconv"
 	"strings"
 )
+
+// ConfigID returns a stable opaque identifier for a normalized proxy config.
+// It is safe to persist and does not expose proxy credentials.
+func ConfigID(config Config) string {
+	normalized, err := Normalize(config)
+	if err != nil {
+		normalized = config
+	}
+	sum := sha256.Sum256([]byte(string(normalized.Mode) + "\x00" + normalized.URL))
+	return hex.EncodeToString(sum[:])
+}
 
 var ErrInvalidConfig = errors.New("invalid outbound proxy config")
 
@@ -38,8 +51,9 @@ const (
 // Config is the persisted proxy override. Inherit is represented by an absent
 // persisted value; ModeInherit is retained for control-plane input and views.
 type Config struct {
-	Mode Mode   `json:"mode"`
-	URL  string `json:"url,omitempty"`
+	Mode   Mode               `json:"mode"`
+	URL    string             `json:"url,omitempty"`
+	Region *RegionProbeResult `json:"region,omitempty"`
 }
 
 type Effective struct {
@@ -72,9 +86,14 @@ func Normalize(input Config) (Config, error) {
 		if input.URL != "" {
 			return Config{}, ErrInvalidConfig
 		}
-		return Config{Mode: input.Mode}, nil
+		return Config{Mode: input.Mode, Region: input.Region}, nil
 	case ModeCustom:
-		return normalizeCustom(input.URL)
+		normalized, err := normalizeCustom(input.URL)
+		if err != nil {
+			return Config{}, err
+		}
+		normalized.Region = input.Region
+		return normalized, nil
 	default:
 		return Config{}, ErrInvalidConfig
 	}

@@ -231,7 +231,17 @@ func (s *Service) normalizeGroupCreate(
 		if normalizeErr != nil || normalizedProxy.Mode == outboundproxy.ModeInherit {
 			return normalizedGroupCreate{}, app_errors.ErrValidation
 		}
+		normalizedProxy = probeProxyForSave(ctx, normalizedProxy, nil)
 		proxy = &normalizedProxy
+		encoded, encodeErr := outboundproxy.Encode(normalizedProxy)
+		if encodeErr != nil {
+			return normalizedGroupCreate{}, app_errors.ErrValidation
+		}
+		ciphertext, encryptErr := s.encryption.Encrypt(encoded)
+		if encryptErr != nil {
+			return normalizedGroupCreate{}, app_errors.ErrInternalServer
+		}
+		proxyConfig = &ciphertext
 	}
 	_, err = state.Compile(state.CompileInput{
 		SystemSettings:   systemSettings,

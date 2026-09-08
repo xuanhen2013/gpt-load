@@ -13,6 +13,7 @@ import (
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/health"
+	"gpt-load/internal/outboundproxy"
 	"gpt-load/internal/platform/encryption"
 	"gpt-load/internal/platform/epochms"
 	app_errors "gpt-load/internal/platform/errors"
@@ -175,6 +176,26 @@ func (s *Service) UpdateGroupCredential(
 				return credentialNotFoundError()
 			}
 			return app_errors.ParseDBError(err)
+		}
+		if request.Proxy.Set && !request.Proxy.Null {
+			candidate, normErr := outboundproxy.Normalize(request.Proxy.Value)
+			if normErr != nil {
+				return app_errors.ErrValidation
+			}
+			previous, decErr := decryptProxyOverride(s.encryption, committed.ProxyConfig)
+			if decErr != nil {
+				return decErr
+			}
+			candidate = probeProxyForSave(ctx, candidate, previous)
+			encoded, encErr := outboundproxy.Encode(candidate)
+			if encErr != nil {
+				return app_errors.ErrValidation
+			}
+			ciphertext, cryptErr := s.encryption.Encrypt(encoded)
+			if cryptErr != nil {
+				return app_errors.ErrInternalServer
+			}
+			proxy = &ciphertext
 		}
 		var concurrencyRow models.CredentialConcurrencyLimit
 		if err := tx.Where("credential_id = ?", credentialID).Take(&concurrencyRow).Error; err == nil {

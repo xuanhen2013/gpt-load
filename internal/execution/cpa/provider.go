@@ -105,6 +105,8 @@ type providerRequest struct {
 	ContinuityKey        string
 	ProxyURL             string
 	ProxyFromEnvironment bool
+	ProxyConfigID        string
+	ProxyRegion          *outboundproxy.RegionProbeResult
 }
 
 type cpaProxySettings struct {

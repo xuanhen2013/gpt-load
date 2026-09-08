@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	codexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
@@ -143,6 +144,9 @@ type HTTPExecutor interface {
 
 type ExecuteRequest struct {
 	IdentityGeneration   uint64
+	AccountID            string
+	ProxyConfigID        string
+	ProxyRegion          *ProxyRegionResult
 	AttemptID            string
 	Model                string
 	Payload              []byte
@@ -372,9 +376,16 @@ func NewCodexAuth(id string, credential CodexCredential, baseURL string) *clipro
 // CodexHTTPExecutor is an execution-only wrapper around CPA's stateless HTTP
 // Codex executor. It rejects redirects before net/http can replay a POST.
 type CodexHTTPExecutor struct {
-	pool  *codexTransportPool
-	cfg   *internalconfig.Config
-	inner *internalexecutor.CodexExecutor
+	pool     *codexTransportPool
+	cfg      *internalconfig.Config
+	inner    *internalexecutor.CodexExecutor
+	identity *CodexIdentityConfig
+}
+
+// SetIdentityConfig enables account-scoped desktop identity for subsequent
+// Codex executions. Passing nil preserves the legacy transport-only behavior.
+func (e *CodexHTTPExecutor) SetIdentityConfig(identity *CodexIdentityConfig) {
+	e.identity = identity
 }
 
 // NewCodexHTTPExecutor constructs an HTTP-only executor with no CPA manager.
@@ -384,7 +395,15 @@ func NewCodexHTTPExecutor() *CodexHTTPExecutor {
 
 // NewCodexHTTPExecutorWithConnectionReuse opts into shared Codex HTTP/2 connections.
 func NewCodexHTTPExecutorWithConnectionReuse(enabled bool) *CodexHTTPExecutor {
-	cfg := &internalconfig.Config{Codex: internalconfig.CodexConfig{StreamBootstrapBuffering: true}}
+	cfg := &internalconfig.Config{
+		Codex: internalconfig.CodexConfig{
+			StreamBootstrapBuffering: true,
+			DisableCodexCloaking:     true,
+		},
+		CodexHeaderDefaults: internalconfig.CodexHeaderDefaults{
+			UserAgent: codexExecUserAgent(),
+		},
+	}
 	executor := &CodexHTTPExecutor{cfg: cfg, inner: internalexecutor.NewCodexExecutor(cfg)}
 	if enabled {
 		executor.pool = newCodexTransportPool()
@@ -398,6 +417,7 @@ func (e *CodexHTTPExecutor) ExecuteCanonical(ctx context.Context, credentialID s
 	format := sdktranslator.FromString(request.Format)
 	auth := NewCodexAuth(credentialID, credential, "")
 	auth.ProxyURL = request.ProxyURL
+	e.prepareCodexIdentity(auth, &request)
 	observation := newExecutionObservation(request)
 	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, request.IdentityGeneration)
 	response, err := e.inner.Execute(executionCtx, authWithoutProxyURL(auth), cliproxyexecutor.Request{
@@ -422,6 +442,7 @@ func (e *CodexHTTPExecutor) CountTokensCanonical(ctx context.Context, credential
 	format := sdktranslator.FromString(request.Format)
 	auth := NewCodexAuth(credentialID, credential, "")
 	auth.ProxyURL = request.ProxyURL
+	e.prepareCodexIdentity(auth, &request)
 	observation := newExecutionObservation(request)
 	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, request.IdentityGeneration)
 	response, err := e.inner.CountTokens(executionCtx, authWithoutProxyURL(auth), cliproxyexecutor.Request{
@@ -477,6 +498,7 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 	format := sdktranslator.FromString(request.Format)
 	auth := NewCodexAuth(credentialID, credential, "")
 	auth.ProxyURL = request.ProxyURL
+	e.prepareCodexIdentity(auth, &request)
 	observation := newExecutionObservation(request)
 	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, request.IdentityGeneration)
 	response, err := e.inner.ExecuteStream(executionCtx, authWithoutProxyURL(auth), cliproxyexecutor.Request{
@@ -506,6 +528,75 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 		UpstreamRequestPath:    observation.upstreamRequestPath(),
 		QuotaSignals:           observation.quotaSignalObservation(),
 	}, nil
+}
+
+// prepareCodexIdentity attaches the account-scoped desktop identity to one
+// logical request. A new thread/turn/context-window v7 triple is derived per
+// request; the appSessionId and installation_id stay stable for the account.
+func (e *CodexHTTPExecutor) prepareCodexIdentity(auth *cliproxyauth.Auth, request *ExecuteRequest) {
+	if e.identity == nil || auth == nil || request == nil {
+		return
+	}
+	e.identity.UpdateRegion(request.ProxyConfigID, request.ProxyRegion)
+	accountID, _ := auth.Metadata["account_id"].(string)
+	profile := e.identity.profileFor(accountID, request.ProxyConfigID, request.ProxyURL)
+	if profile == nil {
+		return
+	}
+	threadID, err := uuid.NewV7()
+	if err != nil {
+		return
+	}
+	turnID, err := uuid.NewV7()
+	if err != nil {
+		return
+	}
+	contextWindowID, err := uuid.NewV7()
+	if err != nil {
+		return
+	}
+	headers, _, err := profile.sessionHeaders(threadID.String(), turnID.String(), contextWindowID.String())
+	if err != nil {
+		return
+	}
+	if request.Headers == nil {
+		request.Headers = make(http.Header)
+	}
+	for name, values := range headers {
+		for _, value := range values {
+			request.Headers.Set(name, value)
+		}
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Attributes["header:x-oai-attestation"] = profile.attestationHeader(profile.currentAppSession(time.Now()))
+	injectPromptCacheKey(request, threadID.String())
+}
+
+// injectPromptCacheKey preserves an existing key and only fills a missing one
+// so CPA derives the same v7 Session-Id header from this body field.
+func injectPromptCacheKey(request *ExecuteRequest, key string) {
+	if request == nil || strings.TrimSpace(key) == "" || len(request.Payload) == 0 {
+		return
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(request.Payload, &body); err != nil || body == nil {
+		return
+	}
+	if _, exists := body["prompt_cache_key"]; exists {
+		return
+	}
+	encodedKey, err := json.Marshal(key)
+	if err != nil {
+		return
+	}
+	body["prompt_cache_key"] = encodedKey
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return
+	}
+	request.Payload = encoded
 }
 
 func codexExecutionOptions(
@@ -724,8 +815,8 @@ func applyCodexReadHeaders(req *http.Request, credential CodexCredential) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+credential.AccessToken)
 	req.Header.Set("Chatgpt-Account-Id", credential.AccountID)
-	req.Header.Set("Originator", "codex_cli_rs")
-	req.Header.Set("User-Agent", "codex_cli_rs/"+defaultModelsVersion)
+	req.Header.Set("Originator", codexDesktopOriginator)
+	req.Header.Set("User-Agent", codexMainProcessUserAgent())
 }
 
 func (e *CodexHTTPExecutor) executionContext(
@@ -769,6 +860,9 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	if t.observation != nil {
 		t.observation.observe(req)
 	}
+	if t.observation != nil && t.observation.provider == ProviderCodex {
+		normalizeCodexWireHeaders(req)
+	}
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
 		return nil, err
@@ -781,6 +875,34 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 		return nil, ErrRedirectNotAllowed
 	}
 	return resp, nil
+}
+
+// normalizeCodexWireHeaders removes CPA's private cache headers and renames
+// any underscore session_id variant to the desktop Session-Id form.
+func normalizeCodexWireHeaders(req *http.Request) {
+	if req == nil || req.Header == nil {
+		return
+	}
+	for key := range req.Header {
+		if compactHeaderName(key) == "conversationid" {
+			delete(req.Header, key)
+		}
+	}
+	var sessionValue string
+	for key, values := range req.Header {
+		if compactHeaderName(key) == "sessionid" && !strings.EqualFold(key, "Session-Id") && len(values) > 0 {
+			sessionValue = values[0]
+			delete(req.Header, key)
+		}
+	}
+	if sessionValue != "" {
+		req.Header.Set("Session-Id", sessionValue)
+	}
+}
+
+func compactHeaderName(name string) string {
+	replacer := strings.NewReplacer("-", "", "_", "")
+	return strings.ToLower(replacer.Replace(name))
 }
 
 type executionObservation struct {

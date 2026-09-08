@@ -74,8 +74,8 @@ func TestCodexPoolCanonicalUnaryAndStreamingUseInjectedTransport(t *testing.T) {
 	if requests.Load() != 10 || p.connects.Load() != 1 {
 		t.Fatalf("requests=%d TCP=%d", requests.Load(), p.connects.Load())
 	}
-	if got := userAgent.Load().(string); got != "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)" {
-		t.Fatalf("Codex User-Agent = %q, want CPA v7.2.152 default", got)
+	if got := userAgent.Load().(string); got != codexExecUserAgent() {
+		t.Fatalf("Codex User-Agent = %q, want desktop default", got)
 	}
 }
 
