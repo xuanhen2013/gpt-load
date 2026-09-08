@@ -63,34 +63,47 @@ type requestLogReasoningResponse struct {
 }
 
 type requestLogAttemptResponse struct {
-	Sequence          int                               `json:"sequence"`
-	GroupID           uint                              `json:"group_id"`
-	GroupName         string                            `json:"group_name"`
-	ChannelID         *channel.ID                       `json:"channel_id"`
-	CredentialID      *uint                             `json:"credential_id"`
-	CredentialName    string                            `json:"credential_name"`
-	Operation         *execution.Operation              `json:"operation"`
-	RouteMode         *channel.RouteMode                `json:"route_mode"`
-	UpstreamModel     *string                           `json:"upstream_model"`
-	UpstreamRequestID *string                           `json:"upstream_request_id"`
-	DispatchState     *execution.DispatchState          `json:"dispatch_state"`
-	ResponseStarted   bool                              `json:"response_started"`
-	UpstreamProtocol  *protocol.Protocol                `json:"upstream_protocol"`
-	Reasoning         *requestLogReasoningResponse      `json:"reasoning"`
-	StatusCode        int                               `json:"status_code"`
-	DurationMs        int64                             `json:"duration_ms"`
-	FailureCategory   telemetry.FailureCategory         `json:"failure_category"`
-	FailureOrigin     *execution.ErrorOrigin            `json:"failure_origin"`
-	FailureScope      *execution.ErrorScope             `json:"failure_scope"`
-	RetryDirective    *telemetry.RetryDirective         `json:"retry_directive"`
-	Effect            *telemetry.Effect                 `json:"effect"`
-	RuleID            *string                           `json:"rule_id"`
-	Action            string                            `json:"action"`
-	WillRetry         bool                              `json:"will_retry"`
-	ErrorCode         string                            `json:"error_code"`
-	ErrorSummary      string                            `json:"error_summary"`
-	Committed         bool                              `json:"committed"`
-	PricingReceipt    *requestLogPricingReceiptResponse `json:"pricing_receipt"`
+	Sequence                int                                `json:"sequence"`
+	GroupID                 uint                               `json:"group_id"`
+	GroupName               string                             `json:"group_name"`
+	ChannelID               *channel.ID                        `json:"channel_id"`
+	CredentialID            *uint                              `json:"credential_id"`
+	CredentialName          string                             `json:"credential_name"`
+	Operation               *execution.Operation               `json:"operation"`
+	RouteMode               *channel.RouteMode                 `json:"route_mode"`
+	UpstreamModel           *string                            `json:"upstream_model"`
+	UpstreamRequestID       *string                            `json:"upstream_request_id"`
+	DispatchState           *execution.DispatchState           `json:"dispatch_state"`
+	ResponseStarted         bool                               `json:"response_started"`
+	UpstreamProtocol        *protocol.Protocol                 `json:"upstream_protocol"`
+	Reasoning               *requestLogReasoningResponse       `json:"reasoning"`
+	StatusCode              int                                `json:"status_code"`
+	DurationMs              int64                              `json:"duration_ms"`
+	FailureCategory         telemetry.FailureCategory          `json:"failure_category"`
+	FailureOrigin           *execution.ErrorOrigin             `json:"failure_origin"`
+	FailureScope            *execution.ErrorScope              `json:"failure_scope"`
+	RetryDirective          *telemetry.RetryDirective          `json:"retry_directive"`
+	Effect                  *telemetry.Effect                  `json:"effect"`
+	RuleID                  *string                            `json:"rule_id"`
+	Action                  string                             `json:"action"`
+	WillRetry               bool                               `json:"will_retry"`
+	ErrorCode               string                             `json:"error_code"`
+	ErrorSummary            string                             `json:"error_summary"`
+	Committed               bool                               `json:"committed"`
+	PricingReceipt          *requestLogPricingReceiptResponse  `json:"pricing_receipt"`
+	OutboundIdentityHeaders *requestLogOutboundHeadersResponse `json:"outbound_identity_headers"`
+}
+
+// requestLogOutboundHeadersResponse is the bounded snapshot of the desktop
+// identity headers that crossed the wire for one Codex request. The field is
+// null for attempts recorded before the column existed and for channels that
+// never capture identity headers.
+type requestLogOutboundHeadersResponse struct {
+	UserAgent         string `json:"user-agent"`
+	Originator        string `json:"originator"`
+	OaiAttestation    string `json:"x-oai-attestation"`
+	CodexWindowID     string `json:"x-codex-window-id"`
+	CodexTurnMetadata string `json:"x-codex-turn-metadata"`
 }
 
 type requestLogPricingIdentityResponse struct {
@@ -1087,39 +1100,55 @@ func mapRequestLogAttempt(
 		return requestLogAttemptResponse{}, err
 	}
 	return requestLogAttemptResponse{
-		Sequence:          attempt.Sequence,
-		GroupID:           attempt.GroupID,
-		GroupName:         attempt.GroupName,
-		ChannelID:         channelID,
-		CredentialID:      credentialID,
-		CredentialName:    credentialLabelFor(credentialLabels, credentialID),
-		Operation:         operation,
-		RouteMode:         routeMode,
-		UpstreamModel:     nullableRequestLogModel(attempt.UpstreamModel),
-		UpstreamRequestID: nullableRequestLogModel(attempt.UpstreamRequestID),
-		DispatchState:     dispatchState,
-		ResponseStarted:   attempt.ResponseStarted,
-		UpstreamProtocol:  upstreamProtocol,
-		Reasoning:         mapRequestLogReasoningConfig(attempt.Reasoning),
-		StatusCode:        attempt.StatusCode,
-		DurationMs:        attempt.DurationMs,
-		FailureCategory:   attempt.FailureCategory,
-		FailureOrigin:     failureOrigin,
-		FailureScope:      failureScope,
-		RetryDirective:    retryDirective,
-		Effect:            effect,
-		RuleID:            nullableRequestLogModel(attempt.RuleID),
-		Action:            requestLogAttemptAction(attempt.Action),
-		WillRetry:         attempt.WillRetry,
-		ErrorCode:         attempt.ErrorCode,
-		ErrorSummary:      attempt.ErrorSummary,
-		Committed:         attempt.Committed,
-		PricingReceipt:    receipt,
+		OutboundIdentityHeaders: mapRequestLogOutboundIdentityHeaders(attempt.OutboundIdentityHeaders),
+		Sequence:                attempt.Sequence,
+		GroupID:                 attempt.GroupID,
+		GroupName:               attempt.GroupName,
+		ChannelID:               channelID,
+		CredentialID:            credentialID,
+		CredentialName:          credentialLabelFor(credentialLabels, credentialID),
+		Operation:               operation,
+		RouteMode:               routeMode,
+		UpstreamModel:           nullableRequestLogModel(attempt.UpstreamModel),
+		UpstreamRequestID:       nullableRequestLogModel(attempt.UpstreamRequestID),
+		DispatchState:           dispatchState,
+		ResponseStarted:         attempt.ResponseStarted,
+		UpstreamProtocol:        upstreamProtocol,
+		Reasoning:               mapRequestLogReasoningConfig(attempt.Reasoning),
+		StatusCode:              attempt.StatusCode,
+		DurationMs:              attempt.DurationMs,
+		FailureCategory:         attempt.FailureCategory,
+		FailureOrigin:           failureOrigin,
+		FailureScope:            failureScope,
+		RetryDirective:          retryDirective,
+		Effect:                  effect,
+		RuleID:                  nullableRequestLogModel(attempt.RuleID),
+		Action:                  requestLogAttemptAction(attempt.Action),
+		WillRetry:               attempt.WillRetry,
+		ErrorCode:               attempt.ErrorCode,
+		ErrorSummary:            attempt.ErrorSummary,
+		Committed:               attempt.Committed,
+		PricingReceipt:          receipt,
 	}, nil
 }
 
 func requestLogAttemptAction(action telemetry.Action) string {
 	return string(action)
+}
+
+func mapRequestLogOutboundIdentityHeaders(
+	headers *requestlog.OutboundIdentityHeaders,
+) *requestLogOutboundHeadersResponse {
+	if headers == nil {
+		return nil
+	}
+	return &requestLogOutboundHeadersResponse{
+		UserAgent:         headers.UserAgent,
+		Originator:        headers.Originator,
+		OaiAttestation:    headers.OaiAttestation,
+		CodexWindowID:     headers.CodexWindowID,
+		CodexTurnMetadata: headers.CodexTurnMetadata,
+	}
 }
 
 func mapRequestLogPricingReceipt(

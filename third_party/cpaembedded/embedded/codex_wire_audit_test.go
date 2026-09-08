@@ -91,8 +91,12 @@ func TestCodexDesktopWireAudit(t *testing.T) {
 	if got := first.headers.Get("X-Codex-Beta-Features"); got != codexDesktopBetaFeat {
 		t.Fatalf("beta features = %q", got)
 	}
+	turnMetadataRaw := first.headers.Get("X-Codex-Turn-Metadata")
+	if !strings.HasPrefix(turnMetadataRaw, `{"installation_id":`) {
+		t.Fatalf("turn metadata key order = %q, want installation_id first", turnMetadataRaw)
+	}
 	var turnMetadata map[string]any
-	if err := json.Unmarshal([]byte(first.headers.Get("X-Codex-Turn-Metadata")), &turnMetadata); err != nil {
+	if err := json.Unmarshal([]byte(turnMetadataRaw), &turnMetadata); err != nil {
 		t.Fatalf("turn metadata: %v", err)
 	}
 	if turnMetadata["installation_id"] == "" || turnMetadata["turn_id"] == "" ||

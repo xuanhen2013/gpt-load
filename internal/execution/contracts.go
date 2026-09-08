@@ -448,17 +448,18 @@ func (e UsageEvidence) Clone() UsageEvidence {
 // AttemptResult is the terminal result of a non-streaming attempt.
 // The result owns Header, Body, Usage, and Error after return from Executor.
 type AttemptResult struct {
-	DispatchState     DispatchState     `json:"dispatch_state"`
-	ResponseStarted   bool              `json:"response_started"`
-	UpstreamProtocol  protocol.Protocol `json:"upstream_protocol,omitempty"`
-	AppliedReasoning  *reasoning.Config `json:"applied_reasoning,omitempty"`
-	StatusCode        int               `json:"status_code,omitempty"`
-	Header            http.Header       `json:"header,omitempty"`
-	Body              []byte            `json:"body,omitempty"`
-	Model             string            `json:"model,omitempty"`
-	UpstreamRequestID string            `json:"upstream_request_id,omitempty"`
-	Usage             *UsageEvidence    `json:"usage,omitempty"`
-	Error             *ErrorEvidence    `json:"error,omitempty"`
+	DispatchState           DispatchState     `json:"dispatch_state"`
+	ResponseStarted         bool              `json:"response_started"`
+	UpstreamProtocol        protocol.Protocol `json:"upstream_protocol,omitempty"`
+	AppliedReasoning        *reasoning.Config `json:"applied_reasoning,omitempty"`
+	StatusCode              int               `json:"status_code,omitempty"`
+	Header                  http.Header       `json:"header,omitempty"`
+	Body                    []byte            `json:"body,omitempty"`
+	Model                   string            `json:"model,omitempty"`
+	UpstreamRequestID       string            `json:"upstream_request_id,omitempty"`
+	OutboundIdentityHeaders string            `json:"outbound_identity_headers,omitempty"`
+	Usage                   *UsageEvidence    `json:"usage,omitempty"`
+	Error                   *ErrorEvidence    `json:"error,omitempty"`
 }
 
 // Clone returns an independent attempt result.
@@ -523,16 +524,17 @@ func (e StreamEvent) Clone() StreamEvent {
 // StreamResult is the terminal metadata returned after streaming ends.
 // The result owns Header, Usage, and Error after return from Executor.
 type StreamResult struct {
-	DispatchState     DispatchState     `json:"dispatch_state"`
-	ResponseStarted   bool              `json:"response_started"`
-	UpstreamProtocol  protocol.Protocol `json:"upstream_protocol,omitempty"`
-	AppliedReasoning  *reasoning.Config `json:"applied_reasoning,omitempty"`
-	StatusCode        int               `json:"status_code,omitempty"`
-	Header            http.Header       `json:"header,omitempty"`
-	Model             string            `json:"model,omitempty"`
-	UpstreamRequestID string            `json:"upstream_request_id,omitempty"`
-	Usage             *UsageEvidence    `json:"usage,omitempty"`
-	Error             *ErrorEvidence    `json:"error,omitempty"`
+	DispatchState           DispatchState     `json:"dispatch_state"`
+	ResponseStarted         bool              `json:"response_started"`
+	UpstreamProtocol        protocol.Protocol `json:"upstream_protocol,omitempty"`
+	AppliedReasoning        *reasoning.Config `json:"applied_reasoning,omitempty"`
+	StatusCode              int               `json:"status_code,omitempty"`
+	Header                  http.Header       `json:"header,omitempty"`
+	Model                   string            `json:"model,omitempty"`
+	UpstreamRequestID       string            `json:"upstream_request_id,omitempty"`
+	OutboundIdentityHeaders string            `json:"outbound_identity_headers,omitempty"`
+	Usage                   *UsageEvidence    `json:"usage,omitempty"`
+	Error                   *ErrorEvidence    `json:"error,omitempty"`
 }
 
 // Clone returns an independent streaming result.

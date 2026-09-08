@@ -28,33 +28,45 @@ const (
 )
 
 type Attempt struct {
-	Sequence          int                       `json:"sequence"`
-	GroupID           uint                      `json:"group_id"`
-	GroupName         string                    `json:"group_name"`
-	ChannelID         channel.ID                `json:"channel_id"`
-	CredentialID      uint                      `json:"credential_id"`
-	Operation         execution.Operation       `json:"operation"`
-	RouteMode         channel.RouteMode         `json:"route_mode"`
-	UpstreamModel     string                    `json:"upstream_model"`
-	UpstreamRequestID string                    `json:"upstream_request_id"`
-	DispatchState     execution.DispatchState   `json:"dispatch_state"`
-	ResponseStarted   bool                      `json:"response_started"`
-	UpstreamProtocol  protocol.Protocol         `json:"upstream_protocol"`
-	Reasoning         reasoning.Config          `json:"reasoning"`
-	StatusCode        int                       `json:"status_code"`
-	DurationMs        int64                     `json:"duration_ms"`
-	FailureCategory   telemetry.FailureCategory `json:"failure_category"`
-	FailureOrigin     execution.ErrorOrigin     `json:"failure_origin"`
-	FailureScope      execution.ErrorScope      `json:"failure_scope"`
-	RetryDirective    telemetry.RetryDirective  `json:"retry_directive"`
-	Effect            telemetry.Effect          `json:"effect"`
-	RuleID            string                    `json:"rule_id"`
-	Action            telemetry.Action          `json:"action"`
-	WillRetry         bool                      `json:"will_retry"`
-	ErrorCode         string                    `json:"error_code"`
-	ErrorSummary      string                    `json:"error_summary"`
-	Committed         bool                      `json:"committed"`
-	PricingReceipt    *pricing.Receipt          `json:"pricing_receipt,omitempty"`
+	Sequence                int                       `json:"sequence"`
+	GroupID                 uint                      `json:"group_id"`
+	GroupName               string                    `json:"group_name"`
+	ChannelID               channel.ID                `json:"channel_id"`
+	CredentialID            uint                      `json:"credential_id"`
+	Operation               execution.Operation       `json:"operation"`
+	RouteMode               channel.RouteMode         `json:"route_mode"`
+	UpstreamModel           string                    `json:"upstream_model"`
+	UpstreamRequestID       string                    `json:"upstream_request_id"`
+	OutboundIdentityHeaders *OutboundIdentityHeaders  `json:"outbound_identity_headers,omitempty"`
+	DispatchState           execution.DispatchState   `json:"dispatch_state"`
+	ResponseStarted         bool                      `json:"response_started"`
+	UpstreamProtocol        protocol.Protocol         `json:"upstream_protocol"`
+	Reasoning               reasoning.Config          `json:"reasoning"`
+	StatusCode              int                       `json:"status_code"`
+	DurationMs              int64                     `json:"duration_ms"`
+	FailureCategory         telemetry.FailureCategory `json:"failure_category"`
+	FailureOrigin           execution.ErrorOrigin     `json:"failure_origin"`
+	FailureScope            execution.ErrorScope      `json:"failure_scope"`
+	RetryDirective          telemetry.RetryDirective  `json:"retry_directive"`
+	Effect                  telemetry.Effect          `json:"effect"`
+	RuleID                  string                    `json:"rule_id"`
+	Action                  telemetry.Action          `json:"action"`
+	WillRetry               bool                      `json:"will_retry"`
+	ErrorCode               string                    `json:"error_code"`
+	ErrorSummary            string                    `json:"error_summary"`
+	Committed               bool                      `json:"committed"`
+	PricingReceipt          *pricing.Receipt          `json:"pricing_receipt,omitempty"`
+}
+
+// OutboundIdentityHeaders is the bounded snapshot of the desktop identity
+// headers that actually crossed the wire for one Codex request. Only the five
+// whitelisted header names are ever present.
+type OutboundIdentityHeaders struct {
+	UserAgent         string `json:"user-agent,omitempty"`
+	Originator        string `json:"originator,omitempty"`
+	OaiAttestation    string `json:"x-oai-attestation,omitempty"`
+	CodexWindowID     string `json:"x-codex-window-id,omitempty"`
+	CodexTurnMetadata string `json:"x-codex-turn-metadata,omitempty"`
 }
 
 type RetryState string

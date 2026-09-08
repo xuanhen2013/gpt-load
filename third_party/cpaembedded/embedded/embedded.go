@@ -168,19 +168,21 @@ type QuotaSignalObservation struct {
 }
 
 type ExecuteResponse struct {
-	Payload                []byte
-	Headers                http.Header
-	AppliedReasoningEffort string
-	UpstreamRequestPath    string
-	QuotaSignals           QuotaSignalObservation
+	Payload                 []byte
+	Headers                 http.Header
+	AppliedReasoningEffort  string
+	UpstreamRequestPath     string
+	QuotaSignals            QuotaSignalObservation
+	OutboundIdentityHeaders string
 }
 
 type ExecuteStreamResponse struct {
-	Headers                http.Header
-	Chunks                 <-chan ExecuteStreamChunk
-	AppliedReasoningEffort string
-	UpstreamRequestPath    string
-	QuotaSignals           QuotaSignalObservation
+	Headers                 http.Header
+	Chunks                  <-chan ExecuteStreamChunk
+	AppliedReasoningEffort  string
+	UpstreamRequestPath     string
+	QuotaSignals            QuotaSignalObservation
+	OutboundIdentityHeaders string
 }
 
 type ExecuteStreamChunk struct {
@@ -425,16 +427,18 @@ func (e *CodexHTTPExecutor) ExecuteCanonical(ctx context.Context, credentialID s
 	}, codexExecutionOptions(request, format, false))
 	if err != nil {
 		return ExecuteResponse{
-			AppliedReasoningEffort: observation.reasoningEffort(),
-			UpstreamRequestPath:    observation.upstreamRequestPath(),
-			QuotaSignals:           observation.quotaSignalObservation(),
+			AppliedReasoningEffort:  observation.reasoningEffort(),
+			UpstreamRequestPath:     observation.upstreamRequestPath(),
+			QuotaSignals:            observation.quotaSignalObservation(),
+			OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
 		}, err
 	}
 	return ExecuteResponse{
 		Payload: append([]byte(nil), response.Payload...), Headers: response.Headers.Clone(),
-		AppliedReasoningEffort: observation.reasoningEffort(),
-		UpstreamRequestPath:    observation.upstreamRequestPath(),
-		QuotaSignals:           observation.quotaSignalObservation(),
+		AppliedReasoningEffort:  observation.reasoningEffort(),
+		UpstreamRequestPath:     observation.upstreamRequestPath(),
+		QuotaSignals:            observation.quotaSignalObservation(),
+		OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
 	}, nil
 }
 
@@ -450,8 +454,9 @@ func (e *CodexHTTPExecutor) CountTokensCanonical(ctx context.Context, credential
 	}, codexExecutionOptions(request, format, false))
 	if err != nil {
 		return ExecuteResponse{
-			AppliedReasoningEffort: observation.reasoningEffort(),
-			UpstreamRequestPath:    observation.upstreamRequestPath(),
+			AppliedReasoningEffort:  observation.reasoningEffort(),
+			UpstreamRequestPath:     observation.upstreamRequestPath(),
+			OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
 		}, err
 	}
 	payload := append([]byte(nil), response.Payload...)
@@ -459,15 +464,17 @@ func (e *CodexHTTPExecutor) CountTokensCanonical(ctx context.Context, credential
 		payload, err = normalizeCodexResponsesTokenCount(payload)
 		if err != nil {
 			return ExecuteResponse{
-				AppliedReasoningEffort: observation.reasoningEffort(),
-				UpstreamRequestPath:    observation.upstreamRequestPath(),
+				AppliedReasoningEffort:  observation.reasoningEffort(),
+				UpstreamRequestPath:     observation.upstreamRequestPath(),
+				OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
 			}, err
 		}
 	}
 	return ExecuteResponse{
 		Payload: payload, Headers: response.Headers.Clone(),
-		AppliedReasoningEffort: observation.reasoningEffort(),
-		UpstreamRequestPath:    observation.upstreamRequestPath(),
+		AppliedReasoningEffort:  observation.reasoningEffort(),
+		UpstreamRequestPath:     observation.upstreamRequestPath(),
+		OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
 	}, nil
 }
 
@@ -506,9 +513,10 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 	}, codexExecutionOptions(request, format, true))
 	if err != nil {
 		return &ExecuteStreamResponse{
-			AppliedReasoningEffort: observation.reasoningEffort(),
-			UpstreamRequestPath:    observation.upstreamRequestPath(),
-			QuotaSignals:           observation.quotaSignalObservation(),
+			AppliedReasoningEffort:  observation.reasoningEffort(),
+			UpstreamRequestPath:     observation.upstreamRequestPath(),
+			QuotaSignals:            observation.quotaSignalObservation(),
+			OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
 		}, err
 	}
 	chunks := make(chan ExecuteStreamChunk)
@@ -524,9 +532,10 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 	}()
 	return &ExecuteStreamResponse{
 		Headers: response.Headers.Clone(), Chunks: chunks,
-		AppliedReasoningEffort: observation.reasoningEffort(),
-		UpstreamRequestPath:    observation.upstreamRequestPath(),
-		QuotaSignals:           observation.quotaSignalObservation(),
+		AppliedReasoningEffort:  observation.reasoningEffort(),
+		UpstreamRequestPath:     observation.upstreamRequestPath(),
+		QuotaSignals:            observation.quotaSignalObservation(),
+		OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
 	}, nil
 }
 
@@ -862,6 +871,7 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	}
 	if t.observation != nil && t.observation.provider == ProviderCodex {
 		normalizeCodexWireHeaders(req)
+		t.observation.captureCodexOutboundIdentityHeaders(req.Header)
 	}
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
@@ -912,6 +922,7 @@ type executionObservation struct {
 	mu                  sync.RWMutex
 	effort              string
 	observedRequestPath string
+	outboundHeaders     string
 	quota               cliproxyauth.QuotaState
 }
 
@@ -984,6 +995,34 @@ func (o *executionObservation) upstreamRequestPath() string {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.observedRequestPath
+}
+
+// captureCodexOutboundIdentityHeaders records the whitelisted desktop
+// identity headers of the most recent outbound request that carried them.
+// The snapshot is taken after wire normalization and before the request
+// leaves the process, so it reflects exactly what was sent. Requests that
+// carry none of the identity headers (for example an internal probe) do not
+// erase the evidence of an earlier identity-bearing request.
+func (o *executionObservation) captureCodexOutboundIdentityHeaders(header http.Header) {
+	if o == nil {
+		return
+	}
+	captured := captureCodexOutboundIdentityHeaders(header)
+	if captured == "" {
+		return
+	}
+	o.mu.Lock()
+	o.outboundHeaders = captured
+	o.mu.Unlock()
+}
+
+func (o *executionObservation) outboundIdentityHeaders() string {
+	if o == nil {
+		return ""
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.outboundHeaders
 }
 
 // observeQuotaSignals replaces the captured quota snapshot with the signals

@@ -794,6 +794,9 @@ export default {
         not_applicable: '不适用',
       },
       drawer: {
+        outboundHeaders: '出站请求头',
+        copyOutboundHeader: '复制请求头',
+        decodeOutboundHeader: '解码',
         title: '请求日志详情',
         description: '查看最终结果和脱敏的上游尝试链。',
         descriptionSelfScoped: '查看当前访问密钥的请求、结果与用量。',

@@ -813,6 +813,9 @@ export default {
         not_applicable: 'Not applicable',
       },
       drawer: {
+        outboundHeaders: 'Outbound request headers',
+        copyOutboundHeader: 'Copy header',
+        decodeOutboundHeader: 'Decode',
         title: 'Request log details',
         description: 'Review the final result and redacted upstream attempt chain.',
         descriptionSelfScoped: 'Review requests, results, and usage for the current access key.',

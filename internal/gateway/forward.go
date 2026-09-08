@@ -80,6 +80,7 @@ type UpstreamResult struct {
 	UpstreamProtocol          protocol.Protocol
 	AppliedReasoning          reasoning.Config
 	UpstreamRequestID         string
+	OutboundIdentityHeaders   string
 	ExecutionError            *execution.ErrorEvidence
 }
 

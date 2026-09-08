@@ -330,10 +330,11 @@ func (bridge *codexProviderBridge) Execute(
 	})
 	return providerResponse{
 		Payload: append([]byte(nil), response.Payload...), Headers: response.Headers.Clone(),
-		AppliedReasoningEffort: response.AppliedReasoningEffort,
-		UpstreamProtocol:       codexUpstreamProtocol(response.UpstreamRequestPath),
-		QuotaObservedAt:        response.QuotaObservedAt,
-		QuotaWindows:           codex.NormalizePassiveQuotaWindows(response.QuotaSignals, response.QuotaObservedAt),
+		AppliedReasoningEffort:  response.AppliedReasoningEffort,
+		UpstreamProtocol:        codexUpstreamProtocol(response.UpstreamRequestPath),
+		QuotaObservedAt:         response.QuotaObservedAt,
+		QuotaWindows:            codex.NormalizePassiveQuotaWindows(response.QuotaSignals, response.QuotaObservedAt),
+		OutboundIdentityHeaders: response.OutboundIdentityHeaders,
 	}, err
 }
 
@@ -360,11 +361,12 @@ func (bridge *codexProviderBridge) ExecuteStream(
 		return nil, err
 	}
 	convertedResponse := &providerStreamResponse{
-		Headers:                response.Headers.Clone(),
-		AppliedReasoningEffort: response.AppliedReasoningEffort,
-		UpstreamProtocol:       codexUpstreamProtocol(response.UpstreamRequestPath),
-		QuotaObservedAt:        response.QuotaObservedAt,
-		QuotaWindows:           codex.NormalizePassiveQuotaWindows(response.QuotaSignals, response.QuotaObservedAt),
+		Headers:                 response.Headers.Clone(),
+		AppliedReasoningEffort:  response.AppliedReasoningEffort,
+		UpstreamProtocol:        codexUpstreamProtocol(response.UpstreamRequestPath),
+		QuotaObservedAt:         response.QuotaObservedAt,
+		QuotaWindows:            codex.NormalizePassiveQuotaWindows(response.QuotaSignals, response.QuotaObservedAt),
+		OutboundIdentityHeaders: response.OutboundIdentityHeaders,
 	}
 	if err != nil {
 		if codexBootstrapCapacityRejection(err) {

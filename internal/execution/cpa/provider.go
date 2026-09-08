@@ -141,22 +141,24 @@ func proxySettingsForAttempt(effective outboundproxy.Effective) (cpaProxySetting
 }
 
 type providerResponse struct {
-	Payload                []byte
-	Headers                http.Header
-	AppliedReasoningEffort string
-	UpstreamProtocol       protocol.Protocol
-	Local                  bool
-	QuotaObservedAt        time.Time
-	QuotaWindows           []providerobservation.QuotaWindow
+	Payload                 []byte
+	Headers                 http.Header
+	AppliedReasoningEffort  string
+	UpstreamProtocol        protocol.Protocol
+	Local                   bool
+	QuotaObservedAt         time.Time
+	QuotaWindows            []providerobservation.QuotaWindow
+	OutboundIdentityHeaders string
 }
 
 type providerStreamResponse struct {
-	Headers                http.Header
-	Chunks                 <-chan providerStreamChunk
-	AppliedReasoningEffort string
-	UpstreamProtocol       protocol.Protocol
-	QuotaObservedAt        time.Time
-	QuotaWindows           []providerobservation.QuotaWindow
+	Headers                 http.Header
+	Chunks                  <-chan providerStreamChunk
+	AppliedReasoningEffort  string
+	UpstreamProtocol        protocol.Protocol
+	QuotaObservedAt         time.Time
+	QuotaWindows            []providerobservation.QuotaWindow
+	OutboundIdentityHeaders string
 }
 
 type providerStreamChunk struct {

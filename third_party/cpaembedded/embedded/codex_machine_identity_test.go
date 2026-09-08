@@ -3,6 +3,7 @@ package embedded
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,53 @@ func TestCodexAttestationHeaderEnvelope(t *testing.T) {
 	}
 	if _, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(envelope.T, "v1.")); err != nil {
 		t.Fatalf("invalid CBOR token: %v", err)
+	}
+}
+
+func TestCaptureCodexOutboundIdentityHeadersWhitelist(t *testing.T) {
+	header := http.Header{}
+	header.Set("User-Agent", "codex/0.153.4 desktop")
+	header.Set("Originator", "Codex Desktop")
+	header.Set("X-Oai-Attestation", `{"v":1,"s":0,"t":"v1.abc"}`)
+	header.Set("X-Codex-Window-Id", "thread:0")
+	header.Set("X-Codex-Turn-Metadata", `{"installation_id":"i"}`)
+	header.Set("Authorization", "Bearer secret")
+	header.Set("Chatgpt-Account-Id", "account-secret")
+
+	captured := captureCodexOutboundIdentityHeaders(header)
+	if captured == "" {
+		t.Fatal("capture returned empty result for identity headers")
+	}
+	var snapshot map[string]string
+	if err := json.Unmarshal([]byte(captured), &snapshot); err != nil {
+		t.Fatalf("captured snapshot is not JSON: %v", err)
+	}
+	for key, want := range map[string]string{
+		"user-agent":            "codex/0.153.4 desktop",
+		"originator":            "Codex Desktop",
+		"x-oai-attestation":     `{"v":1,"s":0,"t":"v1.abc"}`,
+		"x-codex-window-id":     "thread:0",
+		"x-codex-turn-metadata": `{"installation_id":"i"}`,
+	} {
+		if snapshot[key] != want {
+			t.Fatalf("captured %q = %q, want %q", key, snapshot[key], want)
+		}
+	}
+	for _, secret := range []string{"authorization", "chatgpt-account-id", "Bearer secret", "account-secret"} {
+		if strings.Contains(strings.ToLower(captured), strings.ToLower(secret)) {
+			t.Fatalf("captured snapshot leaks %q: %s", secret, captured)
+		}
+	}
+}
+
+func TestCaptureCodexOutboundIdentityHeadersEmptyAndOversized(t *testing.T) {
+	if got := captureCodexOutboundIdentityHeaders(http.Header{}); got != "" {
+		t.Fatalf("empty header capture = %q, want empty", got)
+	}
+	oversized := http.Header{}
+	oversized.Set("User-Agent", strings.Repeat("x", maxOutboundIdentityHeaderBytes+1))
+	if got := captureCodexOutboundIdentityHeaders(oversized); got != "" {
+		t.Fatalf("oversized header capture = %q, want empty", got)
 	}
 }
 

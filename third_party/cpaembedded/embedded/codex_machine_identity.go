@@ -40,6 +40,65 @@ var codexRegionTable = map[string]RegionProfile{
 	"AU": {"en-AU", "Australia/Sydney", []string{"en-AU", "en"}, 2080, 1.5},
 }
 
+// codexOutboundIdentityHeaders is the bounded snapshot of the desktop
+// identity headers that actually crossed the wire for one Codex request.
+// Only these five whitelisted names are ever retained; Authorization,
+// Chatgpt-Account-Id, and proxy credentials never enter this structure.
+type codexOutboundIdentityHeaders struct {
+	UserAgent         string `json:"user-agent,omitempty"`
+	Originator        string `json:"originator,omitempty"`
+	OaiAttestation    string `json:"x-oai-attestation,omitempty"`
+	CodexWindowID     string `json:"x-codex-window-id,omitempty"`
+	CodexTurnMetadata string `json:"x-codex-turn-metadata,omitempty"`
+}
+
+const maxOutboundIdentityHeaderBytes = 8192
+
+func firstHeaderValue(header http.Header, name string) string {
+	if header == nil {
+		return ""
+	}
+	for _, value := range header.Values(name) {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// captureCodexOutboundIdentityHeaders snapshots the identity headers present
+// on one outbound request. Requests without any identity header (auth token
+// exchanges, list-models probes, non-codex providers) produce an empty
+// result and are not recorded.
+func captureCodexOutboundIdentityHeaders(header http.Header) string {
+	snapshot := codexOutboundIdentityHeaders{
+		UserAgent:         firstHeaderValue(header, "User-Agent"),
+		Originator:        firstHeaderValue(header, "Originator"),
+		OaiAttestation:    firstHeaderValue(header, "X-Oai-Attestation"),
+		CodexWindowID:     firstHeaderValue(header, "X-Codex-Window-Id"),
+		CodexTurnMetadata: firstHeaderValue(header, "X-Codex-Turn-Metadata"),
+	}
+	for _, value := range []string{
+		snapshot.UserAgent,
+		snapshot.Originator,
+		snapshot.OaiAttestation,
+		snapshot.CodexWindowID,
+		snapshot.CodexTurnMetadata,
+	} {
+		if len(value) > maxOutboundIdentityHeaderBytes {
+			return ""
+		}
+	}
+	if snapshot == (codexOutboundIdentityHeaders{}) {
+		return ""
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
 const (
 	codexDesktopOriginator = "Codex Desktop"
 	codexDesktopCoreVer    = "0.153.4"
@@ -284,22 +343,41 @@ func (p *codexDeviceProfile) attestationHeader(appSessionID string) string {
 // CPA derives it from the injected prompt_cache_key so both stay one v7 value.
 func (p *codexDeviceProfile) sessionHeaders(threadID, turnID, contextWindowID string) (http.Header, string, error) {
 	windowID := fmt.Sprintf("%s:0", threadID)
-	metadata := map[string]any{
-		"installation_id":                p.InstallationID,
-		"session_id":                     threadID,
-		"thread_id":                      threadID,
-		"agent_name":                     codexDesktopAgentName,
-		"turn_id":                        turnID,
-		"window_id":                      windowID,
-		"window_number":                  0,
-		"context_window_id":              contextWindowID,
-		"request_kind":                   "turn",
-		"thread_source":                  "user",
-		"sandbox":                        "none",
-		"sandbox_mode":                   "danger-full-access",
-		"auto_review_enabled":            false,
-		"node_repl_auto_review_required": false,
-		"node_repl_disabled":             false,
+	// Serialize through an ordered struct so the JSON key order matches the
+	// desktop client's Rust struct declaration order (installation_id first).
+	// Go maps serialize keys alphabetically and would fingerprint the gateway.
+	metadata := struct {
+		InstallationID            string `json:"installation_id"`
+		SessionID                 string `json:"session_id"`
+		ThreadID                  string `json:"thread_id"`
+		AgentName                 string `json:"agent_name"`
+		TurnID                    string `json:"turn_id"`
+		WindowID                  string `json:"window_id"`
+		WindowNumber              int    `json:"window_number"`
+		ContextWindowID           string `json:"context_window_id"`
+		RequestKind               string `json:"request_kind"`
+		ThreadSource              string `json:"thread_source"`
+		Sandbox                   string `json:"sandbox"`
+		SandboxMode               string `json:"sandbox_mode"`
+		AutoReviewEnabled         bool   `json:"auto_review_enabled"`
+		NodeReplAutoReviewEnabled bool   `json:"node_repl_auto_review_required"`
+		NodeReplDisabled          bool   `json:"node_repl_disabled"`
+	}{
+		InstallationID:            p.InstallationID,
+		SessionID:                 threadID,
+		ThreadID:                  threadID,
+		AgentName:                 codexDesktopAgentName,
+		TurnID:                    turnID,
+		WindowID:                  windowID,
+		WindowNumber:              0,
+		ContextWindowID:           contextWindowID,
+		RequestKind:               "turn",
+		ThreadSource:              "user",
+		Sandbox:                   "none",
+		SandboxMode:               "danger-full-access",
+		AutoReviewEnabled:         false,
+		NodeReplAutoReviewEnabled: false,
+		NodeReplDisabled:          false,
 	}
 	raw, err := json.Marshal(metadata)
 	if err != nil {

@@ -778,6 +778,7 @@ func upstreamFromExecutionResult(
 		upstream.AppliedReasoning = result.AppliedReasoning.Clone()
 	}
 	upstream.UpstreamProtocol = result.UpstreamProtocol
+	upstream.OutboundIdentityHeaders = result.OutboundIdentityHeaders
 	if input.ClientProtocol == protocol.OpenAIImages ||
 		input.ClientProtocol == protocol.OpenAIEmbeddings {
 		// AttemptResult owns Body after the executor returns. Buffered opaque
@@ -812,6 +813,7 @@ func upstreamFromExecutionStreamResult(
 		upstream.AppliedReasoning = result.AppliedReasoning.Clone()
 	}
 	upstream.UpstreamProtocol = result.UpstreamProtocol
+	upstream.OutboundIdentityHeaders = result.OutboundIdentityHeaders
 	if !result.ResponseStarted && result.Error != nil {
 		upstream.Err = executionFailureError(ctx, result.Error)
 	}

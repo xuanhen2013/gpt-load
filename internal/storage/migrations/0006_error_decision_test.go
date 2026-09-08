@@ -31,6 +31,7 @@ func TestErrorDecisionMigrationPreservesAttemptsAndAddsDecisionContract(t *testi
 	}
 	if err := db.Omit(
 		"FailureOrigin", "FailureScope", "RetryDirective", "Effect", "RuleID",
+		"OutboundIdentityHeaders",
 	).Create(&attempt).Error; err != nil {
 		t.Fatalf("create legacy attempt: %v", err)
 	}
@@ -47,6 +48,11 @@ func TestErrorDecisionMigrationPreservesAttemptsAndAddsDecisionContract(t *testi
 		if !db.Migrator().HasColumn("request_log_attempts", column) {
 			t.Fatalf("request_log_attempts.%s is missing", column)
 		}
+	}
+	// The runtime model now also reads outbound_identity_headers (migration
+	// 0010), so advance the schema before reading rows back through it.
+	if err := migrations.Up0010(db); err != nil {
+		t.Fatalf("Up0010() error = %v", err)
 	}
 	var preserved models.RequestLogAttempt
 	if err := db.Take(&preserved, "request_id = ? AND sequence = 1", request.ID).Error; err != nil {

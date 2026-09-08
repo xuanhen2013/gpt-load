@@ -35,6 +35,7 @@ import {
   requestLogUsageDisplayState,
 } from './log-format'
 import LogRouteIdentity from './LogRouteIdentity.vue'
+import OutboundIdentityHeadersPanel from './OutboundIdentityHeadersPanel.vue'
 import PricingModeIndicator from './PricingModeIndicator.vue'
 
 const props = defineProps<{
@@ -713,6 +714,11 @@ function toggleAttemptErrorMessage(sequence: number): void {
                 </dd>
               </div>
             </dl>
+            <OutboundIdentityHeadersPanel
+              v-if="attempt.outbound_identity_headers || isFinalAttempt(attempt)"
+              class="log-attempt__outbound-headers"
+              :headers="attempt.outbound_identity_headers"
+            />
             <div
               v-if="attempt.error_code || attemptErrorMessage(attempt)"
               class="log-error-message log-error-message--attempt"
@@ -849,6 +855,10 @@ function toggleAttemptErrorMessage(sequence: number): void {
 .log-detail__grid dt {
   color: var(--color-text-faint);
   font-size: var(--text-label-xs);
+}
+
+.log-attempt :deep(.log-outbound-headers) {
+  margin-top: 12px;
 }
 
 .log-detail__grid dd {

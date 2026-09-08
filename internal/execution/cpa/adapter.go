@@ -268,6 +268,7 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 		}
 		result.UpstreamProtocol = effectiveUpstreamProtocol(provider, response.UpstreamProtocol)
 		result.AppliedReasoning = appliedReasoning(response.AppliedReasoningEffort)
+		result.OutboundIdentityHeaders = response.OutboundIdentityHeaders
 		return result
 	}
 	return unaryProviderSuccess(provider, spec, response)
@@ -292,6 +293,7 @@ func unaryProviderSuccess(
 		UpstreamProtocol: effectiveUpstreamProtocol(provider, response.UpstreamProtocol), AppliedReasoning: appliedReasoning(response.AppliedReasoningEffort), StatusCode: http.StatusOK,
 		Header: headers, Body: body, Model: responseModel(body, spec.UpstreamModel),
 		UpstreamRequestID: upstreamRequestID(headers), Usage: responseUsage(spec, body),
+		OutboundIdentityHeaders: response.OutboundIdentityHeaders,
 	}
 }
 
@@ -372,6 +374,13 @@ func (a *Adapter) ExecuteStream(
 	firstByte := startFirstByteGate(spec.Timeouts.FirstByte, cancelStream)
 	defer firstByte.stop()
 	response, err := provider.ExecuteStream(streamCtx, strconv.FormatUint(uint64(spec.Credential.ID), 10), credential, request)
+	outboundIdentityHeaders := ""
+	if response != nil {
+		outboundIdentityHeaders = response.OutboundIdentityHeaders
+	}
+	defer func() {
+		result.OutboundIdentityHeaders = outboundIdentityHeaders
+	}()
 	upstreamProtocol := provider.UpstreamProtocol()
 	if response != nil {
 		upstreamProtocol = effectiveUpstreamProtocol(provider, response.UpstreamProtocol)

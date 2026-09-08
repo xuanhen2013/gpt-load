@@ -22,6 +22,32 @@ import (
 	"gpt-load/internal/usage"
 )
 
+func TestDecodeAttemptOutboundIdentityHeaders(t *testing.T) {
+	valid := models.RequestLogAttempt{
+		OutboundIdentityHeaders: models.JSON(`{"user-agent":"ua","originator":"Codex Desktop","x-oai-attestation":"env","x-codex-window-id":"t:0","x-codex-turn-metadata":"meta"}`),
+	}
+	decoded, err := decodeAttemptOutboundIdentityHeaders(valid)
+	if err != nil {
+		t.Fatalf("decode valid outbound headers: %v", err)
+	}
+	if decoded == nil || decoded.UserAgent != "ua" || decoded.Originator != "Codex Desktop" ||
+		decoded.OaiAttestation != "env" || decoded.CodexWindowID != "t:0" ||
+		decoded.CodexTurnMetadata != "meta" {
+		t.Fatalf("decoded outbound headers = %#v", decoded)
+	}
+
+	if got, err := decodeAttemptOutboundIdentityHeaders(models.RequestLogAttempt{}); err != nil || got != nil {
+		t.Fatalf("empty outbound headers = (%#v, %v), want (nil, nil)", got, err)
+	}
+
+	invalid := models.RequestLogAttempt{
+		OutboundIdentityHeaders: models.JSON(`{"user-agent":`),
+	}
+	if _, err := decodeAttemptOutboundIdentityHeaders(invalid); err == nil {
+		t.Fatal("malformed outbound headers decoded without error")
+	}
+}
+
 func TestDecodeRequestLogRowsPreservesUsageCostAttribution(t *testing.T) {
 	reasoningBudget := int64(8192)
 	rows := []models.RequestLog{{

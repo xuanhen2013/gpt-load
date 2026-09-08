@@ -246,6 +246,10 @@ func decodeAttemptRows(rows []models.RequestLogAttempt) ([]Attempt, error) {
 		if err != nil {
 			return nil, err
 		}
+		outboundHeaders, err := decodeAttemptOutboundIdentityHeaders(row)
+		if err != nil {
+			return nil, err
+		}
 		attempts = append(attempts, Attempt{
 			Sequence:          row.Sequence,
 			GroupID:           row.GroupID,
@@ -264,23 +268,37 @@ func decodeAttemptRows(rows []models.RequestLogAttempt) ([]Attempt, error) {
 				Effort:       row.ReasoningEffort,
 				BudgetTokens: row.ReasoningBudgetTokens,
 			},
-			StatusCode:      row.StatusCode,
-			DurationMs:      row.DurationMs,
-			FailureCategory: telemetry.FailureCategory(row.FailureCategory),
-			FailureOrigin:   execution.ErrorOrigin(row.FailureOrigin),
-			FailureScope:    execution.ErrorScope(row.FailureScope),
-			RetryDirective:  telemetry.RetryDirective(row.RetryDirective),
-			Effect:          telemetry.Effect(row.Effect),
-			RuleID:          row.RuleID,
-			Action:          telemetry.Action(row.Action),
-			WillRetry:       row.WillRetry,
-			ErrorCode:       row.ErrorCode,
-			ErrorSummary:    row.ErrorSummary,
-			Committed:       row.Committed,
-			PricingReceipt:  receipt,
+			StatusCode:              row.StatusCode,
+			DurationMs:              row.DurationMs,
+			FailureCategory:         telemetry.FailureCategory(row.FailureCategory),
+			FailureOrigin:           execution.ErrorOrigin(row.FailureOrigin),
+			FailureScope:            execution.ErrorScope(row.FailureScope),
+			RetryDirective:          telemetry.RetryDirective(row.RetryDirective),
+			Effect:                  telemetry.Effect(row.Effect),
+			RuleID:                  row.RuleID,
+			Action:                  telemetry.Action(row.Action),
+			WillRetry:               row.WillRetry,
+			ErrorCode:               row.ErrorCode,
+			ErrorSummary:            row.ErrorSummary,
+			Committed:               row.Committed,
+			PricingReceipt:          receipt,
+			OutboundIdentityHeaders: outboundHeaders,
 		})
 	}
 	return attempts, nil
+}
+
+func decodeAttemptOutboundIdentityHeaders(
+	row models.RequestLogAttempt,
+) (*OutboundIdentityHeaders, error) {
+	if len(row.OutboundIdentityHeaders) == 0 || string(row.OutboundIdentityHeaders) == "null" {
+		return nil, nil
+	}
+	var decoded OutboundIdentityHeaders
+	if err := json.Unmarshal(row.OutboundIdentityHeaders, &decoded); err != nil {
+		return nil, fmt.Errorf("decode request log attempt outbound identity headers: %w", err)
+	}
+	return &decoded, nil
 }
 
 func decodeAttemptPricingReceipt(row models.RequestLogAttempt) (*pricing.Receipt, error) {

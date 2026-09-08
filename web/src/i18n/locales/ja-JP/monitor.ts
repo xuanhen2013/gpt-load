@@ -812,6 +812,9 @@ export default {
         not_applicable: '該当なし',
       },
       drawer: {
+        outboundHeaders: '送信リクエストヘッダー',
+        copyOutboundHeader: 'ヘッダーをコピー',
+        decodeOutboundHeader: 'デコード',
         title: 'リクエストログ詳細',
         description: '最終結果と秘匿化されたアップストリーム試行チェーンを確認します。',
         descriptionSelfScoped: '現在のアクセスキーに属するリクエスト、結果、使用量を確認します。',

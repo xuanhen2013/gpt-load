@@ -150,6 +150,15 @@ export interface RequestLogAttemptDto {
   error_summary: string
   committed: boolean
   pricing_receipt: RequestLogPricingReceiptDto | null
+  outbound_identity_headers: OutboundIdentityHeadersDto | null
+}
+
+export interface OutboundIdentityHeadersDto {
+  'user-agent': string | null
+  originator: string | null
+  'x-oai-attestation': string | null
+  'x-codex-window-id': string | null
+  'x-codex-turn-metadata': string | null
 }
 
 export interface RequestLogReasoningDto {
@@ -451,6 +460,7 @@ function projectAttempt(value: unknown): RequestLogAttemptDto {
     'error_summary',
     'committed',
     'pricing_receipt',
+    'outbound_identity_headers',
   ])
   return {
     sequence: projectSafeInteger(record.sequence, { minimum: 1 }),
@@ -505,7 +515,32 @@ function projectAttempt(value: unknown): RequestLogAttemptDto {
     error_summary: projectString(record.error_summary, { allowEmpty: true }),
     committed: projectBoolean(record.committed),
     pricing_receipt: projectPricingReceipt(record.pricing_receipt),
+    outbound_identity_headers: projectOutboundIdentityHeaders(record.outbound_identity_headers),
   }
+}
+
+function projectOutboundIdentityHeaders(value: unknown): OutboundIdentityHeadersDto | null {
+  if (value === null || value === undefined) return null
+  const record = projectRecord(value)
+  assertNoSecretLikeFields(record, [
+    'user-agent',
+    'originator',
+    'x-oai-attestation',
+    'x-codex-window-id',
+    'x-codex-turn-metadata',
+  ])
+  return {
+    'user-agent': projectOptionalString(record['user-agent']),
+    originator: projectOptionalString(record.originator),
+    'x-oai-attestation': projectOptionalString(record['x-oai-attestation']),
+    'x-codex-window-id': projectOptionalString(record['x-codex-window-id']),
+    'x-codex-turn-metadata': projectOptionalString(record['x-codex-turn-metadata']),
+  }
+}
+
+function projectOptionalString(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  return projectString(value, { allowEmpty: true })
 }
 
 function projectReasoning(value: unknown): RequestLogReasoningDto | null {
