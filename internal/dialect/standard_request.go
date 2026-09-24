@@ -44,6 +44,23 @@ func standardRequest(
 		selected = NewOpenAIEmbeddings()
 		request.Path = openAIEmbeddingsPath
 		body = map[string]any{"model": model, "input": ""}
+	case protocol.Rerank:
+		selected = NewRerank()
+		request.Path = rerankPath
+		body = map[string]any{"model": model, "query": "ping", "documents": []string{"ping"}, "top_n": 1}
+	case protocol.Decisions:
+		selected = NewDecisions()
+		request.Path = decisionsPath
+		body = map[string]any{
+			"model": model,
+			"state": "ping",
+			"questions": map[string]any{
+				"ready": map[string]any{
+					"type": "noul", "instructions": "Is the service ready?",
+					"criteria": map[string]string{"true": "Ready", "false": "Not ready"},
+				},
+			},
+		}
 	case protocol.Anthropic:
 		selected = NewAnthropic()
 		request.Path = "/v1/messages"

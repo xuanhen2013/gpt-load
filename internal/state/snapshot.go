@@ -8,41 +8,55 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gpt-load/internal/accessquota"
+	"gpt-load/internal/automodel"
+	"gpt-load/internal/catalog"
 	"gpt-load/internal/channel"
 	"gpt-load/internal/connection"
 	"gpt-load/internal/execution"
+	"gpt-load/internal/jev"
 	"gpt-load/internal/outboundproxy"
 	"gpt-load/internal/parameteroverride"
 	"gpt-load/internal/platform/config"
+	"gpt-load/internal/pricing"
 	"gpt-load/internal/protocol"
+	"gpt-load/internal/requestaudit"
+	"gpt-load/internal/requestredact"
 )
 
 const maxSafeAccessKeyEpochMS = int64(9_007_199_254_740_991)
 
 type CompileInput struct {
-	SystemSettings   config.Settings
-	ChannelRegistry  *channel.Registry
-	Groups           []GroupConfig
-	Credentials      []CredentialConfig
-	AccessKeys       []AccessKeyConfig
-	GlobalProxy      *outboundproxy.Config
-	EnvironmentProxy *outboundproxy.Config
+	RequestRedaction     []requestredact.Rule
+	Jev                  *jev.Config
+	RequestAudit         *requestaudit.Config
+	AutoModel            *automodel.Config
+	SystemSettings       config.Settings
+	ChannelRegistry      *channel.Registry
+	Groups               []GroupConfig
+	Credentials          []CredentialConfig
+	AccessKeys           []AccessKeyConfig
+	ClientModelOverrides map[string]catalog.ClientModelOverrides
+	GlobalProxy          *outboundproxy.Config
+	EnvironmentProxy     *outboundproxy.Config
 }
 
 type GroupConfig struct {
-	ID              uint
-	Name            string
-	ChannelID       channel.ID
-	ConnectionType  string
-	Params          json.RawMessage
-	ValidationModel string
-	Models          []ModelConfig
-	Settings        config.Settings
-	WeightManual    *int
-	Enabled         bool
-	Proxy           *outboundproxy.Config
+	PriceMultiplier    *pricing.PriceMultiplier
+	ID                 uint
+	Name               string
+	ChannelID          channel.ID
+	ConnectionType     string
+	Params             json.RawMessage
+	ValidationProtocol protocol.Protocol
+	ValidationModel    string
+	Models             []ModelConfig
+	Settings           config.Settings
+	WeightManual       *int
+	Enabled            bool
+	Proxy              *outboundproxy.Config
 }
 
 // CredentialConfig contains only non-secret credential metadata required to
@@ -72,6 +86,8 @@ func externalModelName(model ModelConfig) string {
 }
 
 type AccessKeyConfig struct {
+	KeyPrefix        string
+	PriceMultiplier  *pricing.PriceMultiplier
 	ID               uint
 	Name             string
 	KeyHash          string
@@ -123,35 +139,54 @@ type HeaderRules struct {
 	Remove []string
 }
 
+// ConfiguredNames 标记显式设置或移除的字段，区分规则与客户端原始请求头。
+func (rules HeaderRules) ConfiguredNames() []string {
+	if len(rules.Set)+len(rules.Remove) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(rules.Set)+len(rules.Remove))
+	for name := range rules.Set {
+		names = append(names, name)
+	}
+	return append(names, rules.Remove...)
+}
+
 type GroupView struct {
-	ID                      uint
-	Name                    string
-	ChannelID               channel.ID
-	ConnectionType          string
-	Params                  json.RawMessage
-	ResolvedTarget          channel.ResolvedTarget
-	ValidationModel         string
-	ClientProtocols         []protocol.Protocol
-	Models                  []ModelConfig
-	Timeouts                TimeoutConfig
-	HeaderRules             HeaderRules
-	RetryCount              int
-	BlacklistThreshold      int
-	AffinityEnabled         bool
-	WeightManual            *int
-	Proxy                   outboundproxy.Effective
-	ParameterOverrides      parameteroverride.Rules
-	AccountConcurrencyLimit int
+	PriceMultiplier           pricing.PriceMultiplier
+	ID                        uint
+	Name                      string
+	ChannelID                 channel.ID
+	ConnectionType            string
+	Params                    json.RawMessage
+	ResolvedTarget            channel.ResolvedTarget
+	ValidationProtocol        protocol.Protocol
+	ValidationModel           string
+	ClientProtocols           []protocol.Protocol
+	Models                    []ModelConfig
+	Timeouts                  TimeoutConfig
+	HeaderRules               HeaderRules
+	BlacklistThreshold        int
+	AffinityEnabled           bool
+	ResponsesWebsocketEnabled bool
+	EmptyResponseRetry        bool
+	WeightManual              *int
+	Proxy                     outboundproxy.Effective
+	ParameterOverrides        parameteroverride.Rules
+	AccountConcurrencyLimit   int
 }
 
 type GroupCatalogView struct {
-	ID           uint
-	Name         string
-	Enabled      bool
-	WeightManual *int
+	ID             uint
+	Name           string
+	ChannelID      channel.ID
+	ConnectionType string
+	Enabled        bool
+	WeightManual   *int
 }
 
 type AccessKeyView struct {
+	KeyPrefix        string
+	PriceMultiplier  pricing.PriceMultiplier
 	ID               uint
 	Name             string
 	KeySuffix        string
@@ -164,6 +199,10 @@ type AccessKeyView struct {
 }
 
 type ConfigSnapshot struct {
+	RequestRedaction      *requestredact.Compiled
+	Jev                   jev.Config
+	RequestAudit          requestaudit.Config
+	AutoModels            *automodel.Compiled
 	Revision              uint64
 	Settings              RuntimeSettings
 	ExecutionCandidates   ExecutionCandidateIndex
@@ -172,6 +211,7 @@ type ConfigSnapshot struct {
 	AccessKeysByHash      map[string]AccessKeyView
 	GroupCatalog          map[uint]GroupCatalogView
 	AccessKeysByID        map[uint]AccessKeyView
+	ClientModelOverrides  map[string]catalog.ClientModelOverrides
 	GlobalProxy           outboundproxy.Effective
 }
 
@@ -183,12 +223,94 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	redaction, err := requestredact.Compile(input.RequestRedaction)
+	if err != nil {
+		return nil, err
+	}
+	autoConfig := automodel.DefaultConfig()
+	if input.AutoModel != nil {
+		autoConfig = *input.AutoModel
+	}
+	shared := jev.DefaultConfig()
+	if input.Jev != nil {
+		shared = *input.Jev
+	} else {
+		shared.Model, shared.TimeoutSeconds = autoConfig.Model, autoConfig.TimeoutSeconds
+	}
+	sharedRaw, _ := json.Marshal(shared)
+	shared, err = jev.Decode(sharedRaw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", jev.ErrInvalidConfig, err)
+	}
+	autoConfig.Model, autoConfig.TimeoutSeconds = shared.Model, shared.TimeoutSeconds
+	audit := requestaudit.DefaultConfig()
+	if input.RequestAudit != nil {
+		audit = *input.RequestAudit
+	}
+	auditRaw, _ := json.Marshal(audit)
+	audit, err = requestaudit.Decode(auditRaw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", requestaudit.ErrInvalidConfig, err)
+	}
+	ordinaryModels := map[string]struct{}{}
+	decisionModels := map[string]struct{}{}
+	for _, group := range input.Groups {
+		for _, model := range group.Models {
+			ordinaryModels[externalModelName(model)] = struct{}{}
+		}
+		if !group.Enabled {
+			continue
+		}
+		target, resolveErr := input.ChannelRegistry.Resolve(group.ChannelID, group.Params)
+		if resolveErr != nil {
+			continue
+		}
+		for _, model := range group.Models {
+			if _, supported := target.ModeForModel(
+				protocol.Decisions,
+				execution.OperationDecisionsCreate,
+				model.ID,
+			); supported {
+				decisionModels[externalModelName(model)] = struct{}{}
+			}
+		}
+	}
+	if audit.Enabled && (shared.GroupID == 0 || shared.Model == "") {
+		return nil, fmt.Errorf("%w: guardrails require an explicit Jev group and model", requestaudit.ErrInvalidConfig)
+	}
+	if (autoConfig.Enabled || audit.Enabled) && shared.GroupID != 0 {
+		available := false
+		for _, group := range input.Groups {
+			if group.ID != shared.GroupID || !group.Enabled {
+				continue
+			}
+			target, resolveErr := input.ChannelRegistry.Resolve(group.ChannelID, group.Params)
+			if resolveErr != nil {
+				continue
+			}
+			for _, model := range group.Models {
+				if _, supported := target.ModeForModel(protocol.Decisions, execution.OperationDecisionsCreate, model.ID); supported && externalModelName(model) == shared.Model {
+					available = true
+				}
+			}
+		}
+		if !available {
+			return nil, fmt.Errorf("%w: configured Jev route unavailable", jev.ErrInvalidConfig)
+		}
+	}
+	autoModels, err := automodel.Compile(autoConfig, ordinaryModels, decisionModels)
+	if err != nil {
+		return nil, fmt.Errorf("compile automatic models: %w", err)
+	}
 	globalProxy, err := outboundproxy.Resolve(nil, nil, input.GlobalProxy, input.EnvironmentProxy)
 	if err != nil {
 		return nil, fmt.Errorf("compile global proxy: %w", err)
 	}
 
 	snapshot := &ConfigSnapshot{
+		RequestRedaction: redaction,
+		Jev:              shared, RequestAudit: audit,
+		AutoModels:            autoModels,
 		Settings:              runtimeSettings,
 		ExecutionCandidates:   make(ExecutionCandidateIndex),
 		ExecutionRouteCatalog: make(ExecutionCandidateIndex),
@@ -196,13 +318,16 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 		AccessKeysByHash:      make(map[string]AccessKeyView),
 		GroupCatalog:          make(map[uint]GroupCatalogView),
 		AccessKeysByID:        make(map[uint]AccessKeyView),
+		ClientModelOverrides:  cloneClientModelOverrides(input.ClientModelOverrides),
 		GlobalProxy:           globalProxy,
 	}
 
 	for _, group := range input.Groups {
 		catalogView := GroupCatalogView{
 			ID: group.ID, Name: group.Name, Enabled: group.Enabled,
-			WeightManual: cloneWeight(group.WeightManual),
+			ChannelID:      group.ChannelID,
+			ConnectionType: connection.Normalize(group.ConnectionType),
+			WeightManual:   cloneWeight(group.WeightManual),
 		}
 		snapshot.GroupCatalog[group.ID] = catalogView
 		if err := appendExecutionTargets(snapshot.ExecutionRouteCatalog, input.ChannelRegistry, group); err != nil {
@@ -221,20 +346,23 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 		}
 
 		view := GroupView{
-			ID:                      group.ID,
-			Name:                    group.Name,
-			ValidationModel:         strings.TrimSpace(group.ValidationModel),
-			Models:                  append([]ModelConfig(nil), group.Models...),
-			Timeouts:                resolved.Timeouts,
-			HeaderRules:             resolved.HeaderRules,
-			RetryCount:              resolved.RetryCount,
-			BlacklistThreshold:      resolved.BlacklistThreshold,
-			AffinityEnabled:         resolved.AffinityEnabled,
-			AccountConcurrencyLimit: resolved.AccountConcurrencyLimit,
-			WeightManual:            cloneWeight(group.WeightManual),
-			ConnectionType:          connection.Normalize(group.ConnectionType),
-			Proxy:                   groupProxy,
-			ParameterOverrides:      resolved.ParameterOverrides,
+			PriceMultiplier:           resolvePriceMultiplier(group.PriceMultiplier),
+			ID:                        group.ID,
+			Name:                      group.Name,
+			ValidationProtocol:        group.ValidationProtocol,
+			ValidationModel:           strings.TrimSpace(group.ValidationModel),
+			Models:                    append([]ModelConfig(nil), group.Models...),
+			Timeouts:                  resolved.Timeouts,
+			HeaderRules:               resolved.HeaderRules,
+			BlacklistThreshold:        resolved.BlacklistThreshold,
+			AffinityEnabled:           resolved.AffinityEnabled,
+			ResponsesWebsocketEnabled: resolved.ResponsesWebsocketEnabled,
+			EmptyResponseRetry:        resolved.EmptyResponseRetry,
+			WeightManual:              cloneWeight(group.WeightManual),
+			ConnectionType:            connection.Normalize(group.ConnectionType),
+			Proxy:                     groupProxy,
+			ParameterOverrides:        resolved.ParameterOverrides,
+			AccountConcurrencyLimit:   resolved.AccountConcurrencyLimit,
 		}
 		params, err := input.ChannelRegistry.ValidateParams(group.ChannelID, group.Params)
 		if err != nil {
@@ -279,8 +407,10 @@ func newAccessKeyView(input AccessKeyConfig) AccessKeyView {
 		return rules[i].ID < rules[j].ID
 	})
 	return AccessKeyView{
-		ID: input.ID, Name: input.Name, Status: input.Status,
+		PriceMultiplier: resolvePriceMultiplier(input.PriceMultiplier),
+		ID:              input.ID, Name: input.Name, Status: input.Status,
 		KeySuffix:        input.KeySuffix,
+		KeyPrefix:        input.KeyPrefix,
 		Filters:          cloneFilterSet(input.Filters),
 		ExpiresAtMS:      cloneAccessKeyExpiry(input.ExpiresAtMS),
 		AllowedPeerCIDRs: cloneAllowedPeerCIDRs(input.AllowedPeerCIDRs),
@@ -347,10 +477,12 @@ func appendExecutionTargets(
 				execution.OperationResponsesCreate,
 				execution.OperationResponsesCompact,
 				execution.OperationResponsesInputTokens,
+				execution.OperationWebSearch,
 				execution.OperationCountTokens,
 				execution.OperationImagesGenerate,
 				execution.OperationImagesEdit,
-				execution.OperationEmbeddingsCreate:
+				execution.OperationEmbeddingsCreate, execution.OperationRerank,
+				execution.OperationDecisionsCreate:
 				for _, model := range group.Models {
 					modelMode, supported := target.ModeForModel(clientProtocol, operation, model.ID)
 					if !supported {
@@ -413,6 +545,17 @@ func sortExecutionRouteIndex(index ExecutionCandidateIndex) {
 }
 
 func validateCompileInput(input CompileInput) error {
+	for model, overrides := range input.ClientModelOverrides {
+		if !utf8.ValidString(model) || model == "" || strings.TrimSpace(model) != model {
+			return fmt.Errorf("client model override has invalid model name")
+		}
+		if err := overrides.Validate(); err != nil {
+			return fmt.Errorf("client model override %q: %w", model, err)
+		}
+		if overrides.IsEmpty() {
+			return fmt.Errorf("client model override %q is empty", model)
+		}
+	}
 	groupIDs := make(map[uint]struct{}, len(input.Groups))
 	for _, group := range input.Groups {
 		if group.ID == 0 {
@@ -422,6 +565,9 @@ func validateCompileInput(input CompileInput) error {
 			return fmt.Errorf("duplicate group id %d", group.ID)
 		}
 		groupIDs[group.ID] = struct{}{}
+		if group.PriceMultiplier != nil && !group.PriceMultiplier.Valid() {
+			return fmt.Errorf("group %d price multiplier is invalid", group.ID)
+		}
 		if input.ChannelRegistry == nil {
 			return fmt.Errorf("group %d channel registry is required", group.ID)
 		}
@@ -435,22 +581,29 @@ func validateCompileInput(input CompileInput) error {
 		if !input.ChannelRegistry.SupportsConnectionType(group.ChannelID, connectionType) {
 			return fmt.Errorf("group %d channel %q does not support connection type %q", group.ID, group.ChannelID, connectionType)
 		}
-		if _, err := input.ChannelRegistry.Resolve(group.ChannelID, group.Params); err != nil {
+		target, err := input.ChannelRegistry.Resolve(group.ChannelID, group.Params)
+		if err != nil {
 			return fmt.Errorf("group %d channel %q: %w", group.ID, group.ChannelID, err)
+		}
+		if group.ValidationProtocol != "" {
+			if _, ok := target.Mode(group.ValidationProtocol, execution.OperationProbe); !ok || connectionType == "subscription" {
+				return fmt.Errorf("group %d validation protocol is unsupported", group.ID)
+			}
 		}
 		if err := validateManualWeight(fmt.Sprintf("group %d", group.ID), group.WeightManual); err != nil {
 			return err
 		}
-		seenModels := make(map[string]struct{}, len(group.Models))
+		seenModels := make(map[[2]string]struct{}, len(group.Models))
 		for _, model := range group.Models {
 			if strings.TrimSpace(model.ID) == "" {
 				return fmt.Errorf("group %d model id is required", group.ID)
 			}
 			external := externalModelName(model)
-			if _, duplicate := seenModels[external]; duplicate {
-				return fmt.Errorf("group %d has duplicate external model %q", group.ID, external)
+			mapping := [2]string{external, strings.TrimSpace(model.ID)}
+			if _, duplicate := seenModels[mapping]; duplicate {
+				return fmt.Errorf("group %d has duplicate model mapping %q -> %q", group.ID, external, model.ID)
 			}
-			seenModels[external] = struct{}{}
+			seenModels[mapping] = struct{}{}
 		}
 	}
 
@@ -499,6 +652,9 @@ func validateCompileInput(input CompileInput) error {
 			return fmt.Errorf("duplicate access key id %d", accessKey.ID)
 		}
 		accessKeyIDs[accessKey.ID] = struct{}{}
+		if accessKey.PriceMultiplier != nil && !accessKey.PriceMultiplier.Valid() {
+			return fmt.Errorf("access key %d price multiplier is invalid", accessKey.ID)
+		}
 		if accessKey.RPMLimit < 0 {
 			return fmt.Errorf("access key %d rpm limit must not be negative", accessKey.ID)
 		}
@@ -601,4 +757,22 @@ func cloneAllowedPeerCIDRs(source []netip.Prefix) []netip.Prefix {
 		return nil
 	}
 	return append(make([]netip.Prefix, 0, len(source)), source...)
+}
+
+func resolvePriceMultiplier(value *pricing.PriceMultiplier) pricing.PriceMultiplier {
+	if value == nil {
+		return pricing.DefaultPriceMultiplier
+	}
+	return *value
+}
+
+func cloneClientModelOverrides(input map[string]catalog.ClientModelOverrides) map[string]catalog.ClientModelOverrides {
+	if input == nil {
+		return nil
+	}
+	cloned := make(map[string]catalog.ClientModelOverrides, len(input))
+	for model, overrides := range input {
+		cloned[model] = overrides.Clone()
+	}
+	return cloned
 }

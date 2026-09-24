@@ -16,13 +16,20 @@ import (
 	"gorm.io/gorm/clause"
 
 	"gpt-load/internal/accessquota"
+	"gpt-load/internal/automodel"
+	"gpt-load/internal/catalog"
 	"gpt-load/internal/channel"
 	"gpt-load/internal/connection"
+	"gpt-load/internal/jev"
 	"gpt-load/internal/outboundproxy"
+	"gpt-load/internal/platform/canonicaljson"
 	"gpt-load/internal/platform/config"
 	"gpt-load/internal/platform/encryption"
 	"gpt-load/internal/platform/utils"
+	"gpt-load/internal/pricing"
 	"gpt-load/internal/protocol"
+	"gpt-load/internal/requestaudit"
+	"gpt-load/internal/requestredact"
 	"gpt-load/internal/state"
 	"gpt-load/internal/storage/models"
 
@@ -77,12 +84,13 @@ func NewWithCredentialValidation(
 }
 
 type compileRows struct {
-	settings          []models.SystemSetting
-	groups            []models.Group
-	credentials       []models.Credential
-	accessKeys        []models.AccessKey
-	costLimitRules    []models.AccessKeyCostLimitRule
-	concurrencyLimits map[uint]*int
+	settings             []models.SystemSetting
+	groups               []models.Group
+	credentials          []models.Credential
+	accessKeys           []models.AccessKey
+	costLimitRules       []models.AccessKeyCostLimitRule
+	clientModelOverrides []models.ClientModelOverride
+	concurrencyLimits    map[uint]*int
 }
 
 type modelDTO struct {
@@ -147,6 +155,9 @@ func NewWithAccessQuota(
 }
 
 func (l *Loader) Load(ctx context.Context) error {
+	if err := l.migrateLegacyAutoModel(ctx); err != nil {
+		return fmt.Errorf("migrate automatic model configuration: %w", err)
+	}
 	input, entries, costLimitStates, err := l.read(ctx)
 	if err != nil {
 		return fmt.Errorf("read runtime state: %w", err)
@@ -178,6 +189,48 @@ func (l *Loader) Load(ctx context.Context) error {
 		"credentials": len(entries),
 	}).Info("credential registry loaded")
 	return nil
+}
+
+func (l *Loader) migrateLegacyAutoModel(ctx context.Context) error {
+	if l == nil || l.db == nil || l.encryption == nil {
+		return nil
+	}
+	return l.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row models.SystemSetting
+		if err := systemSettingKeyScope(tx, automodel.SettingKey).Take(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		plaintext, err := l.encryption.Decrypt(row.Value)
+		if err != nil {
+			return fmt.Errorf("decrypt legacy configuration")
+		}
+		config, legacy, err := automodel.DecodeStored([]byte(plaintext))
+		plaintext = ""
+		if err != nil {
+			return fmt.Errorf("decode persisted configuration: %w", err)
+		}
+		if !legacy {
+			return nil
+		}
+		encoded, err := json.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("encode migrated configuration: %w", err)
+		}
+		ciphertext, err := l.encryption.Encrypt(string(encoded))
+		clear(encoded)
+		if err != nil {
+			return fmt.Errorf("encrypt migrated configuration")
+		}
+		return systemSettingKeyScope(tx.Model(&models.SystemSetting{}), automodel.SettingKey).
+			Update("value", ciphertext).Error
+	})
+}
+
+func systemSettingKeyScope(db *gorm.DB, key string) *gorm.DB {
+	return db.Where(&models.SystemSetting{Key: key})
 }
 
 func (l *Loader) validatePersistedCredentials(
@@ -263,7 +316,7 @@ func queryCompileRows(ctx context.Context, db *gorm.DB) (compileRows, error) {
 	}
 	rows.concurrencyLimits = queryConcurrencyLimits(db)
 	if err := db.
-		Select("id", "name", "key_hash", "key_suffix", "status", "filters", "rpm_limit", "expires_at_ms").
+		Select("id", "name", "key_hash", "key_prefix", "key_suffix", "status", "filters", "rpm_limit", "expires_at_ms", "price_multiplier_micros").
 		Order("id ASC").
 		Find(&rows.accessKeys).Error; err != nil {
 		return compileRows{}, fmt.Errorf("query access keys: %w", err)
@@ -273,6 +326,9 @@ func queryCompileRows(ctx context.Context, db *gorm.DB) (compileRows, error) {
 		Order("access_key_id ASC, id ASC").
 		Find(&rows.costLimitRules).Error; err != nil {
 		return compileRows{}, fmt.Errorf("query access key cost limit rules: %w", err)
+	}
+	if err := db.Order("model_hash ASC").Find(&rows.clientModelOverrides).Error; err != nil {
+		return compileRows{}, fmt.Errorf("query client model overrides: %w", err)
 	}
 	return rows, nil
 }
@@ -547,9 +603,11 @@ func decodeSettingValue(raw string) (any, error) {
 	return value, nil
 }
 
-func isInternalSystemSetting(key string) bool {
+func isIgnoredSystemSetting(key string) bool {
 	return strings.HasPrefix(key, models.InternalSystemSettingPrefix) ||
-		key == outboundproxy.SystemSettingKey
+		key == requestredact.SettingKey || key == automodel.SettingKey || key == jev.SettingKey || key == requestaudit.SettingKey ||
+		key == outboundproxy.SystemSettingKey ||
+		key == "contact_info" // 兼容本分支旧版本保存的已移除设置。
 }
 
 // LoadSystemSettings reads only the persisted system settings used to compile a draft Group.
@@ -595,7 +653,7 @@ func LoadSystemSettingsAndProxy(
 func MapSystemSettings(rows []models.SystemSetting) (config.Settings, error) {
 	settings := make(config.Settings, len(rows))
 	for _, row := range rows {
-		if isInternalSystemSetting(row.Key) {
+		if isIgnoredSystemSetting(row.Key) {
 			continue
 		}
 		value, err := decodeSettingValue(row.Value)
@@ -613,11 +671,87 @@ func mapSystemAndGroups(
 	environmentProxy *outboundproxy.Config,
 ) (state.CompileInput, error) {
 	input := state.CompileInput{
-		SystemSettings:   make(config.Settings, len(rows.settings)),
-		Groups:           make([]state.GroupConfig, 0, len(rows.groups)),
-		EnvironmentProxy: environmentProxy,
+		SystemSettings:       make(config.Settings, len(rows.settings)),
+		Groups:               make([]state.GroupConfig, 0, len(rows.groups)),
+		ClientModelOverrides: make(map[string]catalog.ClientModelOverrides, len(rows.clientModelOverrides)),
+		EnvironmentProxy:     environmentProxy,
+	}
+	for _, row := range rows.clientModelOverrides {
+		if models.ClientModelHash(row.ClientModel) != row.ModelHash {
+			return state.CompileInput{}, fmt.Errorf("client model override has invalid identity")
+		}
+		var overrides catalog.ClientModelOverrides
+		canonical, err := canonicaljson.Canonicalize(row.Overrides)
+		if err != nil {
+			return state.CompileInput{}, fmt.Errorf("decode client model override %q: %w", row.ClientModel, err)
+		}
+		if err := decodeJSONDocument(models.JSON(canonical), &overrides, true); err != nil {
+			return state.CompileInput{}, fmt.Errorf("decode client model override %q: %w", row.ClientModel, err)
+		}
+		if err := overrides.Validate(); err != nil || overrides.IsEmpty() {
+			if err != nil {
+				return state.CompileInput{}, fmt.Errorf("validate client model override %q: %w", row.ClientModel, err)
+			}
+			return state.CompileInput{}, fmt.Errorf("client model override %q is empty", row.ClientModel)
+		}
+		if _, duplicate := input.ClientModelOverrides[row.ClientModel]; duplicate {
+			return state.CompileInput{}, fmt.Errorf("duplicate client model override %q", row.ClientModel)
+		}
+		input.ClientModelOverrides[row.ClientModel] = overrides
 	}
 	for _, row := range rows.settings {
+		if row.Key == requestredact.SettingKey {
+			if encryptionService == nil {
+				return state.CompileInput{}, fmt.Errorf("missing redaction encryption service")
+			}
+			plaintext, err := encryptionService.Decrypt(row.Value)
+			if err != nil {
+				return state.CompileInput{}, fmt.Errorf("decrypt redaction configuration")
+			}
+			input.RequestRedaction, err = requestredact.Decode([]byte(plaintext))
+			if err != nil {
+				return state.CompileInput{}, fmt.Errorf("invalid redaction configuration")
+			}
+			continue
+		}
+		if row.Key == jev.SettingKey || row.Key == requestaudit.SettingKey {
+			if encryptionService == nil {
+				return state.CompileInput{}, fmt.Errorf("missing experimental configuration encryption service")
+			}
+			plaintext, err := encryptionService.Decrypt(row.Value)
+			if err != nil {
+				return state.CompileInput{}, fmt.Errorf("decrypt experimental configuration")
+			}
+			if row.Key == jev.SettingKey {
+				value, err := jev.Decode([]byte(plaintext))
+				if err != nil {
+					return state.CompileInput{}, err
+				}
+				input.Jev = &value
+			} else {
+				value, err := requestaudit.Decode([]byte(plaintext))
+				if err != nil {
+					return state.CompileInput{}, err
+				}
+				input.RequestAudit = &value
+			}
+			continue
+		}
+		if row.Key == automodel.SettingKey {
+			if encryptionService == nil {
+				return state.CompileInput{}, fmt.Errorf("missing automatic model encryption service")
+			}
+			plaintext, err := encryptionService.Decrypt(row.Value)
+			if err != nil {
+				return state.CompileInput{}, fmt.Errorf("decrypt automatic model configuration")
+			}
+			config, err := automodel.Decode([]byte(plaintext))
+			if err != nil {
+				return state.CompileInput{}, fmt.Errorf("decode automatic model configuration")
+			}
+			input.AutoModel = &config
+			continue
+		}
 		if row.Key == outboundproxy.SystemSettingKey {
 			config, err := decodePersistedProxy(row.Value, encryptionService)
 			if err != nil {
@@ -626,7 +760,7 @@ func mapSystemAndGroups(
 			input.GlobalProxy = config
 			continue
 		}
-		if isInternalSystemSetting(row.Key) {
+		if isIgnoredSystemSetting(row.Key) {
 			continue
 		}
 		value, err := decodeSettingValue(row.Value)
@@ -653,17 +787,23 @@ func mapSystemAndGroups(
 		for _, model := range storedModels {
 			runtimeModels = append(runtimeModels, state.ModelConfig{ID: model.ID, Alias: model.Alias})
 		}
+		multiplier, err := persistedPriceMultiplier(row.PriceMultiplierMicros)
+		if err != nil {
+			return state.CompileInput{}, fmt.Errorf("group %d: %w", row.ID, err)
+		}
 		group := state.GroupConfig{
-			ID:              row.ID,
-			Name:            row.Name,
-			ChannelID:       channel.ID(row.ChannelID),
-			ConnectionType:  string(row.ConnectionType),
-			Params:          append(json.RawMessage(nil), row.Params...),
-			ValidationModel: validationModel,
-			Models:          runtimeModels,
-			Settings:        settings,
-			WeightManual:    cloneWeight(row.WeightManual),
-			Enabled:         row.Enabled,
+			PriceMultiplier:    &multiplier,
+			ID:                 row.ID,
+			Name:               row.Name,
+			ChannelID:          channel.ID(row.ChannelID),
+			ConnectionType:     string(row.ConnectionType),
+			Params:             append(json.RawMessage(nil), row.Params...),
+			ValidationProtocol: protocol.Protocol(stringValue(row.ValidationProtocol)),
+			ValidationModel:    validationModel,
+			Models:             runtimeModels,
+			Settings:           settings,
+			WeightManual:       cloneWeight(row.WeightManual),
+			Enabled:            row.Enabled,
 		}
 		if row.ProxyConfig != nil {
 			proxy, err := decodePersistedProxy(*row.ProxyConfig, encryptionService)
@@ -717,8 +857,16 @@ func mapAccessKeys(
 		if err != nil {
 			return nil, fmt.Errorf("compile access key %d allowed CIDRs: %w", row.ID, err)
 		}
+		multiplier, err := persistedPriceMultiplier(row.PriceMultiplierMicros)
+		if err != nil {
+			return nil, fmt.Errorf("access key %d: %w", row.ID, err)
+		}
+		if row.KeyPrefix == nil {
+			return nil, fmt.Errorf("access key %d is missing mask prefix metadata", row.ID)
+		}
 		result = append(result, state.AccessKeyConfig{
-			ID: row.ID, Name: row.Name, KeyHash: row.KeyHash, KeySuffix: row.KeySuffix,
+			PriceMultiplier: &multiplier,
+			ID:              row.ID, Name: row.Name, KeyHash: row.KeyHash, KeyPrefix: *row.KeyPrefix, KeySuffix: row.KeySuffix,
 			Status: state.AccessKeyStatus(row.Status), Filters: filters.toState(), RPMLimit: row.RPMLimit,
 			ExpiresAtMS: cloneInt64Pointer(row.ExpiresAtMS), AllowedPeerCIDRs: allowedPeerCIDRs,
 			CostLimitRules: append([]accessquota.Rule(nil), rulesByAccessKey[row.ID]...),
@@ -807,9 +955,8 @@ func mapCredentials(rows []models.Credential, groups []models.Group, limits map[
 				target.params,
 			),
 			Fingerprint: row.Fingerprint, WeightManual: cloneWeight(row.WeightManual),
+			Status: state.CredentialStatus(row.Status), AuthState: state.CredentialAuthState(row.AuthState), EncryptedValue: row.Data,
 			AccountKey: row.IdentityFingerprint, AccountConcurrencyLimit: cloneInt(limits[row.ID]),
-			WeightAuto: state.DefaultWeight,
-			Status:     state.CredentialStatus(row.Status), AuthState: state.CredentialAuthState(row.AuthState), EncryptedValue: row.Data,
 		})
 	}
 	return result
@@ -900,4 +1047,18 @@ func cloneWeight(value *int) *int {
 	}
 	cloned := *value
 	return &cloned
+}
+
+func persistedPriceMultiplier(value *int64) (pricing.PriceMultiplier, error) {
+	if value == nil || !pricing.PriceMultiplier(*value).Valid() {
+		return 0, fmt.Errorf("invalid persisted price multiplier")
+	}
+	return pricing.PriceMultiplier(*value), nil
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

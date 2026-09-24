@@ -145,7 +145,7 @@ func TestAccessKeyMetadataFailsClosedForInvalidPersistedSuffix(t *testing.T) {
 	}
 	if err := fixture.db.Model(&models.AccessKey{}).
 		Where("id = ?", created.ID).
-		UpdateColumn("key_suffix", "ZZZZ").Error; err != nil {
+		UpdateColumn("key_suffix", "bad ").Error; err != nil {
 		t.Fatalf("set invalid suffix: %v", err)
 	}
 	if err := fixture.db.Exec("PRAGMA ignore_check_constraints = OFF").Error; err != nil {
@@ -224,10 +224,10 @@ func TestListAccessKeyOptionsContainsOnlySelectorMetadata(t *testing.T) {
 	}
 	if len(options) != 2 ||
 		options[0] != (AccessKeyOption{
-			ID: first.ID, Name: "first-option", Status: state.AccessKeyStatusActive,
+			ID: first.ID, Name: "first-option", Status: state.AccessKeyStatusActive, KeySuffix: first.Key[len(first.Key)-4:],
 		}) ||
 		options[1] != (AccessKeyOption{
-			ID: second.ID, Name: "second-option", Status: state.AccessKeyStatusDisabled,
+			ID: second.ID, Name: "second-option", Status: state.AccessKeyStatusDisabled, KeySuffix: second.Key[len(second.Key)-4:],
 		}) {
 		t.Fatalf("options = %#v", options)
 	}

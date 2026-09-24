@@ -19,11 +19,12 @@ func (manager *RuntimeManager) ValidateRouteCapability(
 		return fmt.Errorf("runtime manager is unavailable")
 	}
 	if _, sdkBacked := sdkProviderSpecFor(providerKind); !sdkBacked &&
-		providerKind != channel.ProviderOpenAICompatible && providerKind != channel.ProviderMultiProtocolGateway {
+		providerKind != channel.ProviderOpenAICompatible && providerKind != channel.ProviderMultiProtocolGateway &&
+		providerKind != channel.ProviderJev {
 		return fmt.Errorf("provider is not implemented by Bifrost")
 	}
 	if route.RouteMode == execution.RouteConverted {
-		if convertedRouteImplemented(route.ClientProtocol, route.Operation) {
+		if convertedRouteImplemented(providerKind, route.ClientProtocol, route.Operation) {
 			return nil
 		}
 		return fmt.Errorf("converted route is not implemented")
@@ -34,12 +35,15 @@ func (manager *RuntimeManager) ValidateRouteCapability(
 	return nil
 }
 
-func convertedRouteImplemented(clientProtocol protocol.Protocol, operation execution.Operation) bool {
+func convertedRouteImplemented(providerKind channel.ProviderKind, clientProtocol protocol.Protocol, operation execution.Operation) bool {
 	switch operation {
+	case execution.OperationImagesGenerate:
+		return providerKind == channel.ProviderGemini && clientProtocol == protocol.OpenAIImages
 	case execution.OperationListModels:
-		return clientProtocol != protocol.OpenAIResponses && clientProtocol.Valid()
+		return clientProtocol != protocol.OpenAIResponses && clientProtocol != protocol.Rerank &&
+			clientProtocol != protocol.Decisions && clientProtocol.Valid()
 	case execution.OperationProbe:
-		return clientProtocol.Valid()
+		return clientProtocol != protocol.Rerank && clientProtocol.Valid()
 	case execution.OperationChatCompletion:
 		return clientProtocol == protocol.OpenAICompletions ||
 			clientProtocol == protocol.Anthropic ||
@@ -60,6 +64,16 @@ func nativeRouteImplemented(
 	clientProtocol protocol.Protocol,
 	operation execution.Operation,
 ) bool {
+	if clientProtocol == protocol.Decisions {
+		if providerKind == channel.ProviderJev && operation == execution.OperationListModels {
+			return true
+		}
+		return (providerKind == channel.ProviderJev || providerKind == channel.ProviderOpenRouter) &&
+			(operation == execution.OperationDecisionsCreate || operation == execution.OperationProbe)
+	}
+	if clientProtocol == protocol.Rerank {
+		return (providerKind == channel.ProviderOpenAICompatible || providerKind == channel.ProviderMultiProtocolGateway) && (operation == execution.OperationRerank || operation == execution.OperationProbe)
+	}
 	switch providerKind {
 	case channel.ProviderOpenAI:
 		if clientProtocol == protocol.OpenAIEmbeddings {
@@ -81,6 +95,7 @@ func nativeRouteImplemented(
 				operation == execution.OperationProbe
 		case protocol.OpenAIResponses:
 			return operation == execution.OperationResponsesCreate ||
+				operation == execution.OperationProbe ||
 				nativeResponsesLifecycleOperation(operation)
 		case protocol.OpenAIImages:
 			return operation == execution.OperationImagesGenerate ||
@@ -90,6 +105,7 @@ func nativeRouteImplemented(
 				operation == execution.OperationProbe
 		case protocol.Anthropic, protocol.Gemini:
 			return operation == execution.OperationChatCompletion ||
+				operation == execution.OperationProbe ||
 				operation == execution.OperationCountTokens ||
 				operation == execution.OperationListModels
 		default:

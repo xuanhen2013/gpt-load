@@ -152,6 +152,12 @@ func writeRequestLogBatch(tx *gorm.DB, rows []models.RequestLog) error {
 	if err := tx.CreateInBatches(rows, batchSize).Error; err != nil {
 		return fmt.Errorf("insert request logs: %w", err)
 	}
+	if err := writeAuditUsage(tx, rows); err != nil {
+		return err
+	}
+	if err := writeAutoDecisionUsage(tx, rows); err != nil {
+		return err
+	}
 	attemptRows := make([]models.RequestLogAttempt, 0)
 	ids := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -410,9 +416,8 @@ func buildUsageAggregationJournals(
 ) ([]models.UsageAggregationJournal, error) {
 	journals := make([]models.UsageAggregationJournal, 0, len(rows))
 	for _, row := range rows {
-		// Zero-attempt requests are durable request-log observations only. They did
-		// not reach an upstream and must not contribute to any usage statistics.
-		if row.AttemptCount == 0 {
+		// 未转发请求和独立搜索只保留日志明细，不参与模型用量聚合。
+		if row.AttemptCount == 0 || row.Operation == string(execution.OperationWebSearch) {
 			continue
 		}
 		deltas, err := buildUsageStatDeltas([]models.RequestLog{row})
@@ -864,6 +869,7 @@ func (service *Service) drain(ctx context.Context, batch []queuedEvent) {
 				}
 			}
 			service.drainPassiveQuotaObservations(ctx)
+			service.drainRPMCheckpoints(ctx)
 			return
 		}
 	}
@@ -892,6 +898,7 @@ func (service *Service) writeBatch(ctx context.Context, events []queuedEvent) er
 	}
 	err := service.flushAccessQuotaCheckpoints(ctx)
 	service.flushPassiveQuotaCheckpoint(ctx)
+	service.flushRPMCheckpoints(ctx)
 	return err
 }
 

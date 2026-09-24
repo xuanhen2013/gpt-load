@@ -15,20 +15,22 @@ import (
 )
 
 type GroupEffectiveConfigResponse struct {
-	FirstByteTimeout        int64               `json:"first_byte_timeout"`
-	RequestTimeout          int64               `json:"request_timeout"`
-	StreamIdleTimeout       int64               `json:"stream_idle_timeout"`
-	HeaderRules             HeaderRulesResponse `json:"header_rules"`
-	RetryCount              int                 `json:"retry_count"`
-	BlacklistThreshold      int                 `json:"blacklist_threshold"`
-	AffinityEnabled         bool                `json:"affinity_enabled"`
-	AccountConcurrencyLimit int                 `json:"account_concurrency_limit"`
+	FirstByteTimeout          int64               `json:"first_byte_timeout"`
+	RequestTimeout            int64               `json:"request_timeout"`
+	StreamIdleTimeout         int64               `json:"stream_idle_timeout"`
+	HeaderRules               HeaderRulesResponse `json:"header_rules"`
+	BlacklistThreshold        int                 `json:"blacklist_threshold"`
+	AffinityEnabled           bool                `json:"affinity_enabled"`
+	ResponsesWebsocketEnabled bool                `json:"responses_websocket_enabled"`
+	EmptyResponseRetry        bool                `json:"empty_response_retry"`
+	AccountConcurrencyLimit   int                 `json:"account_concurrency_limit"`
 }
 
 // GroupSummaryResponse contains the group fields required by the detail page header.
 // It deliberately excludes models and configuration that are loaded through focused
 // resources.
 type GroupSummaryResponse struct {
+	PriceMultiplier     string                  `json:"price_multiplier"`
 	ID                  uint                    `json:"id"`
 	Name                string                  `json:"name"`
 	ChannelID           channel.ID              `json:"channel_id"`
@@ -53,7 +55,8 @@ func (s *Service) GetGroupSummary(ctx context.Context, groupID uint) (GroupSumma
 			continue
 		}
 		return GroupSummaryResponse{
-			ID: record.ID, Name: record.Name,
+			PriceMultiplier: record.PriceMultiplier,
+			ID:              record.ID, Name: record.Name,
 			ChannelID: record.ChannelID, Params: append(json.RawMessage(nil), record.Params...),
 			ConnectionType:      record.ConnectionType,
 			ServiceStatus:       record.Status,
@@ -85,10 +88,11 @@ func effectiveGroupConfig(
 			Set:    set,
 			Remove: append([]string{}, resolved.HeaderRules.Remove...),
 		},
-		RetryCount:              resolved.RetryCount,
-		BlacklistThreshold:      resolved.BlacklistThreshold,
-		AffinityEnabled:         resolved.AffinityEnabled,
-		AccountConcurrencyLimit: resolved.AccountConcurrencyLimit,
+		BlacklistThreshold:        resolved.BlacklistThreshold,
+		AffinityEnabled:           resolved.AffinityEnabled,
+		ResponsesWebsocketEnabled: resolved.ResponsesWebsocketEnabled,
+		EmptyResponseRetry:        resolved.EmptyResponseRetry,
+		AccountConcurrencyLimit:   resolved.AccountConcurrencyLimit,
 	}, nil
 }
 

@@ -289,7 +289,7 @@ func TestJudgeExecutionPreservesReplayCompatibilityRules(t *testing.T) {
 		wantRule  RuleID
 	}{
 		{
-			name: "generic payment required terminates",
+			name: "generic payment required retries",
 			attempt: ExecutionAttempt{
 				DispatchState: execution.DispatchMaybeSent,
 				StatusCode:    http.StatusPaymentRequired,
@@ -298,8 +298,9 @@ func TestJudgeExecutionPreservesReplayCompatibilityRules(t *testing.T) {
 					Summary: "billing disabled",
 				},
 			},
-			wantRetry: RetryNone,
-			wantRule:  RuleID("fallback.http_client_error"),
+			context:   DecisionContext{Method: http.MethodPost, Operation: execution.OperationChatCompletion},
+			wantRetry: RetryNextCandidate,
+			wantRule:  RuleID("fallback.upstream_response"),
 		},
 		{
 			name: "candidate payment required retries",
@@ -340,10 +341,10 @@ func TestJudgeExecutionPreservesReplayCompatibilityRules(t *testing.T) {
 			},
 			context:   DecisionContext{Method: http.MethodGet, Operation: execution.OperationResponsesRetrieve},
 			wantRetry: RetryNextCandidate,
-			wantRule:  RuleID("upstream.host_error.read_only"),
+			wantRule:  RuleID("upstream.host_error.response_retry"),
 		},
 		{
-			name: "mutating host error terminates",
+			name: "generation host error retries",
 			attempt: ExecutionAttempt{
 				DispatchState: execution.DispatchMaybeSent,
 				StatusCode:    http.StatusServiceUnavailable,
@@ -353,8 +354,8 @@ func TestJudgeExecutionPreservesReplayCompatibilityRules(t *testing.T) {
 				},
 			},
 			context:   DecisionContext{Method: http.MethodPost, Operation: execution.OperationChatCompletion},
-			wantRetry: RetryNone,
-			wantRule:  RuleID("upstream.host_error.replay_unsafe"),
+			wantRetry: RetryNextCandidate,
+			wantRule:  RuleID("upstream.host_error.response_retry"),
 		},
 		{
 			name: "explicitly rejected mutating host error retries",
@@ -496,13 +497,13 @@ func TestJudgeExecutionReplayUnknownKeepsUnaffectedRuleID(t *testing.T) {
 			wantRule: "rate_limit.scoped",
 		},
 		{
-			name:   "generic client error",
+			name:   "generic forbidden with unknown replay safety",
 			status: http.StatusForbidden,
 			evidence: execution.ErrorEvidence{
 				Kind: execution.ErrorKindHTTP, StatusCode: http.StatusForbidden,
 				ReplaySafety: execution.ReplaySafetyUnknown, Summary: "permission denied",
 			},
-			wantRule: "fallback.http_client_error",
+			wantRule: "safety.replay_unknown",
 		},
 	}
 
@@ -631,7 +632,7 @@ func TestJudgeExecutionImagesRequireExplicitReplaySafety(t *testing.T) {
 				Kind: execution.ErrorKindHTTP, Hint: execution.FailureHintRateLimited,
 				StatusCode: http.StatusTooManyRequests, Summary: "rate limited",
 			},
-			wantRetry: RetryNone, wantEffect: EffectCooldownCredential, wantCooldown: true,
+			wantRetry: RetryNone, wantEffect: EffectCooldownModel, wantCooldown: true,
 		},
 		{
 			name:   "invalid credential without rejection proof",
@@ -651,7 +652,7 @@ func TestJudgeExecutionImagesRequireExplicitReplaySafety(t *testing.T) {
 				StatusCode: http.StatusTooManyRequests, Summary: "request rejected",
 				ReplaySafety: execution.ReplaySafetyRejectedBeforeProcessing,
 			},
-			wantRetry: RetryNextCandidate, wantEffect: EffectCooldownCredential, wantCooldown: true,
+			wantRetry: RetryNextCandidate, wantEffect: EffectCooldownModel, wantCooldown: true,
 		},
 	}
 
@@ -738,8 +739,9 @@ func TestJudgeExecutionCompatibilityRuleMatrix(t *testing.T) {
 				Kind: execution.ErrorKindHTTP, StatusCode: http.StatusForbidden,
 				Summary: "permission denied",
 			},
-			category: FailureCategoryClientError, scope: execution.ErrorScopeRequest,
-			retry: RetryNone, effect: EffectNone, ruleID: "fallback.http_client_error",
+			context:  DecisionContext{Method: http.MethodPost, Operation: execution.OperationChatCompletion},
+			category: FailureCategoryAmbiguous,
+			retry:    RetryNextCandidate, effect: EffectNone, ruleID: "fallback.upstream_response",
 		},
 		{
 			name: "candidate scoped 403", status: http.StatusForbidden,
@@ -763,15 +765,15 @@ func TestJudgeExecutionCompatibilityRuleMatrix(t *testing.T) {
 			retry: RetryNone, effect: EffectNone, ruleID: "fallback.http_client_error",
 		},
 		{
-			name: "model unavailable retains credential cooldown", status: http.StatusNotFound,
+			name: "model unavailable does not penalize credential", status: http.StatusNotFound,
 			evidence: execution.ErrorEvidence{
 				Kind: execution.ErrorKindHTTP, Hint: execution.FailureHintModelUnavailable,
 				ScopeHint: execution.ErrorScopeModel, StatusCode: http.StatusNotFound,
 				Summary: "model unavailable",
 			},
 			category: FailureCategoryModelUnavailable, scope: execution.ErrorScopeModel,
-			retry: RetryNextCandidate, effect: EffectCooldownCredential,
-			ruleID: "model.unavailable", cooldownAt: now.Add(time.Hour),
+			retry: RetryNextCandidate, effect: EffectNone,
+			ruleID: "model.unavailable",
 		},
 	}
 

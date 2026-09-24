@@ -92,11 +92,12 @@ func (s *Service) executeModelDiscovery(
 				Operation: execution.OperationListModels, Method: method, Path: path,
 				RawQuery: rawQuery,
 				Header:   applyControlHeaderRules(target.headerRules, credential.apiKey), Body: body,
-				TargetConfig:     target.resolvedTarget.TargetConfig,
-				Timeouts:         executionTimeouts(target.timeouts),
-				Credential:       credential.snapshot,
-				Proxy:            credential.proxy,
-				ProxyFingerprint: credential.proxyFingerprint,
+				ConfiguredHeaders: target.headerRules.ConfiguredNames(),
+				TargetConfig:      target.resolvedTarget.TargetConfig,
+				Timeouts:          executionTimeouts(target.timeouts),
+				Credential:        credential.snapshot,
+				Proxy:             credential.proxy,
+				ProxyFingerprint:  credential.proxyFingerprint,
 			})
 			if validationErr := spec.Validate(); validationErr != nil {
 				return ModelDiscoveryResult{}, fmt.Errorf("build discovery attempt: %w", app_errors.ErrInternalServer)
@@ -175,6 +176,8 @@ func utilityRequestShape(
 	case execution.OperationListModels:
 		switch clientProtocol {
 		case protocol.OpenAICompletions, protocol.Anthropic:
+			return clientProtocol, http.MethodGet, "/v1/models", nil, nil
+		case protocol.Decisions:
 			return clientProtocol, http.MethodGet, "/v1/models", nil, nil
 		case protocol.Gemini:
 			return clientProtocol, http.MethodGet, "/v1beta/models", nil, nil
@@ -262,6 +265,20 @@ func parseDiscoveredModelsPage(
 			return discoveredModelsPage{}, err
 		}
 		return discoveredModelsPage{models: models, nextRawQuery: query}, nil
+	case protocol.Decisions:
+		var payload struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		if err := decodeSingleJSON(body, &payload); err != nil {
+			return discoveredModelsPage{}, err
+		}
+		models := make([]string, 0, len(payload.Models))
+		for _, item := range payload.Models {
+			models = append(models, item.Name)
+		}
+		return discoveredModelsPage{models: models}, nil
 	default:
 		return discoveredModelsPage{}, app_errors.ErrValidation
 	}

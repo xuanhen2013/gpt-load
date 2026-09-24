@@ -24,12 +24,14 @@ type accessKeyFilterDigestBody struct {
 }
 
 type accessKeyCreateDigestBody struct {
-	Name           string                          `json:"name"`
-	Status         *state.AccessKeyStatus          `json:"status,omitempty"`
-	Filters        accessKeyFilterDigestBody       `json:"filters"`
-	RPMLimit       int64                           `json:"rpm_limit"`
-	CostLimitRules []AccessKeyCostLimitRuleRequest `json:"cost_limit_rules,omitempty"`
-	ExpiresAtMS    *int64                          `json:"expires_at_ms,omitempty"`
+	KeyHash         string                          `json:"key_hash,omitempty"`
+	PriceMultiplier string                          `json:"price_multiplier,omitempty"`
+	Name            string                          `json:"name"`
+	Status          *state.AccessKeyStatus          `json:"status,omitempty"`
+	Filters         accessKeyFilterDigestBody       `json:"filters"`
+	RPMLimit        int64                           `json:"rpm_limit"`
+	CostLimitRules  []AccessKeyCostLimitRuleRequest `json:"cost_limit_rules,omitempty"`
+	ExpiresAtMS     *int64                          `json:"expires_at_ms,omitempty"`
 }
 
 func (s *Service) CreateAccessKeyIdempotent(
@@ -37,6 +39,14 @@ func (s *Service) CreateAccessKeyIdempotent(
 	idempotencyKey string,
 	request AccessKeyCreateRequest,
 ) (AccessKeyCreateResult, error) {
+	keyHash := ""
+	if request.Key != "" {
+		if !validAccessKeyPlaintext(request.Key) {
+			return AccessKeyCreateResult{}, app_errors.ErrInvalidCustomAccessKey
+		}
+		// 使用带密钥的指纹区分请求，避免幂等摘要成为弱密钥的离线猜测凭据。
+		keyHash = s.encryption.Hash(request.Key)
+	}
 	name, err := normalizeAccessKeyName(request.Name)
 	if err != nil {
 		return AccessKeyCreateResult{}, err
@@ -63,13 +73,19 @@ func (s *Service) CreateAccessKeyIdempotent(
 	if err := validateOptionalExpiresAtMS(request.ExpiresAtMS); err != nil {
 		return AccessKeyCreateResult{}, err
 	}
+	priceMultiplier, err := normalizePriceMultiplier(request.PriceMultiplier)
+	if err != nil {
+		return AccessKeyCreateResult{}, err
+	}
 	var digestStatus *state.AccessKeyStatus
 	if status != state.AccessKeyStatusActive {
 		digestStatus = &status
 	}
 	digestFilters := canonicalAccessKeyFilterSet(filters)
 	canonicalBody, err := canonicalIdempotencyBody(accessKeyCreateDigestBody{
-		Name: name, Status: digestStatus, Filters: digestFilters, RPMLimit: rpmLimit,
+		KeyHash:         keyHash,
+		PriceMultiplier: priceMultiplierDigest(priceMultiplier),
+		Name:            name, Status: digestStatus, Filters: digestFilters, RPMLimit: rpmLimit,
 		CostLimitRules: costLimitRuleRequestsForDigest(costLimitRules),
 		ExpiresAtMS:    request.ExpiresAtMS,
 	})
@@ -105,10 +121,11 @@ func (s *Service) CreateAccessKeyIdempotent(
 			if err := validateFilterGroupReferences(tx, filters.Groups); err != nil {
 				return idempotentMutationResult{}, err
 			}
-			row, plaintext, err := s.newAccessKeyRow(name, filters, rpmLimit)
+			row, plaintext, err := s.newAccessKeyRow(name, filters, rpmLimit, request.Key)
 			if err != nil {
 				return idempotentMutationResult{}, err
 			}
+			row.PriceMultiplierMicros = priceMultiplierStorage(priceMultiplier)
 			row.Status = string(status)
 			row.ExpiresAtMS = cloneOptionalInt64(request.ExpiresAtMS)
 			if err := tx.Create(&row).Error; err != nil {
@@ -119,8 +136,9 @@ func (s *Service) CreateAccessKeyIdempotent(
 				return idempotentMutationResult{}, err
 			}
 			metadata, err := mapAccessKeyMetadataRow(accessKeyMetadataRow{
-				ID: row.ID, Name: row.Name, KeySuffix: row.KeySuffix,
-				Status: row.Status, Filters: row.Filters, RPMLimit: row.RPMLimit,
+				ID: row.ID, Name: row.Name, KeyPrefix: *row.KeyPrefix, KeySuffix: row.KeySuffix,
+				PriceMultiplierMicros: row.PriceMultiplierMicros,
+				Status:                row.Status, Filters: row.Filters, RPMLimit: row.RPMLimit,
 				ExpiresAtMS: row.ExpiresAtMS,
 				CreatedAtMS: row.CreatedAtMS, UpdatedAtMS: row.UpdatedAtMS,
 			})
@@ -157,6 +175,9 @@ func (s *Service) CreateAccessKeyIdempotent(
 	var metadata AccessKeyMetadata
 	if err := json.Unmarshal(operationResult.CanonicalResult, &metadata); err != nil {
 		return AccessKeyCreateResult{}, app_errors.ErrInternalServer
+	}
+	if metadata.PriceMultiplier == "" {
+		metadata.PriceMultiplier = "1"
 	}
 	if metadata.CostLimitRules == nil {
 		// Pre-0002 idempotency results did not carry this additive field. Preserve

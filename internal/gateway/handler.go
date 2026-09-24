@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,6 +16,8 @@ import (
 
 	"gpt-load/internal/accessquota"
 	"gpt-load/internal/affinity"
+	"gpt-load/internal/automodel"
+	"gpt-load/internal/catalog"
 	"gpt-load/internal/channel"
 	"gpt-load/internal/connection"
 	"gpt-load/internal/dialect"
@@ -29,6 +30,8 @@ import (
 	"gpt-load/internal/platform/utils"
 	"gpt-load/internal/pricing"
 	"gpt-load/internal/ratelimit"
+	"gpt-load/internal/requestaudit"
+	"gpt-load/internal/requestredact"
 	"gpt-load/internal/scheduler"
 	"gpt-load/internal/state"
 	subscriptionproviders "gpt-load/internal/subscription/providers"
@@ -80,13 +83,18 @@ type runtimeCredentialRegistry interface {
 	ActiveEncryptedCredentialDataIfMatch(ref state.CredentialRef) (string, bool)
 	SetCooldownWithChange(credentialID uint, until time.Time) (exists bool, changed bool)
 	SetCooldownWithChangeIfVersion(credentialID uint, expectedVersion uint64, until time.Time) (matched bool, changed bool)
+	SetModelCooldown(state.CredentialRef, string, time.Time, time.Time) (bool, bool)
 	IncrFailure(credentialID uint) (int, bool)
 	SetBlacklistedWithChange(credentialID uint) (exists bool, changed bool)
 	ClearFailure(credentialID uint) bool
 }
 
 type Handler struct {
+	guardrails          requestaudit.Cache
+	autoTasks           autoTaskCache
+	decisionClient      autoDecisionRunner
 	manager             *state.Manager
+	catalog             *catalog.Runtime
 	channels            *channel.Registry
 	subscriptions       *subscriptionruntime.Runtime
 	registry            runtimeCredentialRegistry
@@ -99,7 +107,7 @@ type Handler struct {
 	requestLogSink      telemetry.RequestLogSink
 	priceTables         PriceTableProvider
 	accessQuota         *accessquota.Runtime
-	newRandom           func() *rand.Rand
+	usageReader         AccessKeyUsageReader
 	newRequestID        func() (string, error)
 	requestNow          func() time.Time
 	now                 func() time.Time
@@ -111,24 +119,32 @@ type Handler struct {
 	routeNotFoundEvents *utils.RateLimitedEventCounter
 	lifecycle           *httplifecycle.Coordinator
 	affinityCache       *affinity.Cache
+	responseBindings    *state.ResponseBindings
+	websocketLimits     websocketLimits
+	websocketBudget     websocketBudget
 }
 
 func (handler *Handler) freezeAttemptPricing(
 	selection scheduler.Selection,
 	observations dialect.RequestMetadata,
 	observationsAvailable bool,
+	accessKeyMultiplier pricing.PriceMultiplier,
 ) frozenAttemptPricing {
 	frozen := frozenAttemptPricing{
-		channelID:        string(selection.ChannelID),
-		groupID:          selection.GroupID,
-		upstreamModel:    optionalModelValue(selection.UpstreamModelID),
-		applicable:       observations.ObserveUsage,
-		metadataSet:      true,
-		pricingMode:      observations.PricingMode,
+		channelID:     string(selection.ChannelID),
+		groupID:       selection.GroupID,
+		upstreamModel: optionalModelValue(selection.UpstreamModelID),
+		applicable:    observations.ObserveUsage,
+		metadataSet:   true,
+		pricingMode:   observations.PricingMode,
+		priceMultipliers: pricing.PriceMultipliers{
+			Group:     selection.Group.PriceMultiplier,
+			AccessKey: accessKeyMultiplier,
+		},
 		usageDiagnostics: observations.UsageDiagnostics,
 		reasoning:        observations.Reasoning.Clone(),
 	}
-	if observationsAvailable && handler != nil && handler.priceTables != nil {
+	if observations.Operation != execution.OperationWebSearch && observationsAvailable && handler != nil && handler.priceTables != nil {
 		frozen.table = handler.priceTables.Load()
 	}
 	return frozen
@@ -153,20 +169,22 @@ func NewHandler(
 	if requestLogSink == nil {
 		requestLogSink = telemetry.NoopRequestLogSink{}
 	}
+	manager.SetSchedulingState(registry.SchedulingState())
 	channels := channel.NewRegistry()
 	subscriptions, _ := subscriptionruntime.NewRuntime(channels, subscriptionproviders.Implementations()...)
 	handler := &Handler{
 		manager: manager, channels: channels, subscriptions: subscriptions, registry: registry, encryption: encryptionService,
 		forwarder: forwarder, dialects: dialects, stats: stats, mutations: mutations,
 		limiter: limiter, requestLogSink: requestLogSink, priceTables: priceTables,
-		affinityCache:  affinity.NewCache(),
-		newRandom:      func() *rand.Rand { return rand.New(rand.NewSource(rand.Int63())) },
-		newRequestID:   newRequestID,
-		requestNow:     time.Now,
-		now:            time.Now,
-		writeTimeout:   downstreamWriteTimeout,
-		modelListLimit: maxNonStreamingResponseBodyBytes,
-		logger:         logrus.StandardLogger(),
+		affinityCache:    affinity.NewCache(),
+		responseBindings: state.NewResponseBindings(),
+		websocketLimits:  defaultWebsocketLimits(),
+		newRequestID:     newRequestID,
+		requestNow:       time.Now,
+		now:              time.Now,
+		writeTimeout:     downstreamWriteTimeout,
+		modelListLimit:   maxNonStreamingResponseBodyBytes,
+		logger:           logrus.StandardLogger(),
 		authFailureEvents: utils.NewRateLimitedEventCounter(
 			time.Minute,
 			time.Now,
@@ -204,6 +222,9 @@ func NewHandlerWithLifecycle(
 	priceTables PriceTableProvider,
 	accessQuota *accessquota.Runtime,
 	lifecycle *httplifecycle.Coordinator,
+	responseBindings *state.ResponseBindings,
+	catalogRuntime *catalog.Runtime,
+	usageReader AccessKeyUsageReader,
 ) *Handler {
 	handler := NewHandler(
 		manager,
@@ -225,6 +246,9 @@ func NewHandlerWithLifecycle(
 		handler.subscriptions = subscriptions
 	}
 	handler.lifecycle = lifecycle
+	handler.responseBindings = responseBindings
+	handler.catalog = catalogRuntime
+	handler.usageReader = usageReader
 	return handler
 }
 
@@ -242,37 +266,40 @@ type requestAccessQuotaAdmission struct {
 }
 
 func (handler *Handler) applyDecisionEffect(
-	credentialID uint,
+	ref state.CredentialRef,
 	decision health.Decision,
 	statusCode int,
 	attemptNow time.Time,
 ) {
 	defaults := state.DefaultRuntimeSettings()
 	handler.applyDecisionEffectWithBlacklistPolicy(
-		credentialID,
+		ref,
 		0,
 		decision,
 		statusCode,
 		attemptNow,
 		defaults.BlacklistThreshold,
+		"",
 	)
 }
 
 func (handler *Handler) applyGroupDecisionEffect(
 	group state.GroupView,
-	credentialID uint,
+	ref state.CredentialRef,
 	credentialVersion uint64,
 	decision health.Decision,
 	statusCode int,
 	attemptNow time.Time,
+	model string,
 ) {
 	handler.applyDecisionEffectWithBlacklistPolicy(
-		credentialID,
+		ref,
 		credentialVersion,
 		decision,
 		statusCode,
 		attemptNow,
 		group.BlacklistThreshold,
+		model,
 	)
 }
 
@@ -285,16 +312,30 @@ func refreshCooldownCredentialVersion(result UpstreamResult, credentialVersion u
 }
 
 func (handler *Handler) applyDecisionEffectWithBlacklistPolicy(
-	credentialID uint,
+	ref state.CredentialRef,
 	credentialVersion uint64,
 	decision health.Decision,
 	statusCode int,
 	attemptNow time.Time,
 	blacklistThreshold int,
+	model string,
 ) {
+	credentialID := ref.ID
 	switch decision.Effect {
+	case health.EffectCooldownModel:
+		handler.mutateCredentialForTarget(ref, func() {
+			accepted, changed := handler.registry.SetModelCooldown(ref, model, decision.CooldownUntil, attemptNow)
+			if accepted {
+				handler.stats.RecordProblem(credentialID, decision.Category, statusCode, attemptNow)
+			}
+			if changed {
+				utils.LogPlaneBestEffort(handler.logger, logrus.WarnLevel, utils.LogPlaneData,
+					logrus.Fields{"event": "model_cooldown", "credential_id": credentialID, "model": model,
+						"cooldown_until": decision.CooldownUntil, "status_code": statusCode}, "Upstream model entered cooldown")
+			}
+		})
 	case health.EffectCooldownCredential:
-		mutate := func() {
+		handler.mutateCredentialForTarget(ref, func() {
 			until := decision.CooldownUntil
 			exists, changed := false, false
 			if credentialVersion == 0 {
@@ -313,14 +354,9 @@ func (handler *Handler) applyDecisionEffectWithBlacklistPolicy(
 			if changed {
 				handler.logCredentialCooldown(credentialID, decision.Category, statusCode)
 			}
-		}
-		if handler.mutations == nil {
-			mutate()
-		} else {
-			handler.mutations.Do(credentialID, mutate)
-		}
+		})
 	case health.EffectRecordCredentialFailure:
-		handler.mutations.Do(credentialID, func() {
+		handler.mutateCredentialForTarget(ref, func() {
 			count, ok := handler.registry.IncrFailure(credentialID)
 			if !ok {
 				return
@@ -341,23 +377,39 @@ func (handler *Handler) applyDecisionEffectWithBlacklistPolicy(
 	}
 }
 
-func (handler *Handler) recordCredentialSuccess(credentialID uint, at time.Time) {
-	handler.mutations.Do(credentialID, func() {
-		if handler.registry.ClearFailure(credentialID) {
-			handler.stats.RecordSuccess(credentialID, at)
+func (handler *Handler) recordCredentialSuccess(ref state.CredentialRef, at time.Time) {
+	handler.mutateCredentialForTarget(ref, func() {
+		if handler.registry.ClearFailure(ref.ID) {
+			handler.stats.RecordSuccess(ref.ID, at)
 		}
 	})
 }
 
-func retryAttemptLimit(group state.GroupView) int {
-	if group.RetryCount <= 0 {
+func (handler *Handler) mutateCredentialForTarget(ref state.CredentialRef, mutate func()) {
+	apply := func() {
+		// 与配置变更共用凭据锁，避免校验后再切换目标；同目标的令牌刷新不影响结果归属。
+		current, exists := handler.registry.CredentialRef(ref.ID)
+		if !exists || current.GroupID != ref.GroupID || current.IdentityGeneration != ref.IdentityGeneration {
+			return
+		}
+		mutate()
+	}
+	if handler.mutations == nil {
+		apply()
+	} else {
+		handler.mutations.Do(ref.ID, apply)
+	}
+}
+
+func retryAttemptLimit(retryCount int) int {
+	if retryCount <= 0 {
 		return 1
 	}
 	maximum := int(^uint(0) >> 1)
-	if group.RetryCount >= maximum {
+	if retryCount >= maximum {
 		return maximum
 	}
-	return group.RetryCount + 1
+	return retryCount + 1
 }
 
 func (handler *Handler) Handle(ginContext *gin.Context) {
@@ -370,6 +422,14 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 	}
 	if requestContext.locallyRejected {
 		handler.dataPlaneRouteNotFound(ginContext)
+		return
+	}
+	if requestContext.selectedRoute.Kind == endpointUsage {
+		handler.handleUsage(ginContext, requestContext)
+		return
+	}
+	if websocketIntent(ginContext.Request) {
+		handler.handleWebsocket(ginContext, requestContext)
 		return
 	}
 	requestStarted := requestContext.requestStarted
@@ -391,8 +451,11 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		ginContext.Writer.Header().Set(requestIDHeader, requestID)
 	}
 
-	quotaAdmission := requestAccessQuotaAdmission{accessKeyID: accessKey.ID}
-	if len(accessKey.CostLimitRules) > 0 {
+	quotaAdmission := &requestAccessQuotaAdmission{accessKeyID: accessKey.ID}
+	if ginContext.Request.URL.Path == "/v1/alpha/search" {
+		quotaAdmission = nil
+	}
+	if quotaAdmission != nil && len(accessKey.CostLimitRules) > 0 {
 		quotaAdmission.snapshot = snapshot
 	}
 	var recorder *requestRecorder
@@ -405,12 +468,13 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 			selectedRoute.Protocol,
 			handler.requestNow,
 		)
+		recorder.accessKeyMultiplier = accessKey.PriceMultiplier
 		defer func() {
 			recorder.completeMissingOutcome(
 				ginContext.Writer.Written(),
 				ginContext.Writer.Status(),
 			)
-			if quotaAdmission.admitted && handler.accessQuota != nil {
+			if quotaAdmission != nil && quotaAdmission.admitted && handler.accessQuota != nil {
 				completion := handler.accessQuota.Complete(
 					quotaAdmission.ticket,
 					recorder.estimatedCostNanoUSD(),
@@ -421,7 +485,7 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		}()
 	}
 
-	if handler.accessQuota != nil {
+	if quotaAdmission != nil && handler.accessQuota != nil {
 		quotaDecision := accessquota.Decision{}
 		if quotaAdmission.snapshot == nil {
 			quotaDecision = handler.accessQuota.Check(accessKey.ID, handler.quotaNow())
@@ -516,7 +580,7 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		return
 	}
 	requestHeaders := ginContext.Request.Header.Clone()
-	platformheader.StripRequestRepresentationMetadata(requestHeaders)
+	platformheader.StripRepresentationMetadata(requestHeaders)
 	parsed := &dialect.ParsedRequest{
 		Method:   ginContext.Request.Method,
 		Path:     ginContext.Request.URL.Path,
@@ -545,6 +609,37 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		recorder.completeCanceled(ginContext.Request.Context(), 0, -1)
 		return
 	}
+	recorder.setClientModel(model)
+	recorder.setOperation(metadata.Operation)
+	recorder.setStream(metadata.Stream)
+	var boundAuto *automodel.Selection
+	autoQuery := scheduler.Query{}
+	if metadata.PreviousResponseID != "" {
+		binding, found := handler.responseBindings.Lookup(accessKey.ID, metadata.PreviousResponseID)
+		if !found {
+			handler.completeReason(ginContext, recorder, reasonResponseBindingNotFound)
+			return
+		}
+		boundAuto = binding.AutoSelection
+		autoQuery.AllowedCredentialRefs = map[uint]state.CredentialRef{binding.CredentialID: {
+			ID: binding.CredentialID, GroupID: binding.GroupID, IdentityGeneration: binding.IdentityGeneration,
+		}}
+	}
+	if _, automatic := snapshot.AutoModels.Lookup(model); automatic {
+		ctx := ginContext.Request.Context()
+		var failure *reason
+		parsed, metadata, recorder.autoDecision, failure = handler.prepareAutoModel(ctx, snapshot, accessKey, selectedDialect, parsed, metadata, boundAuto, func() *reason {
+			return handler.admitAutoQuota(snapshot, quotaAdmission)
+		}, autoQuery)
+		if failure != nil {
+			handler.completeReason(ginContext, recorder, *failure)
+			return
+		}
+		if ctx.Err() != nil {
+			recorder.completeCanceled(ctx, 0, -1)
+			return
+		}
+	}
 	query := scheduler.Query{
 		ClientProtocol:           selectedRoute.Protocol,
 		Operation:                metadata.Operation,
@@ -559,7 +654,6 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 	for _, ref := range capturedRefs {
 		allowedCredentialRefs[ref.ID] = ref
 	}
-	recorder.setClientModel(model)
 	recorder.setOperation(metadata.Operation)
 	recorder.setStream(metadata.Stream)
 	recorder.setReasoning(metadata.Reasoning)
@@ -572,18 +666,33 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		allowedCredentialIDs[credentialID] = struct{}{}
 	}
 	query.AllowedCredentialIDs = allowedCredentialIDs
-	requestAffinity := handler.resolveRequestAffinity(
-		snapshot,
-		accessKey.ID,
-		selectedRoute.Protocol,
-		metadata.AffinityPrefix,
-		allowedCredentialRefs,
-	)
-	query.PreferredCredentialID = requestAffinity.preferredCredentialID
-	iterator := scheduler.New(snapshot, handler.registry, query, handler.newRandom())
+	query.AllowedCredentialRefs = allowedCredentialRefs
+	var requestAffinity requestAffinity
+	if metadata.PreviousResponseID != "" {
+		binding, found := handler.responseBindings.Lookup(accessKey.ID, metadata.PreviousResponseID)
+		if !found {
+			handler.completeReason(ginContext, recorder, reasonResponseBindingNotFound)
+			return
+		}
+		query.AllowedCredentialIDs = map[uint]struct{}{binding.CredentialID: {}}
+		query.AllowedCredentialRefs = map[uint]state.CredentialRef{
+			binding.CredentialID: {
+				ID: binding.CredentialID, GroupID: binding.GroupID,
+				IdentityGeneration: binding.IdentityGeneration,
+			},
+		}
+	} else {
+		requestAffinity = handler.resolveRequestAffinity(
+			snapshot, accessKey.ID, selectedRoute.Protocol, metadata.AffinityPrefix, allowedCredentialRefs, metadata.PromptCacheKey,
+		)
+		query.PreferredCredentialID = requestAffinity.preferredCredentialID
+	}
+	iterator := scheduler.New(snapshot, handler.registry, query)
 	handler.executeAttempts(
 		ginContext,
+		snapshot,
 		iterator,
+		retryAttemptLimit(snapshot.Settings.RetryCount),
 		allowedCredentialRefs,
 		selectedDialect,
 		parsed,
@@ -591,7 +700,7 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		metadata,
 		requestAffinity,
 		recorder,
-		&quotaAdmission,
+		quotaAdmission,
 		snapshot.Settings.AccountConcurrencyWaitTimeout,
 	)
 }
@@ -755,7 +864,9 @@ func headerFieldValues(headers http.Header, name string) []string {
 
 func (handler *Handler) executeAttempts(
 	ginContext *gin.Context,
+	snapshot *state.ConfigSnapshot,
 	iterator *scheduler.Iterator,
+	forwardAttemptLimit int,
 	allowedCredentialRefs map[uint]state.CredentialRef,
 	selectedDialect dialect.Dialect,
 	parsed *dialect.ParsedRequest,
@@ -768,6 +879,15 @@ func (handler *Handler) executeAttempts(
 ) {
 	stream := originalMetadata.Stream
 	operation := originalMetadata.Operation
+	var redactionCipher encryption.RedactionCipher
+	if !snapshot.RequestRedaction.Empty() || redactionBusinessProtocol(selectedDialect.Protocol()) {
+		var err error
+		redactionCipher, err = handler.encryption.NewRedactionCipher(recorder.accessKeyID)
+		if err != nil {
+			handler.completeReason(ginContext, recorder, reasonRedactionFailed)
+			return
+		}
+	}
 	type deferredAttempt struct {
 		result        UpstreamResult
 		decision      health.Decision
@@ -779,11 +899,10 @@ func (handler *Handler) executeAttempts(
 	var lastConversion *deferredAttempt
 	accountConcurrencyLimited := false
 	var lastProviderError *deferredAttempt
+	var lastEmptyResponse *deferredAttempt
 	lastAttemptIndex := -1
 	attemptSequence := 0
 	forwardAttempts := 0
-	forwardAttemptLimit := 1
-	retryPolicyResolved := false
 	type credentialRefreshRetry struct {
 		selection scheduler.Selection
 		ref       state.CredentialRef
@@ -801,19 +920,32 @@ func (handler *Handler) executeAttempts(
 	var cachedPrepared *preparedRequest
 	loggedOverrideFailures := make(map[uint]struct{})
 	var parameterOverrideFailure *reason
-	prepareRequest := func(selection scheduler.Selection) preparedRequest {
+	prepareRequest := func(selection scheduler.Selection) (prepared preparedRequest) {
 		if cachedPrepared != nil && preparedGroupID == selection.GroupID {
 			return *cachedPrepared
 		}
 		cachedPrepared = nil
 		preparedGroupID = selection.GroupID
-		prepared := preparedRequest{
+		prepared = preparedRequest{
 			request: parsed, observations: originalMetadata, observationsAvailable: true,
+		}
+		defer func() {
+			if prepared.err == nil {
+				prepared.request, prepared.err = redactOutboundRequest(snapshot.RequestRedaction, selectedDialect.Protocol(), prepared.request, redactionCipher)
+			}
+			cachedPrepared = &prepared
+		}()
+		if operation == execution.OperationWebSearch {
+			return prepared
+		}
+		routeModel := externalModel
+		if recorder.autoDecision != nil {
+			routeModel = recorder.autoDecision.Selection.TargetModel
 		}
 		body, applied, err := selection.Group.ParameterOverrides.Apply(
 			selectedDialect.Protocol(),
 			originalMetadata.Operation,
-			externalModel,
+			routeModel,
 			parsed.Body,
 		)
 		if err != nil {
@@ -879,9 +1011,13 @@ func (handler *Handler) executeAttempts(
 		scope execution.ErrorScope,
 	) bool {
 		attemptSequence++
-		if attemptSequence == 1 && requestAffinity.preferredCredentialID != 0 &&
-			selection.CredentialID == requestAffinity.preferredCredentialID {
-			recorder.setAffinityHit(true)
+		if attemptSequence == 1 && (originalMetadata.PreviousResponseID != "" ||
+			(requestAffinity.preferredCredentialID != 0 && selection.CredentialID == requestAffinity.preferredCredentialID)) {
+			kind := requestAffinity.kind
+			if originalMetadata.PreviousResponseID != "" {
+				kind = telemetry.AffinityResponseContinuity
+			}
+			recorder.setAffinityHit(true, kind)
 		}
 		updateDebugHeaders(ginContext.Writer.Header(), selection.Group.Name, attemptSequence)
 		if recorder != nil {
@@ -890,6 +1026,7 @@ func (handler *Handler) executeAttempts(
 					selection,
 					attemptObservations,
 					attemptObservationsAvailable,
+					recorder.accessKeyMultiplier,
 				),
 			)
 		}
@@ -917,7 +1054,7 @@ func (handler *Handler) executeAttempts(
 			selection, nil, result, decision, attemptStarted, attemptCompleted,
 		)
 		lastAttemptIndex = recordedAttempt
-		handler.applyGroupDecisionEffect(selection.Group, selection.CredentialID, 0, decision, 0, attemptNow)
+		handler.applyGroupDecisionEffect(selection.Group, allowedCredentialRefs[selection.CredentialID], 0, decision, 0, attemptNow, optionalModelValue(selection.UpstreamModelID))
 		if decision.Effect == health.EffectSkipGroup {
 			iterator.SkipGroup(selection.GroupID)
 		}
@@ -953,6 +1090,9 @@ func (handler *Handler) executeAttempts(
 			authRefreshReplayUsed = true
 			forceCredentialRefresh = currentRef.Version <= refreshRetry.ref.Version
 			refreshRetry = nil
+			if !iterator.ChargeReplay(selection, ref) {
+				continue
+			}
 		} else {
 			var err error
 			selection, err = iterator.Next()
@@ -974,6 +1114,10 @@ func (handler *Handler) executeAttempts(
 		}
 		prepared := prepareRequest(selection)
 		if prepared.err != nil {
+			if errors.Is(prepared.err, requestredact.ErrContent) {
+				handler.completeReason(ginContext, recorder, reasonRedactionFailed)
+				return
+			}
 			if errors.Is(prepared.err, errRequestTooLarge) {
 				if parameterOverrideFailure == nil {
 					parameterOverrideFailure = &reasonRequestTooLarge
@@ -996,12 +1140,6 @@ func (handler *Handler) executeAttempts(
 		}
 		attemptObservations := prepared.observations
 		attemptObservationsAvailable := prepared.observationsAvailable
-		if !retryPolicyResolved {
-			// A request can fail over across Groups. Freeze the first active
-			// candidate's effective Group policy for the whole retry chain.
-			forwardAttemptLimit = retryAttemptLimit(selection.Group)
-			retryPolicyResolved = true
-		}
 		decryptedCredential, err := handler.encryption.Decrypt(encrypted)
 		if err != nil {
 			if !recordCandidatePreparationFailure(
@@ -1107,11 +1245,19 @@ func (handler *Handler) executeAttempts(
 		// the limiter's release closure is idempotent.
 		defer releaseAccount()
 
+		if failure := handler.checkRequestAudit(ginContext.Request.Context(), snapshot, snapshot.AccessKeysByID[recorder.accessKeyID], prepared.request.Body, recorder, func() *reason { return handler.admitAutoQuota(snapshot, quotaAdmission) }); failure != nil {
+			handler.completeReason(ginContext, recorder, *failure)
+			return
+		}
 		attemptSequence++
 		forwardAttempts++
-		if attemptSequence == 1 && requestAffinity.preferredCredentialID != 0 &&
-			selection.CredentialID == requestAffinity.preferredCredentialID {
-			recorder.setAffinityHit(true)
+		if attemptSequence == 1 && (originalMetadata.PreviousResponseID != "" ||
+			(requestAffinity.preferredCredentialID != 0 && selection.CredentialID == requestAffinity.preferredCredentialID)) {
+			kind := requestAffinity.kind
+			if originalMetadata.PreviousResponseID != "" {
+				kind = telemetry.AffinityResponseContinuity
+			}
+			recorder.setAffinityHit(true, kind)
 		}
 		updateDebugHeaders(ginContext.Writer.Header(), selection.Group.Name, attemptSequence)
 		executionRequestID := "untracked"
@@ -1120,7 +1266,8 @@ func (handler *Handler) executeAttempts(
 		}
 		input := ForwardInput{
 			Dialect: selectedDialect, ObserveUsage: attemptObservations.ObserveUsage,
-			Group: selection.Group, APIKey: normalizedCredential.apiKey,
+			RedactionCipher: redactionCipher,
+			Group:           selection.Group, APIKey: normalizedCredential.apiKey,
 			CredentialSecrets: normalizedCredential.secrets, Request: prepared.request,
 			ExternalModel:            externalModel,
 			UpstreamModelID:          optionalModelValue(selection.UpstreamModelID),
@@ -1130,6 +1277,7 @@ func (handler *Handler) executeAttempts(
 			ClientProtocol:           selectedDialect.Protocol(),
 			Operation:                originalMetadata.Operation,
 			RouteRequirement:         originalMetadata.RouteRequirement,
+			ResponsesStorePreference: originalMetadata.ResponsesStorePreference,
 			ResponsesStoreDowngraded: selection.ResponsesStoreDowngraded,
 			ChannelID:                string(selection.ChannelID),
 			RouteMode:                execution.RouteMode(selection.RouteMode),
@@ -1144,6 +1292,11 @@ func (handler *Handler) executeAttempts(
 			ProxyFingerprint:       proxyFingerprint,
 			ForceCredentialRefresh: forceCredentialRefresh,
 			ContinuityKey:          requestAffinity.continuityKey,
+			// 豁免依据实际发往上游的请求：分组参数覆盖可能写入 conversation 或 generate。
+			EmptyResponseRetry: stream && emptyResponseRetryEnabled(
+				selection.Group, originalMetadata, prepared.request.Body,
+			),
+			OnResponse: handler.responseBindingObserver(recorder.accessKeyID, selection, ref, prepared.request, recorder.autoSelection()),
 			OnFirstResponse: func() {
 				recorder.recordFirstResponse()
 			},
@@ -1154,6 +1307,7 @@ func (handler *Handler) executeAttempts(
 					selection,
 					attemptObservations,
 					attemptObservationsAvailable,
+					recorder.accessKeyMultiplier,
 				),
 			)
 		}
@@ -1166,6 +1320,20 @@ func (handler *Handler) executeAttempts(
 		}
 		releaseAccount()
 		result = normalizeUpstreamResultContract(result)
+		if !stream && result.HasResponse() && !result.ProviderErrorBeforeCommit &&
+			result.DispatchState != execution.DispatchLocal &&
+			result.StatusCode >= http.StatusOK && result.StatusCode < http.StatusMultipleChoices {
+			if input.OnResponse != nil {
+				if err := input.OnResponse(result.Body); err != nil {
+					result.Err = err
+					result.ExecutionError = &execution.ErrorEvidence{
+						Kind: execution.ErrorKindInternal, OriginHint: execution.ErrorOriginInternal,
+						ScopeHint: execution.ErrorScopeRequest, Code: "response_binding_conflict",
+						Summary: "Response ownership could not be recorded.", ReplaySafety: execution.ReplaySafetyUnknown,
+					}
+				}
+			}
+		}
 		attemptCompleted := time.Time{}
 		if recorder != nil {
 			attemptCompleted = recorder.now()
@@ -1197,15 +1365,18 @@ func (handler *Handler) executeAttempts(
 			}
 			handler.applyGroupDecisionEffect(
 				selection.Group,
-				selection.CredentialID,
+				ref,
 				0,
 				decision,
 				result.StatusCode,
 				attemptNow,
+				optionalModelValue(selection.UpstreamModelID),
 			)
 			if stream && result.Stream.EndReason == StreamEndCleanEOF {
-				handler.recordCredentialSuccess(selection.CredentialID, attemptNow)
-				handler.recordAffinitySuccess(requestAffinity, selection, ref)
+				handler.recordCredentialSuccess(ref, attemptNow)
+				if originalMetadata.PreviousResponseID == "" {
+					handler.recordAffinitySuccess(requestAffinity, selection, ref)
+				}
 			}
 			return
 		}
@@ -1221,13 +1392,16 @@ func (handler *Handler) executeAttempts(
 				)
 				recorder.completeCanceled(ginContext.Request.Context(), 0, recordedAttempt)
 			}
+			if decision.Effect == health.EffectCooldownModel {
+				handler.applyGroupDecisionEffect(selection.Group, ref, 0, decision, result.StatusCode, attemptNow, optionalModelValue(selection.UpstreamModelID))
+			}
 			return
 		}
-		if !stream && result.DispatchState != execution.DispatchLocal &&
+		if operation != execution.OperationWebSearch && !stream && result.DispatchState != execution.DispatchLocal &&
 			!result.ProviderErrorBeforeCommit && result.HasResponse() &&
 			result.StatusCode >= http.StatusOK &&
 			result.StatusCode < http.StatusMultipleChoices {
-			handler.recordCredentialSuccess(selection.CredentialID, attemptNow)
+			handler.recordCredentialSuccess(ref, attemptNow)
 		}
 		recordedAttempt := recorder.recordAttempt(
 			selection, normalizedCredential.secrets, result, decision, attemptStarted, attemptCompleted,
@@ -1235,11 +1409,12 @@ func (handler *Handler) executeAttempts(
 		lastAttemptIndex = recordedAttempt
 		handler.applyGroupDecisionEffect(
 			selection.Group,
-			selection.CredentialID,
+			ref,
 			refreshCooldownCredentialVersion(result, ref.Version),
 			decision,
 			result.StatusCode,
 			attemptNow,
+			optionalModelValue(selection.UpstreamModelID),
 		)
 		if decision.Retry == health.RetryRefreshCredential &&
 			!authRefreshReplayUsed && forwardAttempts < forwardAttemptLimit {
@@ -1259,6 +1434,21 @@ func (handler *Handler) executeAttempts(
 			}
 			return
 		}
+		if result.EmptyResponseBeforeCommit {
+			if decision.Retry != health.RetryNone && forwardAttempts < forwardAttemptLimit {
+				lastEmptyResponse = &deferredAttempt{
+					result:        result,
+					decision:      decision,
+					upstreamModel: optionalModelValue(selection.UpstreamModelID),
+					attemptIndex:  recordedAttempt,
+				}
+				recorder.retryIfAnotherForward(recordedAttempt)
+				continue
+			}
+			handler.completeEmptyResponse(ginContext, recorder, result, decision,
+				optionalModelValue(selection.UpstreamModelID), recordedAttempt)
+			return
+		}
 		if result.ProviderErrorBeforeCommit {
 			if decision.Retry != health.RetryNone {
 				lastProviderError = &deferredAttempt{
@@ -1275,8 +1465,12 @@ func (handler *Handler) executeAttempts(
 				optionalModelValue(selection.UpstreamModelID),
 				recordedAttempt,
 			)
-			if err := handler.writeReason(ginContext, reasonUpstreamProtocol); err != nil {
-				handler.completeWriteTerminal(ginContext, recorder, reasonUpstreamProtocol.Status)
+			value := providerErrorReason(result)
+			if value.Status == http.StatusTooManyRequests {
+				setCooldownRetryAfter(ginContext, decision.CooldownUntil, handler.now())
+			}
+			if err := handler.writeReason(ginContext, value); err != nil {
+				handler.completeWriteTerminal(ginContext, recorder, value.Status)
 			}
 			return
 		}
@@ -1294,7 +1488,8 @@ func (handler *Handler) executeAttempts(
 				return
 			}
 			if result.DispatchState != execution.DispatchLocal &&
-				result.StatusCode >= http.StatusOK && result.StatusCode < http.StatusMultipleChoices {
+				result.StatusCode >= http.StatusOK && result.StatusCode < http.StatusMultipleChoices &&
+				originalMetadata.PreviousResponseID == "" {
 				handler.recordAffinitySuccess(requestAffinity, selection, ref)
 			}
 			return
@@ -1317,20 +1512,39 @@ func (handler *Handler) executeAttempts(
 		}
 		value := transportReason(result)
 		recorder.completeTransport(value, optionalModelValue(selection.UpstreamModelID), recordedAttempt)
+		if value.Code == reasonResponseRedactionFailed.Code {
+			// 下游还原失败不代表上游未计费；沿用已冻结的该次尝试报价。
+			recorder.bindUsage(recordedAttempt, result.Usage, true)
+		}
 		if err := handler.writeReason(ginContext, value); err != nil {
 			handler.completeWriteTerminal(ginContext, recorder, value.Status)
 		}
 		return
 	}
 
+	if lastEmptyResponse != nil {
+		handler.completeEmptyResponse(
+			ginContext,
+			recorder,
+			lastEmptyResponse.result,
+			lastEmptyResponse.decision,
+			lastEmptyResponse.upstreamModel,
+			lastEmptyResponse.attemptIndex,
+		)
+		return
+	}
 	if lastProviderError != nil {
 		recorder.completeProviderError(
 			lastProviderError.result,
 			lastProviderError.upstreamModel,
 			lastProviderError.attemptIndex,
 		)
-		if err := handler.writeReason(ginContext, reasonUpstreamProtocol); err != nil {
-			handler.completeWriteTerminal(ginContext, recorder, reasonUpstreamProtocol.Status)
+		value := providerErrorReason(lastProviderError.result)
+		if value.Status == http.StatusTooManyRequests {
+			setCooldownRetryAfter(ginContext, lastProviderError.decision.CooldownUntil, handler.now())
+		}
+		if err := handler.writeReason(ginContext, value); err != nil {
+			handler.completeWriteTerminal(ginContext, recorder, value.Status)
 		}
 		return
 	}
@@ -1379,7 +1593,18 @@ func (handler *Handler) executeAttempts(
 		handler.completeReason(ginContext, recorder, *parameterOverrideFailure)
 		return
 	}
+	if until, limited := iterator.CooldownUntil(); limited {
+		setCooldownRetryAfter(ginContext, until, handler.now())
+		handler.completeReason(ginContext, recorder, reasonUpstreamRateLimited)
+		return
+	}
 	handler.completeReason(ginContext, recorder, reasonNoCandidate)
+}
+
+func setCooldownRetryAfter(ctx *gin.Context, until, now time.Time) {
+	if until.After(now) {
+		ctx.Writer.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(until.Sub(now).Seconds())), 10))
+	}
 }
 
 func initializeDebugHeaders(headers http.Header) {
@@ -1401,6 +1626,8 @@ func transportReason(result UpstreamResult) reason {
 		return reasonInvalidProtocolRequest
 	case errors.Is(result.Err, ErrUpstreamProtocol):
 		return reasonUpstreamProtocol
+	case errors.Is(result.Err, errRedactionStream), errors.Is(result.Err, errUnaryRestore):
+		return reasonResponseRedactionFailed
 	case isTimeoutError(result.Err):
 		return reasonUpstreamTimeout
 	default:
@@ -1460,4 +1687,25 @@ func (handler *Handler) writeBufferedResponse(
 		return fmt.Errorf("flush downstream response: %w", err)
 	}
 	return nil
+}
+
+// completeEmptyResponse 把一次判定为空回的尝试原样交付给客户端。重试已经用尽
+// 或被判定为不可重试时，客户端仍应拿到上游真实返回的那条空流，而不是网关错误。
+func (handler *Handler) completeEmptyResponse(
+	ginContext *gin.Context,
+	recorder *requestRecorder,
+	result UpstreamResult,
+	decision health.Decision,
+	upstreamModel string,
+	attemptIndex int,
+) {
+	recorder.completeResponse(result, decision, upstreamModel, attemptIndex)
+	if err := handler.writeBufferedResponse(
+		ginContext,
+		result.StatusCode,
+		result.Header,
+		result.Body,
+	); err != nil {
+		handler.completeWriteTerminal(ginContext, recorder, result.StatusCode)
+	}
 }

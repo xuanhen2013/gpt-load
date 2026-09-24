@@ -32,6 +32,18 @@ English · [中文](README_CN.md) · [日本語](README_JP.md) | [Official Websi
 <table>
 <tbody>
 <tr>
+<td width="180"><a href="https://ofox.ai/?utm_source=github&amp;utm_medium=sponsorship&amp;utm_content=gpt_load" target="_blank" rel="noopener noreferrer"><img src="./screenshot/ofoxai.svg" alt="OfoxAI" width="150"></a></td>
+<td><strong>OfoxAI: Text, image, and video AI in one platform</strong><br>OfoxAI is a unified AI API platform bringing together text, image, and video models from multiple providers. With OpenAI-compatible endpoints and native Anthropic and Gemini interfaces, developers can access models for AI applications, agents, and content creation through one platform. <a href="https://ofox.ai/?utm_source=github&amp;utm_medium=sponsorship&amp;utm_content=gpt_load" target="_blank" rel="noopener noreferrer">Explore OfoxAI models and APIs →</a></td>
+</tr>
+<tr>
+<td width="180"><a href="https://www.packyapi.ai/register?aff=ahiS" target="_blank" rel="sponsored noopener noreferrer"><picture><source media="(prefers-color-scheme: dark)" srcset="./screenshot/packycode-dark.png"><source media="(prefers-color-scheme: light)" srcset="./screenshot/packycode-light.png"><img src="./screenshot/packycode-light.png" alt="PackyCode" width="150"></picture></a></td>
+<td><strong>PackyCode</strong><br>Access leading AI models through PackyCode with one API endpoint and one API key. Enjoy fast, reliable access with automatic failover and dedicated high-speed routes for Codex and Claude Code. Get started with $1 in free credits, a discount on your first top-up, and savings of up to 80% on eligible routes. Pay in RMB with no currency conversion markups or extra top-up fees. <a href="https://www.packyapi.ai/register?aff=ahiS" target="_blank" rel="sponsored noopener noreferrer">Sign up through the link and start building today.</a></td>
+</tr>
+<tr>
+<td width="180"><a href="https://fluxionai.space/register?source=github&amp;campaign=gptload&amp;promo=GPTLOAD" target="_blank" rel="sponsored noopener noreferrer"><img src="./screenshot/fluxionai-horizontal.png" alt="Fluxion AI" width="150"></a></td>
+<td><strong>One entry point to connect and manage the world's leading AI models</strong><br>Fluxion AI serves individual developers, technical teams, and enterprises with a unified API for connecting to and managing leading AI models worldwide. Dynamic multi-route scheduling improves availability, while model performance, response times, and costs remain transparent and easy to review. Depending on the model and route, API calls can cost 40%–98% less than official or benchmark prices. Visit and sign up now to receive $7 in API credits. (<a href="https://fluxionai.space/register?source=github&amp;campaign=gptload&amp;promo=GPTLOAD" target="_blank" rel="sponsored noopener noreferrer">Dedicated link</a>)</td>
+</tr>
+<tr>
 <td width="180"><a href="https://www.axisnow.io/zh"><img src="./screenshot/axisnow.jpg" alt="AxisNow" width="150"></a></td>
 <td>Protect and accelerate websites and APIs, <strong>serving users in mainland China</strong> and around the world, and extend acceleration and security capabilities to native/mobile apps through a client SDK — <strong>self-built private-deployment CDN | subscription-based high-protection CDN | an independently controllable, flexibly composable CDN network.</strong></td>
 </tr>
@@ -48,11 +60,11 @@ English · [中文](README_CN.md) · [日本語](README_JP.md) | [Official Websi
 
 Your application only needs one base URL and one AccessKey. Providers, accounts, credentials, models, and routing policy are all configured in the management UI.
 
-<img src="./screenshot/architecture-overview.png" alt="GPT-Load unified access and upstream routing architecture" width="860">
+<img src="./screenshot/architecture-overview.svg" alt="GPT-Load unified access and upstream routing architecture" width="860">
 
 - **One gateway, native protocols** — Manage official APIs, cloud platforms, model services, and compatible relays together while clients keep their OpenAI, Anthropic, or Gemini native interfaces.
 - **One mechanism for API keys and subscriptions** — Codex, Claude, Antigravity, Grok, and API-key channels share credential management, scheduling, and health handling.
-- **Scheduling and failure isolation built in** — Multi-credential scheduling, automatic weighting, retries, cooldown, blacklisting, and session affinity reduce the impact of overloaded or failing credentials.
+- **Scheduling and failure isolation built in** — Multi-credential scheduling, configurable weights, retries, cooldown, blacklisting, and session affinity reduce the impact of overloaded or failing credentials.
 - **Observable, self-hosted, and simple to deploy** — Inspect health, routes, logs, usage, and cost estimates in an embedded UI backed by SQLite, MySQL, or PostgreSQL with local credential encryption.
 
 ## Quick start
@@ -107,21 +119,13 @@ When working over SSH or from a remote browser, the browser's `localhost` may no
 
 ## Screenshots
 
-**Groups** — View channels, models, credential counts, and health in one place
+**Groups** — View channels, models, credential counts, traffic, and health in one place
 
-<img src="./screenshot/groups-overview.png" alt="GPT-Load groups overview" width="860">
+<img src="./screenshot/groups-en-US.png" alt="GPT-Load modern groups overview" width="860">
 
-**Subscription accounts** — Track account availability, quota windows, reset times, and runtime diagnostics
+**Usage statistics** — Review request trends, cache hit rate, token categories, and cost estimates
 
-<img src="./screenshot/subscription-accounts.png" alt="GPT-Load subscription accounts and quota status" width="860">
-
-**AccessKey read-only home** — Sign in with an AccessKey to view only its own groups, models, requests, usage, and cost allowance
-
-<img src="./screenshot/access-key-home.png" alt="GPT-Load AccessKey read-only home" width="860">
-
-**Usage and cost** — Review request trends, cache hit rate, token categories, and cost estimates
-
-<img src="./screenshot/usage-cost.png" alt="GPT-Load usage and cost monitoring" width="860">
+<img src="./screenshot/usage-en-US.png" alt="GPT-Load modern usage statistics" width="860">
 
 ## Scope
 
@@ -133,6 +137,7 @@ When working over SSH or from a remote browser, the browser's `localhost` may no
 | OpenAI Responses        | `/v1/responses` and its resource paths |
 | OpenAI Images           | `POST /v1/images/...`                  |
 | OpenAI Embeddings       | `POST /v1/embeddings`                  |
+| Rerank                  | `POST /v1/rerank`                      |
 | Anthropic Messages      | `POST /v1/messages`                    |
 | Gemini                  | `/v1beta/models/...`                   |
 
@@ -140,9 +145,7 @@ Each channel declares exactly which protocols and capabilities it can execute. G
 
 Embeddings initially uses the native OpenAI-compatible wire only on the OpenAI, OpenRouter, and OpenAI Compatible API-key channels; subscription channels and protocol conversion are not supported. An AccessKey without a protocol filter keeps its existing “all enabled protocols” behavior and therefore gains Embeddings access after upgrade. Least-privilege deployments should configure an explicit protocol filter.
 
-### Codex catalog (custom build)
-
-This custom build supports the Codex model catalog: `GET /v1/models?client_version=0.153.1` returns full `models` metadata; requests without the parameter keep the OpenAI format. Existing AccessKey authentication and permissions apply. Only Responses-create routes with verified metadata are included. Metadata is pinned to Codex `rust-v0.153.1`, with no online refresh during requests. See [catalog notes](docs/codex-model-catalog.md).
+Rerank uses the independent `rerank` protocol through `POST /v1/rerank` on the OpenAI Compatible, New API, and GPT-Load API-key channels. Requests contain `model`, `query`, and a text-only `documents` array, with optional upstream parameters such as `top_n` and `return_documents`. Streaming, subscription channels, and protocol conversion are not supported. OpenAI Compatible takes a complete API prefix (for example, `https://host/v1`); New API / GPT-Load take the gateway root. The upstream must implement a compatible Rerank endpoint. AccessKeys without a protocol filter also gain Rerank access. Responses containing only non-token units such as `search_units` remain unpriced; these units are not treated as tokens or free requests.
 
 ### Built-in channels
 
@@ -240,7 +243,13 @@ Environment proxies apply only when no proxy is specified on the credential, gro
 - 2.0 is designed for a **single application instance**. Instances do not share state, so horizontal scaling is not supported.
 - Usage and cost are **estimates** derived from upstream responses. They support operational analysis and capacity planning, and do not equal a provider invoice or a financial reconciliation.
 - Subscription channels depend on upstream OAuth and compatibility protocols and may change as upstreams change. Only connect accounts you are entitled to use, and follow each provider's terms.
-- In OpenAI Responses, stateful requests relying on `previous_response_id`, `conversation`, or an existing resource ID are only reliable with a single credential, or with an upstream that shares resources across credentials.
+- HTTP Responses continuation with `previous_response_id` automatically uses native Responses routes that declare upstream-managed storage: currently `openai`, `gpt_load`, `xai`, `newapi`, `cliproxyapi`, and `sub2api`. Ownership is isolated by AccessKey and pins the original credential when current routing permits, independently of soft affinity; actual state availability depends on the upstream. Stateless and converted responses are not registered as persistent state. Unknown IDs, including IDs created before upgrading or outside this gateway, are rejected. Group parameter overrides cannot change this field.
+- Native Responses WebSocket uses `GET /v1/responses` on the same port. Admission follows declared upstream capabilities for OpenAI, xAI, Codex, and compatible native CPA/sub2api and GPT-Load endpoints. Clients may include the boolean `stream:true/false`; both values still use the WS event stream. Each turn checks current permissions, rate and cost limits, and routing, with separate usage and cost records. One connection keeps one upstream identity; there is no HTTP fallback or conversation-history replay.
+- `responses_websocket_enabled` defaults to enabled. An explicit group setting overrides the global value; otherwise the group inherits it. Disabling immediately closes affected WS connections and interrupts generation without affecting HTTP/SSE. Re-enabling does not restore the old connection's temporary state.
+- `empty_response_retry` defaults to disabled. An explicit group setting overrides the global value. When enabled, a streaming chat request is checked for produced content before it is committed downstream: if upstream finishes naturally without producing anything, the attempt counts as a failure and the next candidate is tried, without cooling down or blacklisting the credential. Once retries are exhausted the upstream empty response is still delivered as-is. Empty results explained by their stop reason, such as an exhausted output budget, a content filter or a refusal, are delivered without retrying. Prewarm requests (`generate:false`), requests carrying `previous_response_id` or `conversation`, non-chat endpoints and WebSocket are all exempt; when upstream keeps emitting events without content, the response is committed at a built-in limit rather than held indefinitely. Retried empty attempts are still billed upstream, but usage and cost estimates only record the attempt that was finally delivered.
+- Full `stream_id` multiplexing and forks are enabled for OpenAI and GPT-Load cascades that support them end to end. The other channels above run serially and reject named streams. Prewarming sends `generate:false` upstream. Codex continuation requires the original live connection: `store:true` and restoration by an old ID on a new connection are unsupported. Persistent continuation on other channels depends on storage capabilities and valid ownership. Existing [Codex SDK proxy, reading, and shutdown limits](third_party/cpaembedded/README.md#codex-websocket-session) still apply.
+- Response bindings stay in memory for up to 30 days, with limits of 100,000 entries and 16 MiB of ID text; older entries are evicted when capacity is reached. A successful checkpoint during normal shutdown allows restoration from the same data directory. Crash recovery and continued upstream state availability are not guaranteed.
+- `conversation` and other existing resource IDs are outside this ownership routing scope and still depend on a single credential or upstream resource sharing across credentials.
 
 ## Moving from 1.x
 

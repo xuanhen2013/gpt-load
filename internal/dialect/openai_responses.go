@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"gpt-load/internal/execution"
 	"gpt-load/internal/protocol"
 )
 
@@ -35,14 +36,20 @@ func (d *OpenAIResponses) InspectRequest(req *ParsedRequest) (RequestMetadata, e
 	if req == nil {
 		return RequestMetadata{}, fmt.Errorf("parsed request is required")
 	}
+	if req.Path == "/v1/alpha/search" {
+		return inspectCodexSearchRequest(req)
+	}
 
 	metadata := RequestMetadata{}
 	if len(req.Body) > 0 {
-		parsed, err := inspectJSONRequestFields(req.Body, false)
+		parsed, err := inspectJSONRequestFields(req.Body, false, req.Method == http.MethodPost && req.Path == openAIResponsesPath)
 		if err != nil {
 			return RequestMetadata{}, fmt.Errorf("decode %s request: %w", d.Protocol(), err)
 		}
 		metadata = parsed
+		if req.Method == http.MethodPost && req.Path == openAIResponsesPath {
+			metadata.PromptCacheKey = inspectPromptCacheKey(req.Body)
+		}
 	}
 	if req.Method == http.MethodGet {
 		stream, present, err := inspectResponsesStreamQuery(req.RawQuery)
@@ -56,7 +63,9 @@ func (d *OpenAIResponses) InspectRequest(req *ParsedRequest) (RequestMetadata, e
 	metadata.ObserveUsage = req.Method == http.MethodPost &&
 		(req.Path == openAIResponsesPath || req.Path == openAIResponsesCompactPath)
 	if len(req.Body) > 0 {
-		metadata.AffinityPrefix = inspectPromptAffinityPrefix(d.Protocol(), req.Body)
+		if metadata.PreviousResponseID == "" {
+			metadata.AffinityPrefix = inspectPromptAffinityPrefix(d.Protocol(), req.Body)
+		}
 		pricingMode, diagnostics, err := openAIRequestPricing(req.Body)
 		if err != nil {
 			return RequestMetadata{}, fmt.Errorf("inspect %s request pricing: %w", d.Protocol(), err)
@@ -67,6 +76,26 @@ func (d *OpenAIResponses) InspectRequest(req *ParsedRequest) (RequestMetadata, e
 	}
 	metadata.Operation, metadata.RouteRequirement, metadata.ResponsesStorePreference =
 		responsesExecutionMetadata(req)
+	return metadata, nil
+}
+
+func inspectCodexSearchRequest(req *ParsedRequest) (RequestMetadata, error) {
+	metadata, err := inspectJSONRequestFields(req.Body, true, false)
+	if err != nil {
+		return RequestMetadata{}, err
+	}
+	if req.Method != http.MethodPost || metadata.Stream {
+		return RequestMetadata{}, fmt.Errorf("Codex search requires a non-streaming POST")
+	}
+	var fields struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(req.Body, &fields); err != nil || fields.ID == "" {
+		return RequestMetadata{}, fmt.Errorf("Codex search id must be a non-empty string")
+	}
+	metadata.Operation = execution.OperationWebSearch
+	metadata.RouteRequirement = execution.RouteRequirementNative
+	metadata.AffinityPrefix = []byte("codex-search\x00" + fields.ID)
 	return metadata, nil
 }
 

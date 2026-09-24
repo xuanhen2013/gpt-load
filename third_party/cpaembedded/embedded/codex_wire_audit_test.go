@@ -57,7 +57,7 @@ func TestCodexDesktopWireAudit(t *testing.T) {
 		}
 		executor.prepareCodexIdentity(auth, &request)
 		observation := newExecutionObservation(request)
-		ctx := executor.executionContext(context.Background(), auth, observation, false)
+		ctx := executor.executionContext(context.Background(), auth, observation, false, nil)
 		format := sdktranslator.FromString(request.Format)
 		_, err := executor.inner.Execute(ctx, auth, cliproxyexecutor.Request{
 			Model: request.Model, Payload: request.Payload, Format: format,

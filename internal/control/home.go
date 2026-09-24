@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ type HomeAccessKey struct {
 	Name      string              `json:"name"`
 	MaskedKey string              `json:"masked_key"`
 	Protocols []protocol.Protocol `json:"protocols"`
+	Models    []string            `json:"models"`
 }
 
 type HomeBase struct {
@@ -58,16 +60,18 @@ type homeCredentialRow struct {
 }
 
 type homeAccessKeyRow struct {
-	ID              uint
-	Name            string
-	KeySuffix       string
-	Status          string
-	Filters         models.JSON
-	RPMLimit        int64
-	ExpiresAtMS     *int64
-	CreatedAtMS     int64
-	UpdatedAtMS     int64
-	LastRequestAtMS *int64
+	KeyPrefix             string
+	PriceMultiplierMicros *int64
+	ID                    uint
+	Name                  string
+	KeySuffix             string
+	Status                string
+	Filters               models.JSON
+	RPMLimit              int64
+	ExpiresAtMS           *int64
+	CreatedAtMS           int64
+	UpdatedAtMS           int64
+	LastRequestAtMS       *int64
 }
 
 type homeReadRows struct {
@@ -177,7 +181,7 @@ func (s *Service) readHomeBase(
 			return HomeBase{}, app_errors.ErrUnauthorized
 		}
 	}
-	accessKeys, err := mapHomeAccessKeys(accessKeyRows)
+	accessKeys, err := mapHomeAccessKeys(accessKeyRows, snapshot)
 	if err != nil {
 		return HomeBase{}, err
 	}
@@ -247,19 +251,12 @@ func (s *Service) readHomeRows(
 		if err := tx.Model(&models.Group{}).Count(&result.groupCount).Error; err != nil {
 			return fmt.Errorf("count home groups: %w", err)
 		}
-		if err := tx.Model(&models.Credential{}).
-			Select(
-				"credentials.id", "credentials.group_id", "groups.channel_id", "groups.connection_type", "groups.params",
-				"credentials.fingerprint", "credentials.identity_fingerprint", "credentials.secret_version", "credentials.status",
-			).
-			Joins("JOIN groups ON groups.id = credentials.group_id").
-			Order("credentials.id ASC").
-			Find(&result.credentials).Error; err != nil {
+		if err := homeCredentialRowsScope(tx).Find(&result.credentials).Error; err != nil {
 			return fmt.Errorf("query home credentials: %w", err)
 		}
 		if err := tx.Model(&models.AccessKey{}).
 			Select(
-				"id", "name", "key_suffix", "status", "filters", "rpm_limit",
+				"id", "name", "key_prefix", "key_suffix", "status", "filters", "rpm_limit", "price_multiplier_micros",
 				"expires_at_ms",
 				"created_at_ms", "updated_at_ms",
 				"(SELECT MAX(request_logs.completed_at_ms) FROM request_logs WHERE request_logs.access_key_id = access_keys.id) AS last_request_at_ms",
@@ -275,6 +272,22 @@ func (s *Service) readHomeRows(
 		return homeReadRows{}, err
 	}
 	return result, nil
+}
+
+func homeCredentialRowsScope(db *gorm.DB) *gorm.DB {
+	homeGroups := db.Session(&gorm.Session{NewDB: true}).
+		Model(&models.Group{}).
+		Select("id", "channel_id", "connection_type", "params")
+	return db.Model(&models.Credential{}).
+		Select(
+			"credentials.id", "credentials.group_id", "home_groups.channel_id", "home_groups.connection_type", "home_groups.params",
+			"credentials.fingerprint", "credentials.identity_fingerprint", "credentials.secret_version", "credentials.status",
+		).
+		Joins(
+			"JOIN (?) AS home_groups ON home_groups.id = credentials.group_id",
+			homeGroups,
+		).
+		Order("credentials.id ASC")
 }
 
 func countHomeModels(snapshot *state.ConfigSnapshot) int64 {
@@ -336,6 +349,14 @@ func countScopedHomeModels(
 	allowedGroups map[uint]struct{},
 	accessKey state.AccessKeyView,
 ) int64 {
+	return int64(len(scopedHomeModelNames(snapshot, allowedGroups, accessKey)))
+}
+
+func scopedHomeModelNames(
+	snapshot *state.ConfigSnapshot,
+	allowedGroups map[uint]struct{},
+	accessKey state.AccessKeyView,
+) []string {
 	names := make(map[string]struct{})
 	for groupID := range allowedGroups {
 		group, exists := snapshot.Groups[groupID]
@@ -355,7 +376,12 @@ func countScopedHomeModels(
 			names[name] = struct{}{}
 		}
 	}
-	return int64(len(names))
+	result := make([]string, 0, len(names))
+	for name := range names {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func homeExternalModelName(model state.ModelConfig) string {
@@ -484,7 +510,10 @@ func countAvailableHomeCredentialsInGroups(
 	return available, nil
 }
 
-func mapHomeAccessKeys(rows []homeAccessKeyRow) ([]HomeAccessKey, error) {
+func mapHomeAccessKeys(
+	rows []homeAccessKeyRow,
+	snapshot *state.ConfigSnapshot,
+) ([]HomeAccessKey, error) {
 	result := make([]HomeAccessKey, 0, len(rows))
 	for _, row := range rows {
 		if uint64(row.ID) > uint64(maxSafeInteger) {
@@ -494,7 +523,7 @@ func mapHomeAccessKeys(rows []homeAccessKeyRow) ([]HomeAccessKey, error) {
 				app_errors.ErrInternalServer,
 			)
 		}
-		if !validAccessKeySuffix(row.KeySuffix) {
+		if !validAccessKeyPrefix(row.KeyPrefix) || !validAccessKeySuffix(row.KeySuffix) {
 			return nil, fmt.Errorf(
 				"map home access key %d: invalid persisted suffix: %w",
 				row.ID,
@@ -515,10 +544,24 @@ func mapHomeAccessKeys(rows []homeAccessKeyRow) ([]HomeAccessKey, error) {
 		} else {
 			protocols = append([]protocol.Protocol(nil), protocols...)
 		}
+		accessKey, exists := snapshot.AccessKeysByID[row.ID]
+		if !exists || accessKey.Status != state.AccessKeyStatusActive {
+			return nil, fmt.Errorf(
+				"map home access key %d: runtime configuration mismatch: %w",
+				row.ID,
+				app_errors.ErrInternalServer,
+			)
+		}
+		models := scopedHomeModelNames(
+			snapshot,
+			accessibleHomeGroups(snapshot, accessKey),
+			accessKey,
+		)
 		result = append(result, HomeAccessKey{
 			ID: row.ID, Name: row.Name,
-			MaskedKey: maskedAccessKey(row.KeySuffix),
+			MaskedKey: maskedAccessKey(row.KeyPrefix, row.KeySuffix),
 			Protocols: protocols,
+			Models:    models,
 		})
 	}
 	return result, nil
@@ -539,7 +582,8 @@ func mapHomeCurrentAccessKey(
 	observedAtMS int64,
 ) (AccessKeyCollectionItem, error) {
 	metadata, err := mapAccessKeyMetadataRow(accessKeyMetadataRow{
-		ID: row.ID, Name: row.Name, KeySuffix: row.KeySuffix,
+		PriceMultiplierMicros: row.PriceMultiplierMicros,
+		ID:                    row.ID, Name: row.Name, KeyPrefix: row.KeyPrefix, KeySuffix: row.KeySuffix,
 		Status: row.Status, Filters: row.Filters, RPMLimit: row.RPMLimit,
 		ExpiresAtMS: row.ExpiresAtMS,
 		CreatedAtMS: row.CreatedAtMS, UpdatedAtMS: row.UpdatedAtMS,

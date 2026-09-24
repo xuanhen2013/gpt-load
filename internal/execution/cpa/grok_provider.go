@@ -146,7 +146,7 @@ func (bridge *grokProviderBridge) CountTokensLocal(
 		AttemptID: request.AttemptID, Model: request.Model,
 		Payload: append([]byte(nil), request.Payload...), Format: request.Format,
 		Headers: request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
-		ProxyURL: request.ProxyURL,
+		BaseURL: request.BaseURL, ProxyURL: request.ProxyURL,
 	})
 	headers := response.Headers.Clone()
 	if headers == nil {
@@ -165,7 +165,7 @@ func grokRequest(request providerRequest, credentialID string) grok.ExecuteReque
 		Payload: append([]byte(nil), request.Payload...), Format: request.Format,
 		Headers: request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
 		ContinuityKey: grokContinuityScope(request.ContinuityKey, credentialID, request.Model, request.AttemptID),
-		ProxyURL:      request.ProxyURL,
+		BaseURL:       request.BaseURL, ProxyURL: request.ProxyURL,
 	}
 }
 
@@ -231,8 +231,6 @@ func (*grokProviderBridge) ClassifyError(
 	case status == http.StatusForbidden || status == http.StatusPaymentRequired:
 		evidence.Hint = execution.FailureHintCandidateUnavailable
 		evidence.ReplaySafety = execution.ReplaySafetyRejectedBeforeProcessing
-	case status == http.StatusBadRequest:
-		evidence.Hint = execution.FailureHintRequestRejected
 	case status == http.StatusTooManyRequests:
 		evidence.Hint = execution.FailureHintRateLimited
 	case status >= http.StatusInternalServerError:

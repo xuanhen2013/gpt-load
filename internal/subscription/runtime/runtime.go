@@ -2,6 +2,7 @@ package subscriptionruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,17 @@ import (
 	"gpt-load/internal/channel"
 	"gpt-load/internal/channel/spec"
 )
+
+// Target is the canonical, non-secret upstream configuration resolved for one
+// subscription group. Providers may interpret only the fields they declare.
+type Target struct {
+	Config json.RawMessage
+}
+
+// NewTarget takes ownership of an independent copy of the resolved target.
+func NewTarget(config json.RawMessage) Target {
+	return Target{Config: append(json.RawMessage(nil), config...)}
+}
 
 // Credential is a provider-neutral, immutable subscription credential. Only
 // the bound driver knows how to decode its canonical representation.
@@ -45,7 +57,7 @@ func NewCredential(canonical []byte, identity string, account Account, expiresAt
 // Canonical returns an independent copy suitable for encryption or adapter decoding.
 func (credential Credential) Canonical() []byte { return append([]byte(nil), credential.canonical...) }
 
-// Identity returns the stable provider account identity used across refreshes.
+// Identity returns the provider account identity used for duplicate checks.
 func (credential Credential) Identity() string { return credential.identity }
 
 // Account returns safe display metadata.
@@ -145,6 +157,22 @@ type Driver interface {
 	ClassifyRefreshFailure(error) RefreshFailureDecision
 }
 
+// RefreshIdentityMatcher 由身份包含可选字段的渠道实现；允许补全，但禁止已知身份丢失或变化。
+type RefreshIdentityMatcher interface {
+	MatchesRefreshIdentity(current, refreshed Credential) bool
+}
+
+// RefreshPreservesIdentity 默认要求身份完全相同；可选字段的规则由渠道负责。
+func RefreshPreservesIdentity(driver Driver, current, refreshed Credential) bool {
+	if current.Identity() == "" || refreshed.Identity() == "" {
+		return false
+	}
+	if matcher, ok := driver.(RefreshIdentityMatcher); ok {
+		return matcher.MatchesRefreshIdentity(current, refreshed)
+	}
+	return current.Identity() == refreshed.Identity()
+}
+
 // CredentialFileImporter is an optional, narrow preprocessing capability for
 // OAuth file formats that cannot safely provide a canonical credential without
 // one provider-bound verification step. Existing drivers continue to use Parse.
@@ -202,7 +230,7 @@ type DeviceAuthorizationDriver interface {
 // ModelDiscovery is a narrow optional subscription capability.
 type ModelDiscovery interface {
 	ID() spec.UtilityID
-	DiscoverModels(context.Context, Credential) ([]string, error)
+	DiscoverModels(context.Context, Credential, Target) ([]string, error)
 }
 
 // ErrObservationPayloadInvalid distinguishes an upstream payload that the
@@ -225,13 +253,13 @@ type Observation struct {
 // QuotaObservation is a narrow optional account observation capability.
 type QuotaObservation interface {
 	ID() spec.UtilityID
-	Observe(context.Context, Credential) (Observation, error)
+	Observe(context.Context, Credential, Target) (Observation, error)
 }
 
 // ResetCreditAction is the currently supported mutating subscription action.
 type ResetCreditAction interface {
 	ID() spec.ActionID
-	Consume(context.Context, Credential, string) (ResetCreditResult, error)
+	Consume(context.Context, Credential, Target, string) (ResetCreditResult, error)
 }
 
 // ResetCreditResult is the provider-neutral result of one durable credit action.

@@ -24,28 +24,33 @@ type RuntimeStateCheckpoint interface {
 type runtimeStateCheckpointDocument struct {
 	Credentials []state.CredentialRuntimeCheckpoint `json:"credentials,omitempty"`
 	Stats       []health.StatsRuntimeCheckpoint     `json:"stats,omitempty"`
+	Scheduling  *state.SchedulingCheckpoint         `json:"scheduling,omitempty"`
+	Responses   []state.ResponseBinding             `json:"responses,omitempty"`
 }
 
 // FileRuntimeStateCheckpoint stores the small, disposable runtime checkpoint
 // in DATA_DIR. The startup path consumes the file before parsing it so a
 // malformed or partially written file cannot be retried on every restart.
 type FileRuntimeStateCheckpoint struct {
-	path       string
-	registry   *state.CredentialRegistry
-	stats      *health.StatsStore
-	removeFile func(string) error
+	path             string
+	registry         *state.CredentialRegistry
+	stats            *health.StatsStore
+	responseBindings *state.ResponseBindings
+	removeFile       func(string) error
 }
 
 func NewFileRuntimeStateCheckpoint(
 	dataDir string,
 	registry *state.CredentialRegistry,
 	stats *health.StatsStore,
+	responseBindings *state.ResponseBindings,
 ) *FileRuntimeStateCheckpoint {
 	return &FileRuntimeStateCheckpoint{
-		path:       filepath.Join(dataDir, runtimeStateCheckpointFileName),
-		registry:   registry,
-		stats:      stats,
-		removeFile: os.Remove,
+		path:             filepath.Join(dataDir, runtimeStateCheckpointFileName),
+		registry:         registry,
+		stats:            stats,
+		responseBindings: responseBindings,
+		removeFile:       os.Remove,
 	}
 }
 
@@ -72,9 +77,17 @@ func (checkpoint *FileRuntimeStateCheckpoint) Restore(ctx context.Context) error
 	}
 	if checkpoint.registry != nil {
 		checkpoint.registry.RestoreRuntimeCheckpoint(document.Credentials)
+		if document.Scheduling != nil {
+			checkpoint.registry.SchedulingState().RestoreCheckpoint(*document.Scheduling)
+		}
 	}
 	if checkpoint.stats != nil {
 		checkpoint.stats.RestoreRuntimeCheckpoint(document.Stats)
+	}
+	if checkpoint.responseBindings != nil {
+		if err := checkpoint.responseBindings.RestoreCheckpoint(document.Responses); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -89,9 +102,14 @@ func (checkpoint *FileRuntimeStateCheckpoint) Save(ctx context.Context) error {
 	document := runtimeStateCheckpointDocument{}
 	if checkpoint.registry != nil {
 		document.Credentials = checkpoint.registry.CaptureRuntimeCheckpoint()
+		scheduling := checkpoint.registry.SchedulingState().CaptureCheckpoint()
+		document.Scheduling = &scheduling
 	}
 	if checkpoint.stats != nil {
 		document.Stats = checkpoint.stats.CaptureRuntimeCheckpoint()
+	}
+	if checkpoint.responseBindings != nil {
+		document.Responses = checkpoint.responseBindings.CaptureCheckpoint()
 	}
 	payload, err := json.Marshal(document)
 	if err != nil {

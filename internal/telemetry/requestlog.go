@@ -3,10 +3,12 @@ package telemetry
 import (
 	"time"
 
+	"gpt-load/internal/automodel"
 	"gpt-load/internal/channel"
 	"gpt-load/internal/execution"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
+	"gpt-load/internal/requestaudit"
 	"gpt-load/internal/usage"
 )
 
@@ -60,12 +62,14 @@ type Effect string
 const (
 	EffectNone                    Effect = "none"
 	EffectCooldownCredential      Effect = "cooldown_credential"
+	EffectCooldownModel           Effect = "cooldown_model"
 	EffectRecordCredentialFailure Effect = "record_credential_failure"
 	EffectSkipGroup               Effect = "skip_group"
 )
 
 func (value Effect) Valid() bool {
 	return value == EffectNone || value == EffectCooldownCredential ||
+		value == EffectCooldownModel ||
 		value == EffectRecordCredentialFailure || value == EffectSkipGroup
 }
 
@@ -91,7 +95,6 @@ type Attempt struct {
 	UpstreamModel           string
 	UpstreamRequestID       string
 	DispatchState           execution.DispatchState
-	OutboundIdentityHeaders string
 	ResponseStarted         bool
 	UpstreamProtocol        protocol.Protocol
 	Reasoning               reasoning.Config
@@ -102,12 +105,14 @@ type Attempt struct {
 	FailureScope            execution.ErrorScope
 	RetryDirective          RetryDirective
 	Effect                  Effect
+	CooldownUntil           time.Time
 	RuleID                  string
 	Action                  Action
 	WillRetry               bool
 	ErrorCode               string
 	ErrorSummary            string
 	Committed               bool
+	OutboundIdentityHeaders string
 }
 
 // PricingObservation is the frozen, dependency-neutral quote selected by the
@@ -130,6 +135,8 @@ type UsageObservation struct {
 }
 
 type RequestEvent struct {
+	RequestAudit          *requestaudit.Result
+	AutoDecision          *automodel.Decision
 	RequestID             string
 	CompletedAt           time.Time
 	AccessKeyID           uint
@@ -147,6 +154,7 @@ type RequestEvent struct {
 	FirstResponseMs       *int64
 	DurationMs            int64
 	AffinityHit           bool
+	AffinityKind          string
 	Reasoning             reasoning.Config
 	Attempts              []Attempt
 	Usage                 UsageObservation
@@ -159,3 +167,10 @@ type RequestLogSink interface {
 type NoopRequestLogSink struct{}
 
 func (NoopRequestLogSink) Emit(RequestEvent) {}
+
+// 亲和类型仅描述实际选中账号的依据，不代表上游缓存命中。
+const (
+	AffinityPromptPrefix       = "prompt_prefix"
+	AffinityPromptCacheKey     = "prompt_cache_key"
+	AffinityResponseContinuity = "response_continuity"
+)

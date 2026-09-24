@@ -44,13 +44,24 @@ func TestConsumeCredentialResetCreditRefreshesObservationAndRemainsIdempotent(t 
 		}`)}, nil
 	})
 
+	now := time.Now()
+	ref, _ := fixture.registry.CredentialRef(credentialID)
+	fixture.registry.SetModelCooldown(ref, "gpt-test", now.Add(time.Hour), now)
 	first, err := fixture.service.ConsumeCredentialResetCredit(t.Context(), groupID, credentialID, resetCreditTestKey)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(fixture.registry.ModelCooldowns(credentialID, now)) != 0 {
+		t.Fatal("successful reset retained model limits")
+	}
+	ref, _ = fixture.registry.CredentialRef(credentialID)
+	fixture.registry.SetModelCooldown(ref, "gpt-test", now.Add(time.Hour), now)
 	second, err := fixture.service.ConsumeCredentialResetCredit(t.Context(), groupID, credentialID, resetCreditTestKey)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(fixture.registry.ModelCooldowns(credentialID, now)) != 1 {
+		t.Fatal("replayed reset cleared a newer model limit")
 	}
 	if consumeCalls != 1 || observationCalls != 1 || first.Status != "succeeded" || first.WindowsReset != 1 ||
 		first.Observation == nil || first.Observation.State != string(models.CredentialObservationFresh) ||
@@ -71,6 +82,7 @@ func TestConsumeCredentialResetCreditReportsPendingForPartialObservation(t *test
 		context.Context,
 		channel.ID,
 		subscriptionruntime.Credential,
+		subscriptionruntime.Target,
 	) (subscriptionruntime.Observation, error) {
 		return subscriptionruntime.Observation{
 			Payload: []byte(`{"plan_summary":{"name":"Claude Team"},"quota_windows":[]}`),
@@ -316,6 +328,11 @@ func TestConsumeCredentialResetCreditRestoresRuntimeHealth(t *testing.T) {
 	fixture, groupID, credentialID := newSubscriptionCredentialFixture(t)
 	now := time.Date(2026, time.August, 14, 11, 30, 0, 0, time.UTC)
 	fixture.service.now = func() time.Time { return now }
+	if _, err := fixture.service.UpdateGroupCredential(t.Context(), groupID, credentialID, CredentialUpdateRequest{
+		WeightManual: optionalField[int]{Set: true, Value: 80},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	fixture.stats.RecordFailure(credentialID, health.FailureCategoryRateLimited, http.StatusTooManyRequests, now)
 	if !fixture.registry.SetCooldown(credentialID, now.Add(time.Hour)) ||
 		!fixture.registry.SetBlacklisted(credentialID) {
@@ -343,7 +360,7 @@ func TestConsumeCredentialResetCreditRestoresRuntimeHealth(t *testing.T) {
 		t.Fatal("credential missing from runtime registry")
 	}
 	if view.Blacklisted || !view.CooldownUntil.IsZero() || view.FailureCount != 0 ||
-		view.Status != "active" {
+		view.Status != "active" || view.WeightManual == nil || *view.WeightManual != 80 {
 		t.Fatalf("runtime credential after reset = %#v", view)
 	}
 	stats := fixture.stats.Snapshot(credentialID, now)
@@ -405,7 +422,7 @@ func TestConsumeCredentialResetCreditRecoversStalePreparedOperationWithSameKey(t
 	if err := fixture.db.Take(&credential, credentialID).Error; err != nil {
 		t.Fatal(err)
 	}
-	digest := resetCreditRequestDigest(groupID, credentialID, credential.IdentityFingerprint)
+	digest := resetCreditRequestDigest(groupID, credentialID, credential.IdentityFingerprint, "")
 	staleMS := now.Add(-defaultSubscriptionControlTimeout - time.Second).UnixMilli()
 	if err := fixture.db.Create(&models.CredentialResetOperation{
 		IdempotencyKey: resetCreditTestKey, RequestDigest: digest[:], GroupID: groupID,

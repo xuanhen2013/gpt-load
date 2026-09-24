@@ -123,7 +123,7 @@ func TestJudgeExecutionUsesNeutralEvidenceAndReplayBoundary(t *testing.T) {
 			},
 			want: Result{
 				Category:      FailureCategoryRateLimited,
-				Action:        ActionCooldownCredential,
+				Action:        ActionRetry,
 				CooldownUntil: now.Add(12 * time.Second),
 			},
 		},
@@ -186,7 +186,7 @@ func TestJudgeExecutionUsesNeutralEvidenceAndReplayBoundary(t *testing.T) {
 			},
 			want: Result{
 				Category:      FailureCategoryRateLimited,
-				Action:        ActionCooldownCredential,
+				Action:        ActionRetry,
 				CooldownUntil: now.Add(30 * time.Second),
 			},
 		},
@@ -216,25 +216,25 @@ func TestJudgeExecutionUsesNeutralEvidenceAndReplayBoundary(t *testing.T) {
 			want: Result{Category: FailureCategoryAmbiguous, Action: ActionTerminate},
 		},
 		{
-			name: "payment required is a client error",
+			name: "payment required retries without penalty",
 			attempt: ExecutionAttempt{
 				DispatchState: execution.DispatchMaybeSent,
 				StatusCode:    http.StatusPaymentRequired,
 				Evidence:      evidence(execution.ErrorKindHTTP, http.StatusPaymentRequired, "billing disabled"),
 			},
-			want: Result{Category: FailureCategoryClientError, Action: ActionTerminate},
+			want: Result{Category: FailureCategoryAmbiguous, Action: ActionRetry},
 		},
 		{
-			name: "generic forbidden is a client error",
+			name: "generic forbidden retries without penalty",
 			attempt: ExecutionAttempt{
 				DispatchState: execution.DispatchMaybeSent,
 				StatusCode:    http.StatusForbidden,
 				Evidence:      evidence(execution.ErrorKindHTTP, http.StatusForbidden, "permission denied"),
 			},
-			want: Result{Category: FailureCategoryClientError, Action: ActionTerminate},
+			want: Result{Category: FailureCategoryAmbiguous, Action: ActionRetry},
 		},
 		{
-			name: "forbidden model marker cools credential",
+			name: "forbidden model marker retries without penalty",
 			attempt: ExecutionAttempt{
 				DispatchState: execution.DispatchMaybeSent,
 				StatusCode:    http.StatusForbidden,
@@ -247,13 +247,12 @@ func TestJudgeExecutionUsesNeutralEvidenceAndReplayBoundary(t *testing.T) {
 				},
 			},
 			want: Result{
-				Category:      FailureCategoryModelUnavailable,
-				Action:        ActionCooldownCredential,
-				CooldownUntil: now.Add(time.Hour),
+				Category: FailureCategoryModelUnavailable,
+				Action:   ActionRetry,
 			},
 		},
 		{
-			name: "forbidden unsupported model marker cools credential",
+			name: "forbidden unsupported model marker retries without penalty",
 			attempt: ExecutionAttempt{
 				DispatchState: execution.DispatchMaybeSent,
 				StatusCode:    http.StatusForbidden,
@@ -266,9 +265,8 @@ func TestJudgeExecutionUsesNeutralEvidenceAndReplayBoundary(t *testing.T) {
 				},
 			},
 			want: Result{
-				Category:      FailureCategoryModelUnavailable,
-				Action:        ActionCooldownCredential,
-				CooldownUntil: now.Add(time.Hour),
+				Category: FailureCategoryModelUnavailable,
+				Action:   ActionRetry,
 			},
 		},
 		{
@@ -300,7 +298,7 @@ func TestJudgeExecutionUsesNeutralEvidenceAndReplayBoundary(t *testing.T) {
 			want: Result{Category: FailureCategoryAuthenticationRequired, Action: ActionTerminate},
 		},
 		{
-			name: "model not found cools credential",
+			name: "model not found retries without penalty",
 			attempt: ExecutionAttempt{
 				DispatchState: execution.DispatchMaybeSent,
 				StatusCode:    http.StatusNotFound,
@@ -313,19 +311,18 @@ func TestJudgeExecutionUsesNeutralEvidenceAndReplayBoundary(t *testing.T) {
 				},
 			},
 			want: Result{
-				Category:      FailureCategoryModelUnavailable,
-				Action:        ActionCooldownCredential,
-				CooldownUntil: now.Add(time.Hour),
+				Category: FailureCategoryModelUnavailable,
+				Action:   ActionRetry,
 			},
 		},
 		{
-			name: "generic not found terminates",
+			name: "generic not found retries without penalty",
 			attempt: ExecutionAttempt{
 				DispatchState: execution.DispatchMaybeSent,
 				StatusCode:    http.StatusNotFound,
 				Evidence:      evidence(execution.ErrorKindHTTP, http.StatusNotFound, "endpoint not found"),
 			},
-			want: Result{Category: FailureCategoryClientError, Action: ActionTerminate},
+			want: Result{Category: FailureCategoryAmbiguous, Action: ActionRetry},
 		},
 		{
 			name: "provider rate limit under success status still cools credential",
@@ -341,7 +338,7 @@ func TestJudgeExecutionUsesNeutralEvidenceAndReplayBoundary(t *testing.T) {
 				},
 			},
 			want: Result{
-				Category: FailureCategoryRateLimited, Action: ActionCooldownCredential,
+				Category: FailureCategoryRateLimited, Action: ActionRetry,
 				CooldownUntil: now.Add(time.Minute),
 			},
 		},
@@ -375,7 +372,7 @@ func TestJudgeExecutionUsesNeutralEvidenceAndReplayBoundary(t *testing.T) {
 			want: Result{Category: FailureCategoryConversionUnsupported, Action: ActionSkipGroup},
 		},
 		{
-			name: "structured unsupported model 400 is a client error",
+			name: "structured unsupported model 400 retries another candidate",
 			attempt: ExecutionAttempt{
 				DispatchState: execution.DispatchMaybeSent,
 				StatusCode:    http.StatusBadRequest,
@@ -387,7 +384,7 @@ func TestJudgeExecutionUsesNeutralEvidenceAndReplayBoundary(t *testing.T) {
 					Summary:    "request capability is unavailable",
 				},
 			},
-			want: Result{Category: FailureCategoryClientError, Action: ActionTerminate},
+			want: Result{Category: FailureCategoryModelUnavailable, Action: ActionRetry},
 		},
 		{
 			name: "clean success terminates",

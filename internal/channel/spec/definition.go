@@ -35,6 +35,7 @@ const (
 	Alibaba          ID = "alibaba"
 	Volcengine       ID = "volcengine"
 	OpenRouter       ID = "openrouter"
+	Jev              ID = "jev"
 	Groq             ID = "groq"
 	XAI              ID = "xai"
 )
@@ -57,6 +58,7 @@ const (
 	ProviderGoogleVertex         ProviderKind = "google_vertex"
 	ProviderDeepSeek             ProviderKind = "deepseek"
 	ProviderOpenRouter           ProviderKind = "openrouter"
+	ProviderJev                  ProviderKind = "jev"
 	ProviderGroq                 ProviderKind = "groq"
 	ProviderXAI                  ProviderKind = "xai"
 )
@@ -107,6 +109,7 @@ func (kind ProviderKind) Valid() bool {
 		ProviderGoogleVertex,
 		ProviderDeepSeek,
 		ProviderOpenRouter,
+		ProviderJev,
 		ProviderGroq,
 		ProviderXAI:
 		return true
@@ -205,6 +208,8 @@ type ProviderBinding struct {
 	CatalogProviderID string
 	EndpointPolicy    EndpointPolicy
 	FixedBaseURL      string
+	// DefaultBaseURLs 只提供官方地址提示，不注入用户参数或执行目标。
+	DefaultBaseURLs []string
 }
 
 // ExtensionID is a strongly typed code-owned extension binding.
@@ -292,6 +297,7 @@ type CapabilityBindings struct {
 // shared helpers may normalize a field or construct one Route, but never hide
 // a complete channel definition, schema, or route set.
 type Definition struct {
+	ResponsesWebsocket  execution.WebsocketCapabilities
 	ID                  ID
 	Name                string
 	Mark                string

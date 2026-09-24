@@ -17,8 +17,8 @@ type runtimeObservation struct {
 
 type runtimeHealthObservation struct {
 	runtimeObservation
-	problemCiphertexts map[uint]string
-	accessQuotaViews   map[uint]accessquota.View
+	credentialCiphertexts map[uint]string
+	accessQuotaViews      map[uint]accessquota.View
 }
 
 func (service *Service) captureRuntimeObservation() (runtimeObservation, error) {
@@ -90,9 +90,7 @@ func (service *Service) captureRuntimeHealthObservation() (
 			accessQuotaViews[accessKeyID] = service.accessQuota.Snapshot(accessKeyID, observedAt)
 		}
 	}
-	problemCiphertexts := make(map[uint]string)
-	cooldownDetails := 0
-	blacklistedDetails := 0
+	credentialCiphertexts := make(map[uint]string)
 	for _, key := range keys {
 		group, exists := snapshot.GroupCatalog[key.GroupID]
 		if !exists {
@@ -104,18 +102,7 @@ func (service *Service) captureRuntimeHealthObservation() (
 			)
 		}
 		bucket := classifyHealthKey(group, key, observedAt)
-		switch bucket {
-		case healthBucketCooldown:
-			if cooldownDetails >= healthProblemCredentialDetailLimit {
-				continue
-			}
-			cooldownDetails++
-		case healthBucketBlacklisted:
-			if blacklistedDetails >= healthProblemCredentialDetailLimit {
-				continue
-			}
-			blacklistedDetails++
-		default:
+		if bucket == healthBucketDisabled {
 			continue
 		}
 		ciphertext, exists := service.registry.EncryptedCredentialData(key.ID)
@@ -126,7 +113,7 @@ func (service *Service) captureRuntimeHealthObservation() (
 				app_errors.ErrInternalServer,
 			)
 		}
-		problemCiphertexts[key.ID] = ciphertext
+		credentialCiphertexts[key.ID] = ciphertext
 	}
 
 	return runtimeHealthObservation{
@@ -135,7 +122,7 @@ func (service *Service) captureRuntimeHealthObservation() (
 			snapshot:   snapshot,
 			keys:       keys,
 		},
-		problemCiphertexts: problemCiphertexts,
-		accessQuotaViews:   accessQuotaViews,
+		credentialCiphertexts: credentialCiphertexts,
+		accessQuotaViews:      accessQuotaViews,
 	}, nil
 }

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -89,6 +88,19 @@ func newDialectGatewayEngineWithForwarder(
 	groups ...dialectGatewayGroup,
 ) (*gin.Engine, *state.CredentialRegistry) {
 	t.Helper()
+	return newDialectGatewayEngineWithSystemSettings(t, selectedProtocol, model, dialects, forwarder, nil, groups...)
+}
+
+func newDialectGatewayEngineWithSystemSettings(
+	t *testing.T,
+	selectedProtocol protocol.Protocol,
+	model string,
+	dialects dialect.Set,
+	forwarder AttemptForwarder,
+	systemSettings config.Settings,
+	groups ...dialectGatewayGroup,
+) (*gin.Engine, *state.CredentialRegistry) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	keyService := encryptiontest.Service(t, "dialect-gateway-test-master-key")
 
@@ -118,6 +130,7 @@ func newDialectGatewayEngineWithForwarder(
 
 	manager := state.NewManager()
 	snapshot, err := manager.Publish(state.CompileInput{
+		SystemSettings:  systemSettings,
 		ChannelRegistry: channel.NewRegistry(), Groups: configs,
 		Credentials: credentialConfigs,
 		AccessKeys: []state.AccessKeyConfig{{
@@ -153,7 +166,7 @@ func newDialectGatewayEngineWithForwarder(
 		nil,
 		nil,
 	)
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 	engine := gin.New()
 	bindGatewayRoutesForTest(t, engine, handler)
 	return engine, registry
@@ -669,7 +682,7 @@ func TestGatewayAppliesEachGroupsParameterOverridesFromOriginal(t *testing.T) {
 	}
 }
 
-func TestHandlerHostFailureDoesNotReplayGenerationAcrossGroups(t *testing.T) {
+func TestHandlerHostFailureRetriesGenerationAcrossGroups(t *testing.T) {
 	primary := fakeupstream.New(
 		fakeupstream.Step{Status: http.StatusInternalServerError, Fixture: "openai/500.json"},
 		fakeupstream.Step{Status: http.StatusInternalServerError, Fixture: "openai/500.json"},
@@ -696,7 +709,7 @@ func TestHandlerHostFailureDoesNotReplayGenerationAcrossGroups(t *testing.T) {
 		request.Header.Set("Authorization", "Bearer gl-client")
 		recorder := httptest.NewRecorder()
 		engine.ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusInternalServerError || recorder.Header().Get(debugHeaderAttempts) != "1" {
+		if recorder.Code != http.StatusOK || recorder.Header().Get(debugHeaderAttempts) != "2" {
 			t.Fatalf("response = %d attempts=%s body=%s",
 				recorder.Code, recorder.Header().Get(debugHeaderAttempts), recorder.Body.String())
 		}
@@ -704,8 +717,8 @@ func TestHandlerHostFailureDoesNotReplayGenerationAcrossGroups(t *testing.T) {
 	if got := len(primary.Requests()); got != 2 {
 		t.Fatalf("primary requests = %d, want one per downstream request", got)
 	}
-	if got := len(backup.Requests()); got != 0 {
-		t.Fatalf("backup requests = %d, want none for ambiguous generation failures", got)
+	if got := len(backup.Requests()); got != 2 {
+		t.Fatalf("backup requests = %d, want one per downstream request", got)
 	}
 }
 
@@ -1073,7 +1086,7 @@ func TestAnthropicGatewayFailover(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer gl-client")
 	recorder = httptest.NewRecorder()
 	engine.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusBadRequest || clientErrorRequests.Load() != 1 || recorder.Header().Get(debugHeaderAttempts) != "1" {
+	if recorder.Code != http.StatusBadRequest || clientErrorRequests.Load() != 2 || recorder.Header().Get(debugHeaderAttempts) != "2" {
 		t.Fatalf("client error response = %d attempts=%s requests=%d body=%s", recorder.Code, recorder.Header().Get(debugHeaderAttempts), clientErrorRequests.Load(), recorder.Body.String())
 	}
 }

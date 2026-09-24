@@ -1,6 +1,7 @@
 // Package embedded exposes the smallest CPA surface required by GPT-Load.
 // It deliberately excludes CPA's manager, selector, retry loop, server, watcher,
-// file store, websocket executor, and automatic credential refresh.
+// file store and automatic credential refresh. The separate Codex WS session
+// facade is explicit-only and does not replace the HTTP executor.
 package embedded
 
 import (
@@ -38,7 +39,6 @@ const (
 	defaultLoginTimeout  = 5 * time.Minute
 	defaultCodexBaseURL  = "https://chatgpt.com/backend-api/codex"
 	defaultCodexAPIBase  = "https://chatgpt.com/backend-api"
-	defaultModelsVersion = "0.153.3"
 	maxObservedBodyBytes = 32 << 20
 )
 
@@ -143,18 +143,21 @@ type HTTPExecutor interface {
 }
 
 type ExecuteRequest struct {
+	AttemptID         string
+	Model             string
+	Payload           []byte
+	Format            string
+	RequestPath       string
+	Headers           http.Header
+	ConfiguredHeaders []string
+	OriginalRequest   []byte
+	ContinuityKey     string
+	// BaseURL 是可选的订阅 API 代理根地址，原生路径由渠道解析。
+	BaseURL              string
 	IdentityGeneration   uint64
 	AccountID            string
 	ProxyConfigID        string
 	ProxyRegion          *ProxyRegionResult
-	AttemptID            string
-	Model                string
-	Payload              []byte
-	Format               string
-	RequestPath          string
-	Headers              http.Header
-	OriginalRequest      []byte
-	ContinuityKey        string
 	ProxyURL             string
 	ProxyFromEnvironment bool
 }
@@ -168,6 +171,7 @@ type QuotaSignalObservation struct {
 }
 
 type ExecuteResponse struct {
+	StatusCode              int
 	Payload                 []byte
 	Headers                 http.Header
 	AppliedReasoningEffort  string
@@ -400,6 +404,7 @@ func NewCodexHTTPExecutorWithConnectionReuse(enabled bool) *CodexHTTPExecutor {
 	cfg := &internalconfig.Config{
 		Codex: internalconfig.CodexConfig{
 			StreamBootstrapBuffering: true,
+			ModelLevelCooling:        true,
 			DisableCodexCloaking:     true,
 		},
 		CodexHeaderDefaults: internalconfig.CodexHeaderDefaults{
@@ -415,18 +420,30 @@ func NewCodexHTTPExecutorWithConnectionReuse(enabled bool) *CodexHTTPExecutor {
 
 func (e *CodexHTTPExecutor) Identifier() string { return ProviderCodex }
 
+// ExecuteCanonical runs one unary Codex request through CPA's stateless HTTP
+// executor and captures request-path, reasoning, and quota observations.
 func (e *CodexHTTPExecutor) ExecuteCanonical(ctx context.Context, credentialID string, credential CodexCredential, request ExecuteRequest) (ExecuteResponse, error) {
+	if request.RequestPath == "/v1/alpha/search" {
+		return e.executeSearchCanonical(ctx, credentialID, credential, request)
+	}
+	request.Headers = normalizedCodexHeaders(request.Headers)
 	format := sdktranslator.FromString(request.Format)
-	auth := NewCodexAuth(credentialID, credential, "")
+	endpoints, err := ResolveCodexAPIEndpoints(request.BaseURL)
+	if err != nil {
+		return ExecuteResponse{}, err
+	}
+	auth := NewCodexAuth(credentialID, credential, endpoints.ExecutionBase)
 	auth.ProxyURL = request.ProxyURL
 	e.prepareCodexIdentity(auth, &request)
 	observation := newExecutionObservation(request)
-	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, request.IdentityGeneration)
+	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, &request)
 	response, err := e.inner.Execute(executionCtx, authWithoutProxyURL(auth), cliproxyexecutor.Request{
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: format,
+		Metadata: codexSessionMetadata(request, format),
 	}, codexExecutionOptions(request, format, false))
 	if err != nil {
 		return ExecuteResponse{
+			Headers:                 observation.responseHeaders(),
 			AppliedReasoningEffort:  observation.reasoningEffort(),
 			UpstreamRequestPath:     observation.upstreamRequestPath(),
 			QuotaSignals:            observation.quotaSignalObservation(),
@@ -442,13 +459,20 @@ func (e *CodexHTTPExecutor) ExecuteCanonical(ctx context.Context, credentialID s
 	}, nil
 }
 
+// CountTokensCanonical runs Codex token counting and normalizes Responses API
+// token-count payloads into the public response shape.
 func (e *CodexHTTPExecutor) CountTokensCanonical(ctx context.Context, credentialID string, credential CodexCredential, request ExecuteRequest) (ExecuteResponse, error) {
+	request.Headers = normalizedCodexHeaders(request.Headers)
 	format := sdktranslator.FromString(request.Format)
-	auth := NewCodexAuth(credentialID, credential, "")
+	endpoints, err := ResolveCodexAPIEndpoints(request.BaseURL)
+	if err != nil {
+		return ExecuteResponse{}, err
+	}
+	auth := NewCodexAuth(credentialID, credential, endpoints.ExecutionBase)
 	auth.ProxyURL = request.ProxyURL
 	e.prepareCodexIdentity(auth, &request)
 	observation := newExecutionObservation(request)
-	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, request.IdentityGeneration)
+	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, &request)
 	response, err := e.inner.CountTokens(executionCtx, authWithoutProxyURL(auth), cliproxyexecutor.Request{
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: format,
 	}, codexExecutionOptions(request, format, false))
@@ -501,18 +525,27 @@ func normalizeCodexResponsesTokenCount(payload []byte) ([]byte, error) {
 	})
 }
 
+// ExecuteStreamCanonical runs one streaming Codex request and forwards copied
+// chunks while retaining handshake and passive quota observations.
 func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credentialID string, credential CodexCredential, request ExecuteRequest) (*ExecuteStreamResponse, error) {
+	request.Headers = normalizedCodexHeaders(request.Headers)
 	format := sdktranslator.FromString(request.Format)
-	auth := NewCodexAuth(credentialID, credential, "")
+	endpoints, err := ResolveCodexAPIEndpoints(request.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	auth := NewCodexAuth(credentialID, credential, endpoints.ExecutionBase)
 	auth.ProxyURL = request.ProxyURL
 	e.prepareCodexIdentity(auth, &request)
 	observation := newExecutionObservation(request)
-	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, request.IdentityGeneration)
+	executionCtx := e.executionContext(ctx, auth, observation, request.ProxyFromEnvironment, &request)
 	response, err := e.inner.ExecuteStream(executionCtx, authWithoutProxyURL(auth), cliproxyexecutor.Request{
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: format,
+		Metadata: codexSessionMetadata(request, format),
 	}, codexExecutionOptions(request, format, true))
 	if err != nil {
 		return &ExecuteStreamResponse{
+			Headers:                 observation.responseHeaders(),
 			AppliedReasoningEffort:  observation.reasoningEffort(),
 			UpstreamRequestPath:     observation.upstreamRequestPath(),
 			QuotaSignals:            observation.quotaSignalObservation(),
@@ -580,7 +613,10 @@ func (e *CodexHTTPExecutor) prepareCodexIdentity(auth *cliproxyauth.Auth, reques
 		auth.Attributes = make(map[string]string)
 	}
 	auth.Attributes["header:x-oai-attestation"] = profile.attestationHeader(profile.currentAppSession(time.Now()))
-	injectPromptCacheKey(request, threadID.String())
+	// Preserve the upstream stable cache group when the gateway has continuity.
+	if strings.TrimSpace(request.ContinuityKey) == "" {
+		injectPromptCacheKey(request, threadID.String())
+	}
 }
 
 // injectPromptCacheKey preserves an existing key and only fills a missing one
@@ -608,6 +644,25 @@ func injectPromptCacheKey(request *ExecuteRequest, key string) {
 	request.Payload = encoded
 }
 
+// 给 Codex 提供稳定缓存分组兜底；CPA 优先使用客户端缓存键或 Claude Code 身份。
+func codexSessionMetadata(request ExecuteRequest, format sdktranslator.Format) map[string]any {
+	switch format {
+	case sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.FormatGemini:
+	default:
+		return nil
+	}
+	// 保留客户端已有会话头，避免兜底缓存键覆盖其上游会话。
+	if strings.TrimSpace(request.Headers.Get("Session-Id")) != "" {
+		return nil
+	}
+	scope := strings.TrimSpace(request.ContinuityKey)
+	if scope == "" {
+		return nil
+	}
+	// 这是提示词派生的缓存分组，不是严格执行会话；避免启用额外的 reasoning replay。
+	return map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: scope}
+}
+
 func codexExecutionOptions(
 	request ExecuteRequest,
 	format sdktranslator.Format,
@@ -627,12 +682,14 @@ func codexExecutionOptions(
 }
 
 func (e *CodexHTTPExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	executionCtx := e.executionContext(ctx, auth, nil, false)
+	opts.Headers = normalizedCodexHeaders(opts.Headers)
+	executionCtx := e.executionContext(ctx, auth, nil, false, &ExecuteRequest{Headers: opts.Headers})
 	return e.inner.Execute(executionCtx, authWithoutProxyURL(auth), req, opts)
 }
 
 func (e *CodexHTTPExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	executionCtx := e.executionContext(ctx, auth, nil, false)
+	opts.Headers = normalizedCodexHeaders(opts.Headers)
+	executionCtx := e.executionContext(ctx, auth, nil, false, &ExecuteRequest{Headers: opts.Headers})
 	return e.inner.ExecuteStream(executionCtx, authWithoutProxyURL(auth), req, opts)
 }
 
@@ -653,7 +710,7 @@ func (e *CodexHTTPExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 }
 
 func (e *CodexHTTPExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
-	executionCtx := e.executionContext(ctx, auth, nil, false)
+	executionCtx := e.executionContext(ctx, auth, nil, false, nil)
 	return e.inner.HttpRequest(executionCtx, authWithoutProxyURL(auth), req)
 }
 
@@ -670,7 +727,7 @@ func ListCodexModels(ctx context.Context, credential CodexCredential, baseURL st
 		return nil, err
 	}
 	query := target.Query()
-	query.Set("client_version", defaultModelsVersion)
+	query.Set("client_version", CodexClientVersion)
 	target.RawQuery = query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
@@ -826,6 +883,7 @@ func applyCodexReadHeaders(req *http.Request, credential CodexCredential) {
 	req.Header.Set("Chatgpt-Account-Id", credential.AccountID)
 	req.Header.Set("Originator", codexDesktopOriginator)
 	req.Header.Set("User-Agent", codexMainProcessUserAgent())
+	req.Header.Set("Version", CodexClientVersion)
 }
 
 func (e *CodexHTTPExecutor) executionContext(
@@ -833,7 +891,7 @@ func (e *CodexHTTPExecutor) executionContext(
 	auth *cliproxyauth.Auth,
 	observation *executionObservation,
 	proxyFromEnvironment bool,
-	identityGeneration ...uint64,
+	request *ExecuteRequest,
 ) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -841,10 +899,16 @@ func (e *CodexHTTPExecutor) executionContext(
 	transport := executionRoundTripper(ctx, e.cfg, auth, proxyFromEnvironment)
 	if e.pool != nil {
 		var generation uint64
-		if len(identityGeneration) > 0 {
-			generation = identityGeneration[0]
+		if request != nil {
+			generation = request.IdentityGeneration
 		}
 		transport = e.pool.roundTripper(ctx, auth, generation, proxyFromEnvironment, transport)
+	}
+	if request != nil {
+		transport = codexHeadersRoundTripper{
+			base: transport, source: request.Headers.Clone(),
+			configured: append([]string(nil), request.ConfiguredHeaders...),
+		}
 	}
 	return context.WithValue(ctx, "cliproxy.roundtripper", noRedirectRoundTripper{base: transport, observation: observation})
 }
@@ -924,6 +988,7 @@ type executionObservation struct {
 	observedRequestPath string
 	outboundHeaders     string
 	quota               cliproxyauth.QuotaState
+	retryAfter          string
 }
 
 func newExecutionObservation(request ExecuteRequest) *executionObservation {
@@ -1035,8 +1100,23 @@ func (o *executionObservation) observeQuotaSignals(header http.Header, observedA
 		return
 	}
 	o.mu.Lock()
+	// 恢复证据始终属于当前 HTTP 响应，缺失时不能沿用上一次请求的值。
+	o.retryAfter = ""
+	if value := header.Get("Retry-After"); len(value) <= 128 && !strings.ContainsAny(value, "\r\n") {
+		o.retryAfter = value
+	}
 	o.quota.ObserveResponseHeadersForProvider(o.provider, header, observedAt)
 	o.mu.Unlock()
+}
+
+func (o *executionObservation) responseHeaders() http.Header {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	header := make(http.Header)
+	if o.retryAfter != "" {
+		header.Set("Retry-After", o.retryAfter)
+	}
+	return header
 }
 
 func (o *executionObservation) quotaSignalObservation() QuotaSignalObservation {

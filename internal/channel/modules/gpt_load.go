@@ -9,6 +9,8 @@ import (
 func GPTLoad() spec.Module {
 	return spec.Module{
 		Definition: spec.Definition{
+			ResponsesWebsocket: execution.WebsocketCapabilities{Native: true, Continuation: true, Prewarm: true, StoredResponses: true, Multiplex: true},
+
 			ID:          spec.GPTLoad,
 			Name:        "GPT-Load",
 			Mark:        "GL",
@@ -32,10 +34,13 @@ func GPTLoad() spec.Module {
 				EndpointPolicy: spec.EndpointRequiredBaseURL,
 			},
 			Routes: []spec.Route{
+				spec.NewRoute(protocol.Rerank, execution.OperationRerank, execution.RouteNative),
+				spec.NewRoute(protocol.Rerank, execution.OperationProbe, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAICompletions, execution.OperationChatCompletion, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAICompletions, execution.OperationListModels, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAICompletions, execution.OperationProbe, execution.RouteNative),
 				spec.NewResponsesCreateRoute(execution.RouteNative, spec.ResponsesStoreHandlingUpstreamManaged),
+				spec.NewRoute(protocol.OpenAIResponses, execution.OperationProbe, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAIResponses, execution.OperationResponsesRetrieve, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAIResponses, execution.OperationResponsesDelete, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAIResponses, execution.OperationResponsesCancel, execution.RouteNative),
@@ -48,9 +53,11 @@ func GPTLoad() spec.Module {
 				spec.NewRoute(protocol.OpenAIEmbeddings, execution.OperationEmbeddingsCreate, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAIEmbeddings, execution.OperationProbe, execution.RouteNative),
 				spec.NewRoute(protocol.Anthropic, execution.OperationChatCompletion, execution.RouteNative),
+				spec.NewRoute(protocol.Anthropic, execution.OperationProbe, execution.RouteNative),
 				spec.NewRoute(protocol.Anthropic, execution.OperationCountTokens, execution.RouteNative),
 				spec.NewRoute(protocol.Anthropic, execution.OperationListModels, execution.RouteNative),
 				spec.NewRoute(protocol.Gemini, execution.OperationChatCompletion, execution.RouteNative),
+				spec.NewRoute(protocol.Gemini, execution.OperationProbe, execution.RouteNative),
 				spec.NewRoute(protocol.Gemini, execution.OperationCountTokens, execution.RouteNative),
 				spec.NewRoute(protocol.Gemini, execution.OperationListModels, execution.RouteNative),
 			},

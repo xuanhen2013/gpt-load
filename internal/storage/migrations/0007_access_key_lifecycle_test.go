@@ -8,6 +8,7 @@ import (
 )
 
 func TestAccessKeyLifecycleMigrationAddsNullableExpiryAndPreservesRows(t *testing.T) {
+	t.Parallel()
 	db := openInitialTestDatabase(t)
 	if err := migrations.Up0001(db); err != nil {
 		t.Fatal(err)
@@ -16,7 +17,7 @@ func TestAccessKeyLifecycleMigrationAddsNullableExpiryAndPreservesRows(t *testin
 		Name: "legacy", KeyValue: "ciphertext", KeyHash: "legacy-hash",
 		KeySuffix: "cafe", Status: "active", Filters: models.JSON(`{}`),
 	}
-	if err := db.Omit("ExpiresAtMS").Create(&accessKey).Error; err != nil {
+	if err := db.Omit("ExpiresAtMS", "PriceMultiplierMicros", "KeyPrefix").Create(&accessKey).Error; err != nil {
 		t.Fatalf("create legacy access key: %v", err)
 	}
 
@@ -44,6 +45,7 @@ func TestAccessKeyLifecycleMigrationAddsNullableExpiryAndPreservesRows(t *testin
 }
 
 func TestAccessKeyLifecycleMigrationValidationRejectsMissingColumn(t *testing.T) {
+	t.Parallel()
 	db := openInitialTestDatabase(t)
 	if err := migrations.Up0001(db); err != nil {
 		t.Fatal(err)

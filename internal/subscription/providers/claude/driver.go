@@ -58,6 +58,19 @@ func (*claudeDriver) Refresh(ctx context.Context, current subscriptionruntime.Cr
 	return claudeRuntimeCredential(refreshed, canonical), nil
 }
 
+func (*claudeDriver) MatchesRefreshIdentity(current, refreshed subscriptionruntime.Credential) bool {
+	before, err := ParseCredentialJSON(current.Canonical())
+	if err != nil {
+		return false
+	}
+	after, err := ParseCredentialJSON(refreshed.Canonical())
+	if err != nil || before.AccountUUID != after.AccountUUID {
+		return false
+	}
+	// 桥接会保留未返回的旧组织；已经确认的组织不能被清空或替换。
+	return before.OrganizationUUID == "" || before.OrganizationUUID == after.OrganizationUUID
+}
+
 func (*claudeDriver) ClassifyRefreshFailure(err error) subscriptionruntime.RefreshFailureDecision {
 	var tokenErr *TokenEndpointError
 	if errors.Is(err, ErrCredentialIdentityChanged) ||
@@ -134,12 +147,17 @@ func (*claudeDriver) AuthorizationFailureDefinitive(err error) bool {
 	}
 }
 
-func (*claudeDriver) DiscoverModels(ctx context.Context, credential subscriptionruntime.Credential) ([]string, error) {
+// DiscoverModels lists the models visible to a Claude subscription credential.
+func (*claudeDriver) DiscoverModels(ctx context.Context, credential subscriptionruntime.Credential, target subscriptionruntime.Target) ([]string, error) {
 	value, err := ParseCredentialJSON(credential.Canonical())
 	if err != nil {
 		return nil, err
 	}
-	models, err := ListModels(ctx, value)
+	baseURL, err := target.BaseURL()
+	if err != nil {
+		return nil, err
+	}
+	models, err := ListModels(ctx, value, baseURL)
 	if err != nil {
 		var upstream *UpstreamHTTPError
 		if errors.As(err, &upstream) {
@@ -154,12 +172,18 @@ func (*claudeDriver) DiscoverModels(ctx context.Context, credential subscription
 	return result, nil
 }
 
-func (*claudeDriver) Observe(ctx context.Context, credential subscriptionruntime.Credential) (subscriptionruntime.Observation, error) {
+// Observe retrieves and normalizes Claude account and usage information into
+// the provider-neutral observation contract.
+func (*claudeDriver) Observe(ctx context.Context, credential subscriptionruntime.Credential, target subscriptionruntime.Target) (subscriptionruntime.Observation, error) {
 	value, err := ParseCredentialJSON(credential.Canonical())
 	if err != nil {
 		return subscriptionruntime.Observation{}, err
 	}
-	observed, err := ObserveAccount(ctx, value)
+	baseURL, err := target.BaseURL()
+	if err != nil {
+		return subscriptionruntime.Observation{}, err
+	}
+	observed, err := ObserveAccount(ctx, value, baseURL)
 	if err != nil {
 		var upstream *UpstreamHTTPError
 		if errors.As(err, &upstream) {
@@ -203,7 +227,7 @@ func claudeRuntimeCredential(value Credential, canonical []byte) subscriptionrun
 	}
 	return subscriptionruntime.NewCredential(
 		canonical,
-		strings.TrimSpace(value.AccountUUID),
+		credentialIdentity(value),
 		account,
 		expiresAt,
 		expires,
@@ -212,3 +236,11 @@ func claudeRuntimeCredential(value Credential, canonical []byte) subscriptionrun
 }
 
 var _ subscriptionruntime.BrowserAuthorizationDriver = (*claudeDriver)(nil)
+
+func credentialIdentity(value Credential) string {
+	accountID := strings.TrimSpace(value.AccountUUID)
+	if organizationID := strings.TrimSpace(value.OrganizationUUID); organizationID != "" {
+		return accountID + "/" + organizationID
+	}
+	return accountID
+}

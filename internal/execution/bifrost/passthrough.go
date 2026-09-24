@@ -12,8 +12,11 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 
+	"gpt-load/internal/channel"
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/execution"
+	"gpt-load/internal/execution/geminiimage"
+	"gpt-load/internal/platform/httpheader"
 	"gpt-load/internal/protocol"
 )
 
@@ -22,6 +25,24 @@ const maxStreamErrorEvidenceBytes = 64 << 10
 type passthroughStreamSDKResult struct {
 	stream chan *schemas.BifrostStreamChunk
 	err    *schemas.BifrostError
+}
+
+// nativeMessageProvider 为缺少透传接口的渠道复用相同 wire 协议，保留原有渠道身份。
+func nativeMessageProvider(providerKind channel.ProviderKind, spec execution.AttemptSpec) (schemas.ModelProvider, bool) {
+	if spec.RouteMode != execution.RouteNative ||
+		(spec.Operation != execution.OperationChatCompletion && spec.Operation != execution.OperationResponsesCreate) {
+		return "", false
+	}
+	switch providerKind {
+	case channel.ProviderDeepSeek, channel.ProviderOpenRouter, channel.ProviderGroq, channel.ProviderXAI:
+		if spec.ClientProtocol == protocol.OpenAICompletions || spec.ClientProtocol == protocol.OpenAIResponses {
+			return schemas.OpenAI, true
+		}
+		if providerKind == channel.ProviderDeepSeek && spec.ClientProtocol == protocol.Anthropic {
+			return schemas.Anthropic, true
+		}
+	}
+	return "", false
 }
 
 func sanitizeNativeChatBody(body []byte, upstreamModel string, stream ...bool) ([]byte, error) {
@@ -263,7 +284,7 @@ func encodeNativeJSONObject(object map[string]json.RawMessage) ([]byte, error) {
 	return encoded, nil
 }
 
-func (r *Runtime) executeNative(
+func (r *Runtime) executePassthrough(
 	parent context.Context,
 	spec execution.AttemptSpec,
 	prepared preparedAttempt,
@@ -374,6 +395,21 @@ complete:
 	}
 	model := openAIResponseModel(bodyBytes, spec.UpstreamModel)
 	if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		if prepared.mode == channel.RouteConverted && spec.ClientProtocol == protocol.OpenAIImages {
+			var err error
+			bodyBytes, usageEvidence, err = geminiimage.ConvertResponse(bodyBytes)
+			httpheader.StripRepresentationMetadata(headers)
+			headers.Set("Content-Type", "application/json")
+			if err != nil {
+				failure := startedUnaryFailure(http.StatusBadGateway, headers, execution.ErrorKindProvider, geminiimage.ErrInvalidResponse.Error())
+				failure.Error.Code = "invalid_image_response"
+				failure.Error.StatusCode = http.StatusBadGateway
+				failure.Error.Hint = execution.FailureHintRequestRejected
+				failure.Error.OriginHint, failure.Error.ScopeHint = execution.ErrorOriginUpstream, execution.ErrorScopeRequest
+				return failure
+			}
+			model = openAIResponseModel(bodyBytes, "")
+		}
 		if needsClientModelAlias(spec) && headers.Get("Content-Encoding") == "" {
 			var err error
 			bodyBytes, err = rewriteClientResponseModel(spec.ClientProtocol, bodyBytes, spec.ClientModel)
@@ -673,7 +709,7 @@ func usageEvidenceFromPassthroughForSpec(
 	spec execution.AttemptSpec,
 	source *schemas.BifrostPassthroughUsage,
 ) (*execution.UsageEvidence, error) {
-	if spec.ClientProtocol == protocol.OpenAIImages {
+	if spec.ClientProtocol == protocol.OpenAIImages || spec.ClientProtocol == protocol.Rerank || spec.ClientProtocol == protocol.Decisions {
 		return nil, nil
 	}
 	return usageEvidenceFromPassthrough(source)

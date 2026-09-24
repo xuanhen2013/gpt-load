@@ -108,6 +108,47 @@ func hasMeaningfulField(object map[string]any, field string) bool {
 	}
 }
 
+// CountMidConversationSystemMessages 只观察真实角色，不把用户文本中的提示标签当作系统消息。
+func CountMidConversationSystemMessages(clientProtocol protocol.Protocol, body []byte) int {
+	root, ok := decodeExecutionFeatureObject(body)
+	if !ok {
+		return 0
+	}
+	field := "messages"
+	switch clientProtocol {
+	case protocol.OpenAICompletions, protocol.Anthropic:
+	case protocol.OpenAIResponses:
+		field = "input"
+	default:
+		return 0
+	}
+	messages, _ := root[field].([]any)
+	seenConversation, count := false, 0
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := message["role"].(string)
+		if role == "system" || role == "developer" {
+			if seenConversation && hasMeaningfulField(message, "content") {
+				count++
+			}
+			continue
+		}
+		switch role {
+		case "user", "assistant", "tool":
+			seenConversation = true
+		}
+		itemType, _ := message["type"].(string)
+		if clientProtocol == protocol.OpenAIResponses && itemType != "" {
+			// 非指令项目也属于有序历史，不按部分工具类型枚举会话起点。
+			seenConversation = true
+		}
+	}
+	return count
+}
+
 func responsesCreateRequirements(
 	body []byte,
 ) (execution.RouteRequirement, execution.ResponsesStorePreference) {
@@ -115,8 +156,7 @@ func responsesCreateRequirements(
 	if !ok {
 		return execution.RouteRequirementNative, execution.ResponsesStorePreferenceNone
 	}
-	if hasMeaningfulField(root, "previous_response_id") ||
-		hasMeaningfulField(root, "conversation") ||
+	if hasMeaningfulField(root, "conversation") ||
 		responsesPromptReferencesProviderResource(root["prompt"]) {
 		return execution.RouteRequirementNative, execution.ResponsesStorePreferenceNone
 	}
@@ -128,17 +168,15 @@ func responsesCreateRequirements(
 		return execution.RouteRequirementNative, execution.ResponsesStorePreferenceNone
 	}
 	value, exists := root["store"]
-	if !exists {
-		return execution.RouteRequirementAny, execution.ResponsesStorePreferencePreferStored
-	}
-	if value == nil {
-		return execution.RouteRequirementNative, execution.ResponsesStorePreferenceNone
-	}
 	store, ok := value.(bool)
-	if !ok {
+	if exists && !ok {
 		return execution.RouteRequirementNative, execution.ResponsesStorePreferenceNone
 	}
-	if store {
+	// 其他资源与参数约束优先；仅纯 ID 续接使用上游存储要求。
+	if hasMeaningfulField(root, "previous_response_id") {
+		return execution.RouteRequirementNative, execution.ResponsesStorePreferenceRequireStored
+	}
+	if !exists || store {
 		return execution.RouteRequirementAny, execution.ResponsesStorePreferencePreferStored
 	}
 	return execution.RouteRequirementAny, execution.ResponsesStorePreferenceNone

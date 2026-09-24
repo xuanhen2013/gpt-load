@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"bytes"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -19,21 +18,12 @@ import (
 	"gpt-load/internal/telemetry"
 )
 
-type affinityFixedRandSource struct {
-	value int64
-}
-
-const affinitySecondCredentialRand int64 = 3000
-
-func (source affinityFixedRandSource) Int63() int64 { return source.value }
-func (affinityFixedRandSource) Seed(int64)          {}
-
 func TestHandlerLearnsAndReusesAutomaticSoftAffinity(t *testing.T) {
 	forwarder := &scriptedForwarder{results: successfulAffinityResults(2)}
 	handler, _, _ := newHandlerForTest(t, forwarder, "sk-one", "sk-two")
 	sink := &recordingRequestLogSink{}
 	handler.requestLogSink = sink
-	useAffinityRandomValues(handler, 0, affinitySecondCredentialRand)
+
 	engine := newAffinityTestEngine(t, handler)
 
 	serveAffinityRequest(t, engine, `{
@@ -63,7 +53,7 @@ func TestHandlerReusesSoftAffinityAcrossModelsWithSameCandidateRange(t *testing.
 	addAffinityModelRoute(t, manager.Current(), "gpt-4o-mini", 1)
 	sink := &recordingRequestLogSink{}
 	handler.requestLogSink = sink
-	useAffinityRandomValues(handler, 0, affinitySecondCredentialRand)
+
 	engine := newAffinityTestEngine(t, handler)
 
 	serveAffinityModelRequest(t, engine, "gpt-4o")
@@ -79,7 +69,7 @@ func TestHandlerRelearnsSoftAffinityWhenModelCandidateRangeChanges(t *testing.T)
 	moveSecondAffinityCredentialToGroup(t, manager.Current(), registry)
 	sink := &recordingRequestLogSink{}
 	handler.requestLogSink = sink
-	useAffinityRandomValues(handler, 0, 0, 0, 0)
+
 	engine := newAffinityTestEngine(t, handler)
 
 	serveAffinityModelRequest(t, engine, "gpt-4o")
@@ -101,7 +91,7 @@ func TestHandlerDoesNotLearnAffinityForNonParticipatingGroup(t *testing.T) {
 	snapshot.Groups[1] = group
 	sink := &recordingRequestLogSink{}
 	handler.requestLogSink = sink
-	useAffinityRandomValues(handler, 0, affinitySecondCredentialRand)
+
 	engine := newAffinityTestEngine(t, handler)
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"stable conversation"}]}`
 
@@ -150,7 +140,7 @@ func TestHandlerGroupAffinityOverrideWinsOverGlobalSetting(t *testing.T) {
 			current.Groups[1] = group
 			sink := &recordingRequestLogSink{}
 			handler.requestLogSink = sink
-			useAffinityRandomValues(handler, 0, affinitySecondCredentialRand)
+
 			engine := newAffinityTestEngine(t, handler)
 			body := `{"model":"gpt-4o","messages":[{"role":"user","content":"stable conversation"}]}`
 
@@ -179,13 +169,13 @@ func TestHandlerSoftAffinityRetriesAndRebindsAfterFallbackSuccess(t *testing.T) 
 	handler, _, registry := newHandlerForTest(t, forwarder, "sk-one", "sk-two")
 	sink := &recordingRequestLogSink{}
 	handler.requestLogSink = sink
-	useAffinityRandomValues(handler, 0, affinitySecondCredentialRand, 0)
+
 	engine := newAffinityTestEngine(t, handler)
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"stable conversation"}]}`
 
 	serveAffinityRequest(t, engine, body)
 	serveAffinityRequest(t, engine, body)
-	if !registry.RestoreRuntimeState(1, state.DefaultWeight) {
+	if !registry.RestoreRuntimeState(1) {
 		t.Fatal("RestoreRuntimeState() = false, want credential 1 restored")
 	}
 	serveAffinityRequest(t, engine, body)
@@ -199,7 +189,7 @@ func TestHandlerSoftAffinitySkipsDisabledCredentialAndLearnsReplacement(t *testi
 	handler, _, registry := newHandlerForTest(t, forwarder, "sk-one", "sk-two")
 	sink := &recordingRequestLogSink{}
 	handler.requestLogSink = sink
-	useAffinityRandomValues(handler, 0, 0, 0)
+
 	engine := newAffinityTestEngine(t, handler)
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"stable conversation"}]}`
 
@@ -222,7 +212,7 @@ func TestHandlerDoesNotApplyAffinityWithoutInitialUserText(t *testing.T) {
 	handler, _, _ := newHandlerForTest(t, forwarder, "sk-one", "sk-two")
 	sink := &recordingRequestLogSink{}
 	handler.requestLogSink = sink
-	useAffinityRandomValues(handler, 0, affinitySecondCredentialRand)
+
 	engine := newAffinityTestEngine(t, handler)
 	body := `{"model":"gpt-4o","messages":[{"role":"system","content":"shared instruction"}]}`
 
@@ -242,7 +232,7 @@ func TestHandlerLearnsAffinityOnlyFromCleanCompletedStream(t *testing.T) {
 	handler, _, _ := newHandlerForTest(t, forwarder, "sk-one", "sk-two")
 	sink := &recordingRequestLogSink{}
 	handler.requestLogSink = sink
-	useAffinityRandomValues(handler, 0, affinitySecondCredentialRand, 0)
+
 	engine := newAffinityTestEngine(t, handler)
 	body := `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"stable stream"}]}`
 
@@ -265,6 +255,7 @@ func TestHandlerIgnoresAffinityAfterCredentialIdentityChanges(t *testing.T) {
 		protocol.OpenAICompletions,
 		prefix,
 		map[uint]state.CredentialRef{1: oldRef},
+		"",
 	)
 	if initial.preferredCredentialID != 0 || !initial.key.Valid() {
 		t.Fatalf("initial affinity = %#v, want valid miss", initial)
@@ -283,6 +274,7 @@ func TestHandlerIgnoresAffinityAfterCredentialIdentityChanges(t *testing.T) {
 		protocol.OpenAICompletions,
 		prefix,
 		map[uint]state.CredentialRef{1: oldRef},
+		"",
 	)
 	if hit.preferredCredentialID != 1 {
 		t.Fatalf("preferred credential = %d, want 1", hit.preferredCredentialID)
@@ -295,6 +287,7 @@ func TestHandlerIgnoresAffinityAfterCredentialIdentityChanges(t *testing.T) {
 		protocol.OpenAICompletions,
 		prefix,
 		map[uint]state.CredentialRef{1: changedRef},
+		"",
 	)
 	if stale.preferredCredentialID != 0 {
 		t.Fatalf("preferred credential after identity change = %d, want 0", stale.preferredCredentialID)
@@ -311,6 +304,7 @@ func TestHandlerDerivesPrivateContinuityWithoutReenablingDisabledAffinity(t *tes
 		protocol.OpenAICompletions,
 		[]byte(`{"v":1,"user":["hello"]}`),
 		map[uint]state.CredentialRef{1: {ID: 1, GroupID: 1, IdentityGeneration: 1}},
+		"",
 	)
 	if resolved.key.Valid() || resolved.preferredCredentialID != 0 || resolved.continuityKey == "" {
 		t.Fatalf("disabled affinity resolution = %#v", resolved)
@@ -331,18 +325,6 @@ func successfulAffinityResult() UpstreamResult {
 		Header:         make(http.Header),
 		Body:           []byte(`{"ok":true}`),
 		RequestWritten: true,
-	}
-}
-
-func useAffinityRandomValues(handler *Handler, values ...int64) {
-	index := 0
-	handler.newRandom = func() *rand.Rand {
-		value := int64(0)
-		if index < len(values) {
-			value = values[index]
-			index++
-		}
-		return rand.New(affinityFixedRandSource{value: value})
 	}
 }
 
@@ -467,5 +449,63 @@ func assertAffinityUpstreamModels(t *testing.T, inputs []ForwardInput, want []st
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("upstream models = %#v, want %#v", got, want)
+	}
+}
+
+func TestPromptCacheKeyAffinityPrecedesPromptPrefix(t *testing.T) {
+	forwarder := &scriptedForwarder{results: successfulAffinityResults(4)}
+	handler, _, _ := newHandlerForTest(t, forwarder, "sk-one", "sk-two")
+	sink := &recordingRequestLogSink{}
+	handler.requestLogSink = sink
+	engine := newAffinityTestEngine(t, handler)
+	for _, body := range []string{
+		`{"model":"gpt-4o","prompt_cache_key":"cache-a","messages":[{"role":"user","content":"first"}]}`,
+		`{"model":"gpt-4o","prompt_cache_key":"cache-a","messages":[{"role":"user","content":"changed"}]}`,
+		`{"model":"gpt-4o","prompt_cache_key":"cache-b","messages":[{"role":"user","content":"changed"}]}`,
+		`{"model":"gpt-4o","prompt_cache_key":"cache-b","messages":[{"role":"user","content":"another"}]}`,
+	} {
+		serveAffinityRequest(t, engine, body)
+	}
+	assertAffinityAttemptKeys(t, forwarder.inputs, []string{"sk-one", "sk-one", "sk-two", "sk-two"})
+	assertAffinityHits(t, sink.snapshot(), []bool{false, true, false, true})
+	for _, i := range []int{1, 3} {
+		if sink.snapshot()[i].AffinityKind != telemetry.AffinityPromptCacheKey {
+			t.Fatal("wrong cache affinity kind")
+		}
+	}
+	// 客户端缓存分组不改变 provider-private replay 的提示词隔离。
+	if forwarder.inputs[0].ContinuityKey == forwarder.inputs[1].ContinuityKey {
+		t.Fatal("cache key became replay identity")
+	}
+}
+
+func TestPromptCacheKeyAffinityRespectsGroupSwitch(t *testing.T) {
+	forwarder := &scriptedForwarder{results: successfulAffinityResults(2)}
+	handler, manager, _ := newHandlerForTest(t, forwarder, "sk-one", "sk-two")
+	group := manager.Current().Groups[1]
+	group.AffinityEnabled = false
+	manager.Current().Groups[1] = group
+	engine := newAffinityTestEngine(t, handler)
+	for range 2 {
+		serveAffinityRequest(t, engine, `{"model":"gpt-4o","prompt_cache_key":"cache-a","messages":[{"role":"user","content":"same"}]}`)
+	}
+	assertAffinityAttemptKeys(t, forwarder.inputs, []string{"sk-one", "sk-two"})
+}
+
+func TestInvalidPromptCacheKeyFallsBackWithoutMutatingRequest(t *testing.T) {
+	forwarder := &scriptedForwarder{results: successfulAffinityResults(2)}
+	handler, _, _ := newHandlerForTest(t, forwarder, "sk-one", "sk-two")
+	sink := &recordingRequestLogSink{}
+	handler.requestLogSink = sink
+	engine := newAffinityTestEngine(t, handler)
+	body := `{"model":"gpt-4o","prompt_cache_key":" invalid ","messages":[{"role":"user","content":"hello"}]}`
+	serveAffinityRequest(t, engine, body)
+	serveAffinityRequest(t, engine, body)
+	assertAffinityAttemptKeys(t, forwarder.inputs, []string{"sk-one", "sk-one"})
+	if sink.snapshot()[1].AffinityKind != telemetry.AffinityPromptPrefix {
+		t.Fatal("invalid key did not fall back to prefix")
+	}
+	if !bytes.Contains(forwarder.inputs[1].Request.Body, []byte(`"prompt_cache_key":" invalid "`)) {
+		t.Fatal("client cache parameter changed")
 	}
 }

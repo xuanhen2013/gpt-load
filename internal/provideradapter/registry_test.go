@@ -56,6 +56,7 @@ func TestRegistryDispatchesOnlyByCompiledChannelProviderBinding(t *testing.T) {
 		ClientProtocol: "openai-responses",
 		Operation:      execution.OperationResponsesCreate,
 		RouteMode:      execution.RouteNative,
+		TargetConfig:   json.RawMessage(`{"base_url":"https://chatgpt.com/backend-api/codex"}`),
 	})
 	registry.ExecuteStream(t.Context(), execution.AttemptSpec{
 		ChannelID:      string(channel.OpenAI),
@@ -86,6 +87,7 @@ func TestRegistryFailsClosedForMissingBindingAndUndeclaredRoute(t *testing.T) {
 		ClientProtocol: "openai-responses",
 		Operation:      execution.OperationListModels,
 		RouteMode:      execution.RouteNative,
+		TargetConfig:   json.RawMessage(`{"base_url":"https://chatgpt.com/backend-api/codex"}`),
 	})
 	if result.DispatchState != execution.DispatchNotSent || result.Error == nil ||
 		result.Error.Kind != execution.ErrorKindInvalidRequest ||
@@ -152,6 +154,7 @@ func completeBindings(bifrost execution.Executor, codex execution.Executor) []Bi
 		{ProviderKind: channel.ProviderGoogleVertex, Adapter: bifrost},
 		{ProviderKind: channel.ProviderDeepSeek, Adapter: bifrost},
 		{ProviderKind: channel.ProviderOpenRouter, Adapter: bifrost},
+		{ProviderKind: channel.ProviderJev, Adapter: bifrost},
 		{ProviderKind: channel.ProviderGroq, Adapter: bifrost},
 		{ProviderKind: channel.ProviderXAI, Adapter: bifrost},
 		{ProviderKind: channel.ProviderCodex, Adapter: codex},

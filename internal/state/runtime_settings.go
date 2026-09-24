@@ -25,6 +25,8 @@ const (
 	SettingRouteStrategy                 = "route_strategy"
 	SettingBlacklistThreshold            = "blacklist_threshold"
 	SettingAffinityEnabled               = "affinity_enabled"
+	SettingResponsesWebsocketEnabled     = "responses_websocket_enabled"
+	SettingEmptyResponseRetry            = "empty_response_retry"
 	SettingAffinityTTL                   = "affinity_ttl"
 	SettingAffinityCapacity              = "affinity_capacity"
 	SettingValidationInterval            = "validation_interval"
@@ -53,22 +55,23 @@ const (
 )
 
 type RuntimeSettings struct {
-	FirstByteTimeout         time.Duration
-	RequestTimeout           time.Duration
-	StreamIdleTimeout        time.Duration
-	HeaderRules              HeaderRules
-	CORS                     CORSConfig
-	ResponseHeaderRules      HeaderRules
-	RetryCount               int
-	RouteStrategy            RouteStrategy
-	BlacklistThreshold       int
-	AffinityEnabled          bool
-	AffinityTTL              time.Duration
-	AffinityCapacity         int
-	ValidationInterval       time.Duration
-	RequestLogRetentionDays  int
-	ModelsDevAutoSyncEnabled bool
-	// AccountConcurrencyLimit is a per-account default. Zero means unlimited.
+	FirstByteTimeout               time.Duration
+	RequestTimeout                 time.Duration
+	StreamIdleTimeout              time.Duration
+	HeaderRules                    HeaderRules
+	CORS                           CORSConfig
+	ResponseHeaderRules            HeaderRules
+	RetryCount                     int
+	RouteStrategy                  RouteStrategy
+	BlacklistThreshold             int
+	AffinityEnabled                bool
+	ResponsesWebsocketEnabled      bool
+	EmptyResponseRetry             bool
+	AffinityTTL                    time.Duration
+	AffinityCapacity               int
+	ValidationInterval             time.Duration
+	RequestLogRetentionDays        int
+	ModelsDevAutoSyncEnabled       bool
 	AccountConcurrencyLimit        int
 	AccountConcurrencyWaitTimeout  time.Duration
 	CodexConnectionReuseEnabled    bool
@@ -76,13 +79,14 @@ type RuntimeSettings struct {
 }
 
 type ResolvedGroupSettings struct {
-	Timeouts                TimeoutConfig
-	HeaderRules             HeaderRules
-	RetryCount              int
-	BlacklistThreshold      int
-	AffinityEnabled         bool
-	AccountConcurrencyLimit int
-	ParameterOverrides      parameteroverride.Rules
+	Timeouts                  TimeoutConfig
+	HeaderRules               HeaderRules
+	BlacklistThreshold        int
+	AffinityEnabled           bool
+	ResponsesWebsocketEnabled bool
+	EmptyResponseRetry        bool
+	ParameterOverrides        parameteroverride.Rules
+	AccountConcurrencyLimit   int
 }
 
 func DefaultRuntimeSettings() RuntimeSettings {
@@ -97,6 +101,8 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		RouteStrategy:                  RouteStrategyNativeFirst,
 		BlacklistThreshold:             3,
 		AffinityEnabled:                true,
+		ResponsesWebsocketEnabled:      true,
+		EmptyResponseRetry:             false,
 		AffinityTTL:                    time.Hour,
 		AffinityCapacity:               defaultAffinityCapacity,
 		ValidationInterval:             10 * time.Minute,
@@ -121,6 +127,8 @@ func IsRuntimeSettingKey(key string) bool {
 		SettingRouteStrategy,
 		SettingBlacklistThreshold,
 		SettingAffinityEnabled,
+		SettingResponsesWebsocketEnabled,
+		SettingEmptyResponseRetry,
 		SettingAffinityTTL,
 		SettingAffinityCapacity,
 		SettingValidationInterval,
@@ -199,6 +207,18 @@ func ResolveRuntimeSettings(settings config.Settings) (RuntimeSettings, error) {
 				return RuntimeSettings{}, err
 			}
 			resolved.AffinityEnabled = value
+		case SettingResponsesWebsocketEnabled:
+			value, err := strictBoolean(key, value)
+			if err != nil {
+				return RuntimeSettings{}, err
+			}
+			resolved.ResponsesWebsocketEnabled = value
+		case SettingEmptyResponseRetry:
+			value, err := strictBoolean(key, value)
+			if err != nil {
+				return RuntimeSettings{}, err
+			}
+			resolved.EmptyResponseRetry = value
 		case SettingAffinityTTL:
 			seconds, err := positiveWholeSeconds(key, value)
 			if err != nil {
@@ -270,10 +290,12 @@ func ResolveGroupRuntimeSettings(
 			Request:    base.RequestTimeout,
 			StreamIdle: base.StreamIdleTimeout,
 		},
-		HeaderRules:        cloneHeaderRules(base.HeaderRules),
-		RetryCount:         base.RetryCount,
-		BlacklistThreshold: base.BlacklistThreshold,
-		AffinityEnabled:    base.AffinityEnabled,
+		HeaderRules:               cloneHeaderRules(base.HeaderRules),
+		BlacklistThreshold:        base.BlacklistThreshold,
+		AccountConcurrencyLimit:   base.AccountConcurrencyLimit,
+		AffinityEnabled:           base.AffinityEnabled,
+		ResponsesWebsocketEnabled: base.ResponsesWebsocketEnabled,
+		EmptyResponseRetry:        base.EmptyResponseRetry,
 	}
 	for key, value := range settings {
 		switch key {
@@ -302,11 +324,8 @@ func ResolveGroupRuntimeSettings(
 			}
 			resolved.HeaderRules = parsed
 		case SettingRetryCount:
-			parsed, err := nonNegativeWholeNumber(key, value)
-			if err != nil {
-				return ResolvedGroupSettings{}, err
-			}
-			resolved.RetryCount = parsed
+			// 兼容读取历史分组配置；重试预算仅由系统设置决定。
+			continue
 		case SettingBlacklistThreshold:
 			parsed, err := nonNegativeWholeNumber(key, value)
 			if err != nil {
@@ -327,6 +346,18 @@ func ResolveGroupRuntimeSettings(
 			resolved.AccountConcurrencyLimit = parsed
 		case SettingCodexConnectionReuse:
 			return ResolvedGroupSettings{}, fmt.Errorf("runtime setting %q is system-only", key)
+		case SettingResponsesWebsocketEnabled:
+			parsed, err := strictBoolean(key, value)
+			if err != nil {
+				return ResolvedGroupSettings{}, err
+			}
+			resolved.ResponsesWebsocketEnabled = parsed
+		case SettingEmptyResponseRetry:
+			parsed, err := strictBoolean(key, value)
+			if err != nil {
+				return ResolvedGroupSettings{}, err
+			}
+			resolved.EmptyResponseRetry = parsed
 		case SettingParameterOverrides:
 			parsed, err := parameteroverride.Compile(value)
 			if err != nil {
@@ -363,7 +394,7 @@ func ValidateRuntimeSetting(key string, value any) error {
 	case SettingRouteStrategy:
 		_, err := parseRouteStrategy(value)
 		return err
-	case SettingAffinityEnabled:
+	case SettingAffinityEnabled, SettingResponsesWebsocketEnabled, SettingEmptyResponseRetry:
 		_, err := strictBoolean(key, value)
 		return err
 	case SettingAffinityTTL:

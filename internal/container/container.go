@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 	"go.uber.org/dig"
 	"gorm.io/gorm"
 
@@ -33,6 +34,7 @@ import (
 	"gpt-load/internal/ratelimit"
 	"gpt-load/internal/releasecheck"
 	"gpt-load/internal/requestlog"
+	"gpt-load/internal/rpm"
 	"gpt-load/internal/state"
 	stateloader "gpt-load/internal/state/loader"
 	"gpt-load/internal/storage"
@@ -41,8 +43,6 @@ import (
 	subscriptionruntime "gpt-load/internal/subscription/runtime"
 	"gpt-load/internal/telemetry"
 	"gpt-load/internal/webui"
-
-	"github.com/sirupsen/logrus"
 )
 
 // BuildContainer creates the 2.0 runtime foundation dependency graph.
@@ -65,6 +65,7 @@ func BuildContainer() (*dig.Container, error) {
 		app.NewEngineWithLifecycle,
 		webui.NewServer,
 		state.NewCredentialRegistry,
+		state.NewResponseBindings,
 		accessquota.NewRuntime,
 		channel.CompileRegistry,
 		control.NewPriceRuntime,
@@ -72,7 +73,12 @@ func BuildContainer() (*dig.Container, error) {
 		func(bootstrap *control.CatalogBootstrap) *catalog.Runtime { return bootstrap.Runtime },
 		health.NewStatsStore,
 		health.NewMutationCoordinator,
-		ratelimit.NewAccessKeyRPM,
+		rpm.NewStore,
+		func(store *rpm.Store) *ratelimit.AccessKeyRPM {
+			limiter := ratelimit.NewAccessKeyRPM()
+			limiter.SetRPMStore(store)
+			return limiter
+		},
 		func(limiter *ratelimit.AccessKeyRPM) gateway.AccessKeyRPMLimiter {
 			return limiter
 		},
@@ -88,12 +94,17 @@ func BuildContainer() (*dig.Container, error) {
 			retention requestlog.RetentionPolicyProvider,
 			quotaRuntime *accessquota.Runtime,
 			subscriptionCredentials *subscription.CredentialManager,
+			rpmStore *rpm.Store,
 		) *requestlog.Service {
 			service := requestlog.NewService(db, redactor, retention, quotaRuntime)
 			service.SetPassiveQuotaFlusher(subscriptionCredentials)
+			service.SetRPMStore(rpmStore)
 			return service
 		},
 		func(service *requestlog.Service) telemetry.RequestLogSink {
+			return service
+		},
+		func(service *requestlog.Service) gateway.AccessKeyUsageReader {
 			return service
 		},
 		func(service *requestlog.Service) control.RequestLogReader {
@@ -118,8 +129,9 @@ func BuildContainer() (*dig.Container, error) {
 			cfg *config.Config,
 			registry *state.CredentialRegistry,
 			stats *health.StatsStore,
+			responseBindings *state.ResponseBindings,
 		) app.RuntimeStateCheckpoint {
-			return app.NewFileRuntimeStateCheckpoint(cfg.DataDir, registry, stats)
+			return app.NewFileRuntimeStateCheckpoint(cfg.DataDir, registry, stats, responseBindings)
 		},
 		control.NewRuntime,
 		func(runtime *control.Runtime) app.ControlRuntime { return runtime },
@@ -153,6 +165,8 @@ func BuildContainer() (*dig.Container, error) {
 		dialect.NewOpenAIResponses,
 		dialect.NewOpenAIImages,
 		dialect.NewOpenAIEmbeddings,
+		dialect.NewRerank,
+		dialect.NewDecisions,
 		dialect.NewAnthropic,
 		dialect.NewGemini,
 		func(
@@ -160,16 +174,19 @@ func BuildContainer() (*dig.Container, error) {
 			openAIResponses *dialect.OpenAIResponses,
 			openAIImages *dialect.OpenAIImages,
 			openAIEmbeddings *dialect.OpenAIEmbeddings,
+			rerank *dialect.Rerank,
+			decisions *dialect.Decisions,
 			anthropic *dialect.Anthropic,
 			gemini *dialect.Gemini,
 		) dialect.Set {
-			return dialect.NewSet(openAI, openAIResponses, openAIImages, openAIEmbeddings, anthropic, gemini)
+			return dialect.NewSet(openAI, openAIResponses, openAIImages, openAIEmbeddings, rerank, decisions, anthropic, gemini)
 		},
 		func(registry *channel.Registry) (*bifrostexecutor.RuntimeManager, error) {
 			return bifrostexecutor.NewManagedRuntime(registry)
 		},
-		func(adapters *provideradapter.Registry, quotaRuntime *accessquota.Runtime, cfg *config.Config) *state.Manager {
+		func(adapters *provideradapter.Registry, quotaRuntime *accessquota.Runtime, credentials *state.CredentialRegistry, cfg *config.Config) *state.Manager {
 			manager := state.NewManager()
+			manager.SetSchedulingState(credentials.SchedulingState())
 			manager.SetSnapshotReconciler(runtimeSnapshotReconciler{
 				adapters: adapters, accessQuota: quotaRuntime,
 				codexConnectionReuseDefault: cfg.CodexConnectionReuseEnabled,
@@ -189,7 +206,11 @@ func BuildContainer() (*dig.Container, error) {
 		func(runtime *bifrostexecutor.RuntimeManager, cpa *cpaexecutor.Adapter) app.ExecutionRuntime {
 			return &providerExecutionRuntime{primary: runtime, cpa: cpa}
 		},
-		gateway.NewExecutionForwarder,
+		func(executor execution.Executor, store *rpm.Store) *gateway.ExecutionForwarder {
+			forwarder := gateway.NewExecutionForwarder(executor)
+			forwarder.SetRPMStore(store)
+			return forwarder
+		},
 		func(forwarder *gateway.ExecutionForwarder) gateway.AttemptForwarder { return forwarder },
 		gateway.NewHandlerWithLifecycle,
 		control.NewService,
@@ -288,6 +309,7 @@ func newProviderAdapterRegistry(
 		{ProviderKind: channel.ProviderGoogleVertex, Adapter: bifrost},
 		{ProviderKind: channel.ProviderDeepSeek, Adapter: bifrost},
 		{ProviderKind: channel.ProviderOpenRouter, Adapter: bifrost},
+		{ProviderKind: channel.ProviderJev, Adapter: bifrost},
 		{ProviderKind: channel.ProviderGroq, Adapter: bifrost},
 		{ProviderKind: channel.ProviderXAI, Adapter: bifrost},
 		{ProviderKind: channel.ProviderCodex, Adapter: cpa},

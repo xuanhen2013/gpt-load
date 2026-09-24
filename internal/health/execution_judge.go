@@ -28,6 +28,9 @@ func JudgeExecution(attempt ExecutionAttempt, decisionContext DecisionContext) D
 	decisionContext = normalizeDecisionContext(decisionContext)
 	if errors.Is(attempt.DownstreamErr, context.Canceled) ||
 		errors.Is(attempt.DownstreamErr, context.DeadlineExceeded) {
+		if result, ok := canceledModelCooldown(attempt, decisionContext); ok {
+			return result
+		}
 		return decision(
 			FailureCategoryDownstreamCancel,
 			execution.ErrorOriginDownstream,
@@ -38,6 +41,9 @@ func JudgeExecution(attempt ExecutionAttempt, decisionContext DecisionContext) D
 		)
 	}
 	if attempt.DownstreamErr != nil {
+		if result, ok := canceledModelCooldown(attempt, decisionContext); ok {
+			return result
+		}
 		return decision(
 			FailureCategoryAmbiguous,
 			execution.ErrorOriginDownstream,
@@ -88,6 +94,18 @@ func JudgeExecution(attempt ExecutionAttempt, decisionContext DecisionContext) D
 			EffectNone,
 			"safety.execution_canceled",
 		)
+	}
+	if attempt.Evidence.Code == EmptyResponseCode {
+		// 上游正常完成了一次请求，只是没有产出内容。换下一个候选值得一试，
+		// 但这不是凭据故障：不冷却、不拉黑，也不计入失败统计。
+		return constrainCommittedDecision(decision(
+			FailureCategoryAmbiguous,
+			execution.ErrorOriginUpstream,
+			execution.ErrorScopeRequest,
+			RetryNextCandidate,
+			EffectNone,
+			"content.empty_response",
+		), attempt)
 	}
 	if attempt.DispatchState == execution.DispatchNotSent {
 		if result, ok := candidatePreparationDecision(attempt.Evidence); ok {
@@ -190,6 +208,19 @@ func JudgeExecution(attempt ExecutionAttempt, decisionContext DecisionContext) D
 	return constrainCommittedDecision(result, attempt)
 }
 
+func canceledModelCooldown(attempt ExecutionAttempt, decisionContext DecisionContext) (Decision, bool) {
+	if attempt.DispatchState != execution.DispatchMaybeSent || !decisionContext.Operation.UsesModelCooldown() ||
+		attempt.Evidence == nil || attempt.Evidence.Hint != execution.FailureHintRateLimited ||
+		(attempt.Evidence.Kind != execution.ErrorKindHTTP && attempt.Evidence.Kind != execution.ErrorKindProvider) ||
+		(attempt.Evidence.ScopeHint != "" && attempt.Evidence.ScopeHint != execution.ErrorScopeModel) ||
+		(attempt.Evidence.OriginHint != "" && attempt.Evidence.OriginHint != execution.ErrorOriginUpstream) {
+		return Decision{}, false
+	}
+	result := decisionForExecutionCategory(FailureCategoryRateLimited, attempt, decisionContext)
+	result.Retry = RetryNone
+	return result, result.Effect == EffectCooldownModel
+}
+
 func refreshTemporarilyUnavailableDecision(attempt ExecutionAttempt, decisionContext DecisionContext) Decision {
 	category := FailureCategoryUpstreamHostError
 	ruleID := RuleID("auth.refresh_temporarily_unavailable")
@@ -261,9 +292,6 @@ func classifyExecutionEvidence(attempt ExecutionAttempt) FailureCategory {
 			attempt.Evidence.Hint == "" {
 			return FailureCategoryAmbiguous
 		}
-		if structuredUnsupportedModelClientError(statusCode, attempt.Evidence) {
-			return FailureCategoryClientError
-		}
 		switch attempt.Evidence.Hint {
 		case execution.FailureHintInvalidCredential:
 			return FailureCategoryInvalidKey
@@ -280,6 +308,9 @@ func classifyExecutionEvidence(attempt ExecutionAttempt) FailureCategory {
 			return FailureCategoryModelUnavailable
 		case execution.FailureHintHostError:
 			return FailureCategoryUpstreamHostError
+		}
+		if execution.ExplicitRequestRejection(attempt.Evidence.Type, attempt.Evidence.Code, attempt.Evidence.Summary) {
+			return FailureCategoryClientError
 		}
 		markers = strings.ToLower(strings.Join([]string{
 			attempt.Evidence.Type,
@@ -305,26 +336,11 @@ func classifyExecutionEvidence(attempt ExecutionAttempt) FailureCategory {
 		return FailureCategoryInvalidKey
 	case statusCode >= http.StatusInternalServerError && statusCode <= 599:
 		return FailureCategoryUpstreamHostError
-	case statusCode >= http.StatusBadRequest && statusCode <= 499:
-		return FailureCategoryClientError
 	case attempt.Evidence != nil && attempt.Evidence.Kind == execution.ErrorKindInvalidRequest:
 		return FailureCategoryClientError
 	default:
 		return FailureCategoryAmbiguous
 	}
-}
-
-func structuredUnsupportedModelClientError(statusCode int, evidence *execution.ErrorEvidence) bool {
-	if evidence == nil || statusCode != http.StatusBadRequest {
-		return false
-	}
-	for _, value := range []string{evidence.Type, evidence.Code} {
-		normalized := strings.ToLower(strings.TrimSpace(value))
-		if normalized == "unsupported_model" || normalized == "unsupported-model" {
-			return true
-		}
-	}
-	return false
 }
 
 func decisionForExecutionCategory(
@@ -337,6 +353,15 @@ func decisionForExecutionCategory(
 	}
 	origin := originForEvidence(attempt.Evidence)
 	scope := attempt.Evidence.ScopeHint
+	if category == FailureCategoryModelUnavailable {
+		switch decisionContext.Operation {
+		case execution.OperationResponsesRetrieve, execution.OperationResponsesDelete,
+			execution.OperationResponsesCancel, execution.OperationResponsesInputItems,
+			execution.OperationResponsesPassthrough:
+			// 资源请求不通过切换模型候选恢复，也不能影响整份凭据。
+			return decision(category, origin, scope, RetryNone, EffectNone, "model.resource_unavailable")
+		}
+	}
 	if attempt.Evidence != nil && attempt.Evidence.Hint == execution.FailureHintCandidateUnavailable {
 		if attempt.Evidence.ReplaySafety == execution.ReplaySafetyUnknown {
 			return decision(category, origin, scope, RetryNone, EffectNone, "safety.replay_unknown")
@@ -360,6 +385,12 @@ func decisionForExecutionCategory(
 			if decisionContext.Operation == execution.OperationEmbeddingsCreate {
 				ruleID = "embeddings.model_unavailable"
 			}
+			if decisionContext.Operation == execution.OperationRerank {
+				ruleID = "rerank.model_unavailable"
+			}
+			if decisionContext.Operation == execution.OperationDecisionsCreate {
+				ruleID = "decisions.model_unavailable"
+			}
 			return decision(
 				category,
 				origin,
@@ -369,16 +400,14 @@ func decisionForExecutionCategory(
 				ruleID,
 			)
 		}
-		result := decision(
+		return decision(
 			category,
 			origin,
 			scopeOrDefault(scope, execution.ErrorScopeModel),
 			retry,
-			EffectCooldownCredential,
+			EffectNone,
 			"model.unavailable",
 		)
-		result.CooldownUntil = attempt.Now.Add(time.Hour)
-		return result
 	case FailureCategoryInvalidKey:
 		return decision(
 			category,
@@ -396,10 +425,10 @@ func decisionForExecutionCategory(
 		if attempt.Evidence.ReplaySafety == execution.ReplaySafetyRejectedBeforeProcessing {
 			retry = RetryNextCandidate
 			ruleID = "upstream.host_error.rejected_before_processing"
-		} else if attempt.Evidence.ReplaySafety != execution.ReplaySafetyUnknown &&
+		} else if retryableUpstreamResponse(attempt) &&
 			requestMayReplayAfterResponse(decisionContext) {
 			retry = RetryNextCandidate
-			ruleID = "upstream.host_error.read_only"
+			ruleID = "upstream.host_error.response_retry"
 		}
 		return decision(
 			category,
@@ -430,7 +459,44 @@ func decisionForExecutionCategory(
 	case FailureCategoryOK:
 		return decision(category, origin, scope, RetryNone, EffectNone, "success.upstream_response")
 	default:
-		return decision(category, origin, scope, RetryNone, EffectNone, ambiguousRuleID(attempt.Evidence))
+		ruleID := ambiguousRuleID(attempt.Evidence)
+		if retryableUpstreamResponse(attempt) {
+			if !requestMayReplayAfterResponse(decisionContext) &&
+				attempt.Evidence.ReplaySafety != execution.ReplaySafetyRejectedBeforeProcessing {
+				return decision(category, origin, scope, RetryNone, EffectNone, "safety.operation_replay_unsafe")
+			}
+			if ruleID == "fallback.ambiguous" {
+				ruleID = "fallback.upstream_response"
+			}
+			return decision(category, origin, scope, RetryNextCandidate, EffectNone, ruleID)
+		}
+		return decision(category, origin, scope, RetryNone, EffectNone, ruleID)
+	}
+}
+
+// retryableUpstreamResponse 区分已收到的错误响应与超时、断流等执行结果未知的失败。
+func retryableUpstreamResponse(attempt ExecutionAttempt) bool {
+	evidence := attempt.Evidence
+	if evidence == nil || originForEvidence(evidence) != execution.ErrorOriginUpstream ||
+		evidence.ReplaySafety == execution.ReplaySafetyUnknown {
+		return false
+	}
+	switch evidence.Kind {
+	case execution.ErrorKindHTTP:
+		status := attempt.StatusCode
+		if status == 0 {
+			status = evidence.StatusCode
+		}
+		// 流建立后仍保留外层 2xx，流内 HTTP 错误由 Kind/Hint 承载。
+		return isSuccessStatus(status) || status >= http.StatusBadRequest && status <= 599
+	case execution.ErrorKindProvider:
+		switch evidence.Code {
+		case "upstream_protocol_error", "upstream_response_incomplete":
+			return false
+		}
+		return attempt.ResponseStarted()
+	default:
+		return false
 	}
 }
 
@@ -528,7 +594,12 @@ func decision(
 func rateLimitDecision(attempt ExecutionAttempt, decisionContext DecisionContext) Decision {
 	scope := attempt.Evidence.ScopeHint
 	retry := retryUnlessExplicitlyUnknown(attempt.Evidence)
-	if scope == execution.ErrorScopeRequest || scope == execution.ErrorScopeModel {
+	modelScoped := decisionContext.Operation.UsesModelCooldown() && (scope == "" || scope == execution.ErrorScopeModel)
+	if scope == "" && decisionContext.Operation.Valid() && !decisionContext.Operation.UsesModelCooldown() {
+		return decision(FailureCategoryRateLimited, originForEvidence(attempt.Evidence), execution.ErrorScopeRequest,
+			retry, EffectNone, "rate_limit.operation_no_cooldown")
+	}
+	if scope == execution.ErrorScopeRequest || scope == execution.ErrorScopeModel && !modelScoped {
 		return decision(
 			FailureCategoryRateLimited,
 			originForEvidence(attempt.Evidence),
@@ -542,6 +613,9 @@ func rateLimitDecision(attempt ExecutionAttempt, decisionContext DecisionContext
 	ruleID := RuleID("legacy.http_429_credential_cooldown")
 	if scope == execution.ErrorScopeCredential {
 		ruleID = "rate_limit.credential.default_cooldown"
+	}
+	if modelScoped {
+		scope, effect, ruleID = execution.ErrorScopeModel, EffectCooldownModel, "rate_limit.model.default_cooldown"
 	}
 	result := decision(
 		FailureCategoryRateLimited,
@@ -560,7 +634,12 @@ func rateLimitDecision(attempt ExecutionAttempt, decisionContext DecisionContext
 	if len(header) == 0 {
 		header = attempt.Evidence.Header
 	}
-	if until, ok := ParseRateLimitReset(header, attempt.Now); ok {
+	if modelScoped {
+		if until, ok := ParseExplicitRetryAfter(header, attempt.Now); ok {
+			result.CooldownUntil, result.RuleID = until, "rate_limit.retry_after"
+			return result
+		}
+	} else if until, ok := ParseRateLimitReset(header, attempt.Now); ok {
 		result.CooldownUntil = until
 		result.RuleID = "rate_limit.reset_header"
 		return result
@@ -621,6 +700,11 @@ func constrainCommittedDecision(result Decision, attempt ExecutionAttempt) Decis
 	originalEffect := result.Effect
 	result.Retry = RetryNone
 	switch result.Effect {
+	case EffectCooldownModel:
+		if attempt.Evidence == nil || attempt.Evidence.Hint != execution.FailureHintRateLimited ||
+			attempt.Evidence.OriginHint == execution.ErrorOriginInternal || attempt.Evidence.OriginHint == execution.ErrorOriginDownstream {
+			result.Effect, result.CooldownUntil = EffectNone, time.Time{}
+		}
 	case EffectCooldownCredential, EffectRecordCredentialFailure:
 		if !trustedCommittedCredentialEffect(result, attempt.Evidence) {
 			result.Effect = EffectNone
@@ -664,7 +748,10 @@ func requestMayReplayAfterResponse(value DecisionContext) bool {
 		return true
 	}
 	switch value.Operation {
-	case execution.OperationResponsesRetrieve,
+	case execution.OperationChatCompletion,
+		execution.OperationResponsesCreate,
+		execution.OperationResponsesCompact,
+		execution.OperationResponsesRetrieve,
 		execution.OperationResponsesInputItems,
 		execution.OperationResponsesInputTokens,
 		execution.OperationCountTokens,

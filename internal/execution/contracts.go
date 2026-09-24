@@ -40,9 +40,12 @@ const (
 	OperationResponsesInputTokens Operation = "responses_input_tokens"
 	OperationCountTokens          Operation = "count_tokens"
 	OperationResponsesPassthrough Operation = "responses_passthrough"
+	OperationWebSearch            Operation = "web_search"
 	OperationImagesGenerate       Operation = "images_generate"
 	OperationImagesEdit           Operation = "images_edit"
 	OperationEmbeddingsCreate     Operation = "embeddings_create"
+	OperationRerank               Operation = "rerank"
+	OperationDecisionsCreate      Operation = "decisions_create"
 	OperationListModels           Operation = "list_models"
 	OperationProbe                Operation = "probe"
 )
@@ -60,9 +63,12 @@ func (o Operation) Valid() bool {
 		OperationResponsesInputTokens,
 		OperationCountTokens,
 		OperationResponsesPassthrough,
+		OperationWebSearch,
 		OperationImagesGenerate,
 		OperationImagesEdit,
 		OperationEmbeddingsCreate,
+		OperationRerank,
+		OperationDecisionsCreate,
 		OperationListModels,
 		OperationProbe:
 		return true
@@ -88,7 +94,7 @@ const (
 // ReplayPolicy returns the operation-level replay contract.
 func (o Operation) ReplayPolicy() ReplayPolicy {
 	switch o {
-	case OperationImagesGenerate, OperationImagesEdit, OperationEmbeddingsCreate:
+	case OperationImagesGenerate, OperationImagesEdit, OperationEmbeddingsCreate, OperationRerank, OperationDecisionsCreate:
 		return ReplayPolicyRequireRejectedBeforeProcessing
 	default:
 		return ReplayPolicyLegacy
@@ -146,18 +152,21 @@ func (r RouteRequirement) Allows(mode RouteMode) bool {
 	return r.Normalize() == RouteRequirementAny || mode == RouteNative
 }
 
-// ResponsesStorePreference records the one Responses Create storage intent
-// that may use an explicitly declared stateless compatibility route.
+// ResponsesStorePreference records the Responses Create storage requirement
+// and whether an explicitly declared stateless compatibility route is allowed.
 type ResponsesStorePreference string
 
 const (
 	ResponsesStorePreferenceNone         ResponsesStorePreference = ""
 	ResponsesStorePreferencePreferStored ResponsesStorePreference = "prefer_stored"
+	// 续接上一轮响应必须保留状态语义，不允许降级为无状态。
+	ResponsesStorePreferenceRequireStored ResponsesStorePreference = "require_stored"
 )
 
 // Valid reports whether the Responses storage preference is recognized.
 func (p ResponsesStorePreference) Valid() bool {
-	return p == ResponsesStorePreferenceNone || p == ResponsesStorePreferencePreferStored
+	return p == ResponsesStorePreferenceNone || p == ResponsesStorePreferencePreferStored ||
+		p == ResponsesStorePreferenceRequireStored
 }
 
 // CredentialSnapshot is the exact logical credential selected for an attempt.
@@ -214,27 +223,30 @@ type AttemptTimeouts struct {
 
 // AttemptSpec is a fully selected, provider-neutral upstream attempt.
 // NewAttemptSpec or Clone must be used at ownership boundaries because Query,
-// Header, Body, TargetConfig, and Credential contain reference-backed values.
+// Header, ConfiguredHeaders, Body, TargetConfig, and Credential contain reference-backed values.
 type AttemptSpec struct {
-	RequestID                string            `json:"request_id"`
-	AttemptID                string            `json:"attempt_id"`
-	Sequence                 uint32            `json:"sequence"`
-	ChannelID                string            `json:"channel_id"`
-	RouteMode                RouteMode         `json:"route_mode"`
-	ClientProtocol           protocol.Protocol `json:"client_protocol"`
-	Operation                Operation         `json:"operation"`
-	RouteRequirement         RouteRequirement  `json:"route_requirement"`
-	ResponsesStoreDowngraded bool              `json:"responses_store_downgraded,omitempty"`
-	ClientModel              string            `json:"client_model,omitempty"`
-	UpstreamModel            string            `json:"upstream_model,omitempty"`
-	Method                   string            `json:"method"`
-	Path                     string            `json:"path"`
-	Query                    url.Values        `json:"query,omitempty"`
+	RequestID                string                   `json:"request_id"`
+	AttemptID                string                   `json:"attempt_id"`
+	Sequence                 uint32                   `json:"sequence"`
+	ChannelID                string                   `json:"channel_id"`
+	RouteMode                RouteMode                `json:"route_mode"`
+	ClientProtocol           protocol.Protocol        `json:"client_protocol"`
+	Operation                Operation                `json:"operation"`
+	RouteRequirement         RouteRequirement         `json:"route_requirement"`
+	ResponsesStorePreference ResponsesStorePreference `json:"responses_store_preference,omitempty"`
+	ResponsesStoreDowngraded bool                     `json:"responses_store_downgraded,omitempty"`
+	ClientModel              string                   `json:"client_model,omitempty"`
+	UpstreamModel            string                   `json:"upstream_model,omitempty"`
+	Method                   string                   `json:"method"`
+	Path                     string                   `json:"path"`
+	Query                    url.Values               `json:"query,omitempty"`
 	// RawQuery preserves the original query bytes when exact forwarding matters.
 	// It is mutually exclusive with Query and intentionally is not URL-decoded.
 	RawQuery string      `json:"raw_query,omitempty"`
 	Header   http.Header `json:"header,omitempty"`
 	Body     []byte      `json:"body,omitempty"`
+	// ConfiguredHeaders 记录显式请求头规则的字段；最终值由 Header 提供，缺失表示移除。
+	ConfiguredHeaders []string `json:"-"`
 	// IncludeUsage asks the executor to request provider usage details when the
 	// selected operation supports an explicit wire option.
 	IncludeUsage bool `json:"include_usage,omitempty"`
@@ -263,6 +275,7 @@ func (s AttemptSpec) Clone() AttemptSpec {
 	clone := s
 	clone.Query = cloneValues(s.Query)
 	clone.Header = cloneHeader(s.Header)
+	clone.ConfiguredHeaders = append([]string(nil), s.ConfiguredHeaders...)
 	clone.Body = cloneBytes(s.Body)
 	clone.TargetConfig = cloneRawMessage(s.TargetConfig)
 	clone.Credential = s.Credential.Clone()

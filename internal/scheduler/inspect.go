@@ -26,6 +26,7 @@ const (
 	ReasonNativeRouteRequired       ReasonCode = "native_route_required"
 	ReasonNoRouteTarget             ReasonCode = "no_route_target"
 	ReasonGroupDisabled             ReasonCode = "group_disabled"
+	ReasonWebsocketDisabled         ReasonCode = "websocket_disabled"
 	ReasonGroupFiltered             ReasonCode = "group_filtered"
 	ReasonNoAvailableGroup          ReasonCode = "no_available_group"
 	ReasonNoCredentials             ReasonCode = "no_credentials"
@@ -34,6 +35,7 @@ const (
 	ReasonCredentialAuthUnavailable ReasonCode = "credential_auth_unavailable"
 	ReasonCredentialBlacklisted     ReasonCode = "credential_blacklisted"
 	ReasonCredentialCooldown        ReasonCode = "credential_cooldown"
+	ReasonModelCooldown             ReasonCode = "model_cooldown"
 	ReasonCredentialWeightZero      ReasonCode = "credential_weight_zero"
 	ReasonCredentialNotAllowed      ReasonCode = "credential_not_allowed"
 	ReasonNoAvailableCredential     ReasonCode = "no_available_credential"
@@ -68,7 +70,6 @@ type CredentialInspection struct {
 	Available       bool
 	Reason          ReasonCode
 	WeightManual    *int
-	WeightAuto      int
 	EffectiveWeight int64
 	CooldownUntil   time.Time
 }
@@ -139,13 +140,8 @@ func evaluateTargets(
 	}
 
 	decisions := make([]targetDecision, 0, len(routes))
-	seenGroups := make(map[uint]struct{}, len(routes))
 	included := 0
 	for _, route := range routes {
-		if _, duplicate := seenGroups[route.GroupID]; duplicate {
-			continue
-		}
-		seenGroups[route.GroupID] = struct{}{}
 		group, exists := snapshot.GroupCatalog[route.GroupID]
 		if !exists {
 			return nil, "", fmt.Errorf(
@@ -175,6 +171,9 @@ func evaluateTargets(
 		case groupFiltered:
 			decision.included = false
 			decision.reason = ReasonGroupFiltered
+		case query.responsesWebsocket != nil && !snapshot.Groups[route.GroupID].ResponsesWebsocketEnabled:
+			decision.included = false
+			decision.reason = ReasonWebsocketDisabled
 		}
 		if decision.included {
 			included++
@@ -200,8 +199,23 @@ func routeRequirementSatisfied(
 	if !query.routeRequirement.Allows(execution.RouteMode(route.Mode)) {
 		return false, false, ReasonNativeRouteRequired
 	}
+	if query.responsesWebsocket != nil {
+		if query.clientProtocol == protocol.OpenAIResponses && query.operation == execution.OperationResponsesCreate &&
+			route.Mode == channel.RouteNative && route.ResolvedTarget.ResponsesWebsocket.Supports(*query.responsesWebsocket) {
+			return true, false, ""
+		}
+		return false, false, ReasonNativeRouteRequired
+	}
 	if query.operation != execution.OperationResponsesCreate {
 		return true, false, ""
+	}
+	if query.responsesStorePreference == execution.ResponsesStorePreferenceRequireStored {
+		if route.Mode == channel.RouteNative && route.ResolvedTarget.ResponsesStoreHandling(
+			protocol.OpenAIResponses, execution.OperationResponsesCreate,
+		) == channel.ResponsesStoreHandlingUpstreamManaged {
+			return true, false, ""
+		}
+		return false, false, ReasonNativeRouteRequired
 	}
 	if query.routeRequirement.Normalize() == execution.RouteRequirementNative {
 		if route.ResolvedTarget.SupportsResponsesLifecycle() {
@@ -234,22 +248,9 @@ func accessKeyAllowsGroup(accessKey state.AccessKeyView, groupID uint) bool {
 	return allowed
 }
 
-func normalizedAutoWeight(weight int) int {
-	if weight == 0 {
-		return state.DefaultWeight
-	}
-	return weight
-}
-
-func effectiveWeight(groupManual, credentialManual *int, credentialAuto int) int64 {
-	groupWeight := state.DefaultWeight
-	if groupManual != nil {
-		groupWeight = *groupManual
-	}
-	credentialWeight := normalizedAutoWeight(credentialAuto)
-	if credentialManual != nil {
-		credentialWeight = *credentialManual
-	}
+func effectiveWeight(groupManual, credentialManual *int) int64 {
+	groupWeight := state.ConfiguredWeight(groupManual)
+	credentialWeight := state.ConfiguredWeight(credentialManual)
 	if groupWeight <= 0 || credentialWeight <= 0 {
 		return 0
 	}
@@ -261,11 +262,12 @@ func inspectCredential(
 	credential CredentialRuntimeView,
 	allowedCredentialIDs map[uint]struct{},
 	now time.Time,
+	model string,
+	operation execution.Operation,
 ) CredentialInspection {
 	result := CredentialInspection{
 		CredentialID: credential.ID,
 		WeightManual: cloneWeight(credential.WeightManual),
-		WeightAuto:   normalizedAutoWeight(credential.WeightAuto),
 	}
 	if group.WeightManual != nil && *group.WeightManual == 0 {
 		result.Reason = ReasonGroupWeightZero
@@ -295,12 +297,18 @@ func inspectCredential(
 	case state.CredentialRuntimeCooldown:
 		result.Reason = ReasonCredentialCooldown
 		result.CooldownUntil = credential.CooldownUntil
+		if until := modelCooldownUntil(credential.ModelCooldowns, model, operation, now); until.After(result.CooldownUntil) {
+			result.CooldownUntil = until
+		}
 	default:
+		if until := modelCooldownUntil(credential.ModelCooldowns, model, operation, now); until.After(now) {
+			result.Reason, result.CooldownUntil = ReasonModelCooldown, until
+			return result
+		}
 		result.Available = true
 		result.EffectiveWeight = effectiveWeight(
 			group.WeightManual,
 			credential.WeightManual,
-			credential.WeightAuto,
 		)
 	}
 	return result
@@ -380,6 +388,8 @@ func Inspect(
 				credential,
 				normalized.allowedCredentialIDs,
 				now,
+				decision.target.UpstreamModelID,
+				normalized.operation,
 			)
 			groupResult.Credentials = append(groupResult.Credentials, credentialResult)
 		}

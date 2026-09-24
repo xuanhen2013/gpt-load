@@ -58,6 +58,7 @@ func TestCompilePublishesDefaultRuntimeSettingsWithoutGroups(t *testing.T) {
 		RouteStrategy:                 RouteStrategyNativeFirst,
 		BlacklistThreshold:            3,
 		AffinityEnabled:               true,
+		ResponsesWebsocketEnabled:     true,
 		AffinityTTL:                   time.Hour,
 		AffinityCapacity:              10_000,
 		ValidationInterval:            10 * time.Minute,
@@ -233,7 +234,7 @@ func TestResponseHeaderRulesRejectTransportAndCORSOwnedHeaders(t *testing.T) {
 	}
 }
 
-func TestRetryAndBlacklistCountsArePublicAndResolveByGroupPrecedence(t *testing.T) {
+func TestRetryIsGlobalAndBlacklistAllowsGroupOverride(t *testing.T) {
 	for key, value := range map[string]any{
 		SettingRetryCount:         json.Number("9007199254740991"),
 		SettingBlacklistThreshold: json.Number("0"),
@@ -263,7 +264,7 @@ func TestRetryAndBlacklistCountsArePublicAndResolveByGroupPrecedence(t *testing.
 	if err != nil {
 		t.Fatalf("ResolveGroupRuntimeSettings() error = %v", err)
 	}
-	if resolved.RetryCount != 4 || resolved.BlacklistThreshold != 5 {
+	if resolved.BlacklistThreshold != 5 {
 		t.Fatalf("group policies = %#v", resolved)
 	}
 }
@@ -280,6 +281,25 @@ func TestRetryAndBlacklistCountsRejectNegativeOrNonIntegralValues(t *testing.T) 
 			if err := ValidateRuntimeSetting(key, value); err == nil {
 				t.Errorf("ValidateRuntimeSetting(%q, %#v) accepted invalid value", key, value)
 			}
+		}
+	}
+}
+
+func TestGroupRuntimeSettingsIgnoreLegacyRetryCount(t *testing.T) {
+	base := DefaultRuntimeSettings()
+	settings := config.Settings{SettingBlacklistThreshold: 5}
+	want, err := ResolveGroupRuntimeSettings(base, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, count := range []int{0, 4} {
+		settings[SettingRetryCount] = count
+		got, err := ResolveGroupRuntimeSettings(base, settings)
+		if err != nil {
+			t.Fatalf("legacy retry_count=%d prevented loading: %v", count, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("legacy retry_count=%d changed effective group settings", count)
 		}
 	}
 }
@@ -740,7 +760,6 @@ func TestResolvedGroupSettingsOwnsHeaderRuleCopies(t *testing.T) {
 }
 
 func TestAccountConcurrencyLimitInheritance(t *testing.T) {
-	base := DefaultRuntimeSettings()
 	global, err := ResolveRuntimeSettings(config.Settings{SettingAccountConcurrencyLimit: 4})
 	if err != nil {
 		t.Fatal(err)
@@ -762,11 +781,11 @@ func TestAccountConcurrencyLimitInheritance(t *testing.T) {
 	if groupUnlimited.AccountConcurrencyLimit != 0 {
 		t.Fatalf("group unlimited limit = %d", groupUnlimited.AccountConcurrencyLimit)
 	}
-	inherited, err := ResolveGroupRuntimeSettings(base, config.Settings{})
+	inherited, err := ResolveGroupRuntimeSettings(global, config.Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inherited.AccountConcurrencyLimit != 0 {
+	if inherited.AccountConcurrencyLimit != 4 {
 		t.Fatalf("default limit = %d", inherited.AccountConcurrencyLimit)
 	}
 }

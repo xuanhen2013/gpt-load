@@ -9,6 +9,8 @@ import (
 func Sub2API() spec.Module {
 	return spec.Module{
 		Definition: spec.Definition{
+			ResponsesWebsocket: execution.WebsocketCapabilities{Native: true, Continuation: true, Prewarm: true, StoredResponses: false, Multiplex: false},
+
 			ID:          spec.Sub2API,
 			Name:        "Sub2API",
 			Mark:        "S2A",
@@ -36,12 +38,15 @@ func Sub2API() spec.Module {
 				spec.NewRoute(protocol.OpenAICompletions, execution.OperationListModels, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAICompletions, execution.OperationProbe, execution.RouteNative),
 				spec.NewResponsesCreateRoute(execution.RouteNative, spec.ResponsesStoreHandlingUpstreamManaged),
+				spec.NewRoute(protocol.OpenAIResponses, execution.OperationProbe, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAIResponses, execution.OperationResponsesCompact, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAIImages, execution.OperationImagesGenerate, execution.RouteNative),
 				spec.NewRoute(protocol.OpenAIImages, execution.OperationImagesEdit, execution.RouteNative),
 				spec.NewRoute(protocol.Anthropic, execution.OperationChatCompletion, execution.RouteNative),
+				spec.NewRoute(protocol.Anthropic, execution.OperationProbe, execution.RouteNative),
 				spec.NewRoute(protocol.Anthropic, execution.OperationCountTokens, execution.RouteNative),
 				spec.NewRoute(protocol.Gemini, execution.OperationChatCompletion, execution.RouteNative),
+				spec.NewRoute(protocol.Gemini, execution.OperationProbe, execution.RouteNative),
 				spec.NewRoute(protocol.Gemini, execution.OperationCountTokens, execution.RouteNative),
 			},
 		},

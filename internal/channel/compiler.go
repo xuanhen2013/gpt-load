@@ -138,8 +138,18 @@ func compileModule(source spec.Definition, extensions compiledExtensions) (defin
 		fixedTargetConfig = canonicalJSON(map[string]string{"base_url": fixedBaseURL})
 	}
 
+	defaultBaseURLs := make([]string, 0, len(source.Provider.DefaultBaseURLs))
+	for _, raw := range source.Provider.DefaultBaseURLs {
+		value, err := spec.NormalizeHTTPSBaseURL(raw)
+		if err != nil {
+			return definition{}, fmt.Errorf("channel %q has invalid default URL hint: %w", id, err)
+		}
+		defaultBaseURLs = append(defaultBaseURLs, value)
+	}
 	return definition{
+		responsesWebsocket: source.ResponsesWebsocket,
 		descriptor: Descriptor{
+			DefaultBaseURLs:  defaultBaseURLs,
 			ID:               source.ID,
 			Name:             source.Name,
 			Mark:             source.Mark,
@@ -431,7 +441,7 @@ func validProtocolOperation(clientProtocol protocol.Protocol, operation executio
 	switch operation {
 	case execution.OperationChatCompletion:
 		return clientProtocol != protocol.OpenAIResponses && clientProtocol != protocol.OpenAIImages &&
-			clientProtocol != protocol.OpenAIEmbeddings
+			clientProtocol != protocol.OpenAIEmbeddings && clientProtocol != protocol.Rerank && clientProtocol != protocol.Decisions
 	case execution.OperationCountTokens:
 		return clientProtocol == protocol.Anthropic || clientProtocol == protocol.Gemini
 	case execution.OperationResponsesCreate,
@@ -441,16 +451,21 @@ func validProtocolOperation(clientProtocol protocol.Protocol, operation executio
 		execution.OperationResponsesInputItems,
 		execution.OperationResponsesCompact,
 		execution.OperationResponsesInputTokens,
+		execution.OperationWebSearch,
 		execution.OperationResponsesPassthrough:
 		return clientProtocol == protocol.OpenAIResponses
 	case execution.OperationImagesGenerate,
 		execution.OperationImagesEdit:
 		return clientProtocol == protocol.OpenAIImages
+	case execution.OperationRerank:
+		return clientProtocol == protocol.Rerank
+	case execution.OperationDecisionsCreate:
+		return clientProtocol == protocol.Decisions
 	case execution.OperationEmbeddingsCreate:
 		return clientProtocol == protocol.OpenAIEmbeddings
 	case execution.OperationListModels:
 		return clientProtocol != protocol.OpenAIResponses && clientProtocol != protocol.OpenAIImages &&
-			clientProtocol != protocol.OpenAIEmbeddings
+			clientProtocol != protocol.OpenAIEmbeddings && clientProtocol != protocol.Rerank
 	case execution.OperationProbe:
 		return clientProtocol != protocol.OpenAIImages
 	default:

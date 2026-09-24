@@ -52,6 +52,7 @@ type Adapter struct {
 type credentialPreparer interface {
 	Prepare(context.Context, channel.ID, execution.CredentialSnapshot, bool) (subscriptionruntime.Credential, *execution.ErrorEvidence)
 	RecordPassiveQuotaObservation(credentialID uint, identityGeneration uint64, observedAtMS int64, windows []providerobservation.QuotaWindow)
+	RecordPassiveQuotaPair(credentialID uint, identityGeneration uint64, preceding, latest subscription.PassiveQuotaSample)
 }
 
 // recordPassiveQuotaObservation forwards one execution's passive quota
@@ -143,12 +144,14 @@ func (a *Adapter) SetCodexConnectionReuse(enabled bool) {
 	}
 }
 
+// Execute validates and dispatches one unary subscription attempt through the
+// provider bridge selected by the compiled channel definition.
 func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (result execution.AttemptResult) {
 	spec = execution.NewAttemptSpec(spec)
 	defer func() {
 		normalizeCPAImagesAttemptResult(spec, &result)
 	}()
-	provider, err := a.validateSpec(spec)
+	provider, baseURL, err := a.validateSpec(spec)
 	if err != nil {
 		return unaryNotSent(execution.ErrorKindInvalidRequest, "unsupported subscription request", "", err)
 	}
@@ -156,6 +159,10 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 		RequestContext(context.Context) context.Context
 	}); ok {
 		ctx = scoped.RequestContext(ctx)
+	}
+	spec, fidelityFailure := prepareConvertedFidelity(spec, provider.ProviderKind())
+	if fidelityFailure != nil {
+		return execution.AttemptResult{DispatchState: execution.DispatchNotSent, Error: fidelityFailure}
 	}
 	proxySettings, err := proxySettingsForAttempt(spec.Proxy)
 	if err != nil {
@@ -171,7 +178,7 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 			Proxy: spec.Proxy, Fingerprint: spec.ProxyFingerprint,
 		})
 	}
-	request, err := bridgeRequest(spec, proxySettings, false)
+	request, err := bridgeRequest(spec, proxySettings, baseURL, false)
 	if err != nil {
 		return unaryNotSent(
 			execution.ErrorKindInvalidRequest,
@@ -182,12 +189,7 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 	}
 	if validator, ok := provider.(providerRequestValidator); ok {
 		if err := validator.ValidateRequest(request); err != nil {
-			return unaryNotSent(
-				execution.ErrorKindInvalidRequest,
-				"subscription request input is not supported",
-				"unsupported_subscription_input",
-				err,
-			)
+			return execution.AttemptResult{DispatchState: execution.DispatchNotSent, Error: requestValidationEvidence(err)}
 		}
 	}
 	if countTokensOperation(spec.Operation) {
@@ -258,6 +260,20 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 	}
 	if err != nil {
 		result := unaryExecutionError(execCtx, provider, err, credential)
+		if spec.Operation == execution.OperationWebSearch && response.StatusCode != 0 && !result.ResponseStarted {
+			// 成功状态下读体失败仍是执行错误，保留已收到的元数据但不提供可重放证据。
+			result.DispatchState = execution.DispatchMaybeSent
+			result.StatusCode = response.StatusCode
+			result.ResponseStarted = true
+			result.Error.StatusCode = response.StatusCode
+			result.Error.ReplaySafety = execution.ReplaySafetyUnknown
+		}
+		if result.ResponseStarted {
+			result.Header = subscriptionResponseHeaders(response.Headers, "application/json")
+			if spec.Operation == execution.OperationWebSearch {
+				result.Body = append([]byte(nil), response.Payload...)
+			}
+		}
 		if result.Error != nil && execution.UpstreamCountTokensUnsupported(
 			spec.Operation,
 			result.Error.StatusCode,
@@ -288,11 +304,20 @@ func unaryProviderSuccess(
 			StatusCode: http.StatusOK, Header: headers, Body: body,
 		}
 	}
+	observedUsage := responseUsage(spec, body)
+	if response.Usage != nil {
+		cloned := response.Usage.Clone()
+		observedUsage = &cloned
+	}
+	statusCode := response.StatusCode
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
 	return execution.AttemptResult{
 		DispatchState: execution.DispatchMaybeSent, ResponseStarted: true,
-		UpstreamProtocol: effectiveUpstreamProtocol(provider, response.UpstreamProtocol), AppliedReasoning: appliedReasoning(response.AppliedReasoningEffort), StatusCode: http.StatusOK,
+		UpstreamProtocol: effectiveUpstreamProtocol(provider, response.UpstreamProtocol), AppliedReasoning: appliedReasoning(response.AppliedReasoningEffort), StatusCode: statusCode,
 		Header: headers, Body: body, Model: responseModel(body, spec.UpstreamModel),
-		UpstreamRequestID: upstreamRequestID(headers), Usage: responseUsage(spec, body),
+		UpstreamRequestID: upstreamRequestID(headers), Usage: observedUsage,
 		OutboundIdentityHeaders: response.OutboundIdentityHeaders,
 	}
 }
@@ -304,6 +329,8 @@ func effectiveUpstreamProtocol(provider providerBridge, observed protocol.Protoc
 	return provider.UpstreamProtocol()
 }
 
+// ExecuteStream validates and dispatches one streaming subscription attempt,
+// forwarding provider chunks and normalized completion evidence to the sink.
 func (a *Adapter) ExecuteStream(
 	ctx context.Context,
 	spec execution.AttemptSpec,
@@ -316,7 +343,7 @@ func (a *Adapter) ExecuteStream(
 	if sink == nil {
 		return streamNotSent(execution.ErrorKindInvalidRequest, "stream sink is required", "")
 	}
-	provider, err := a.validateSpec(spec)
+	provider, baseURL, err := a.validateSpec(spec)
 	if err != nil {
 		return streamNotSent(execution.ErrorKindInvalidRequest, "unsupported subscription request", "")
 	}
@@ -327,6 +354,10 @@ func (a *Adapter) ExecuteStream(
 		RequestContext(context.Context) context.Context
 	}); ok {
 		ctx = scoped.RequestContext(ctx)
+	}
+	spec, fidelityFailure := prepareConvertedFidelity(spec, provider.ProviderKind())
+	if fidelityFailure != nil {
+		return execution.StreamResult{DispatchState: execution.DispatchNotSent, Error: fidelityFailure}
 	}
 	proxySettings, err := proxySettingsForAttempt(spec.Proxy)
 	if err != nil {
@@ -341,7 +372,7 @@ func (a *Adapter) ExecuteStream(
 			Proxy: spec.Proxy, Fingerprint: spec.ProxyFingerprint,
 		})
 	}
-	request, err := bridgeRequest(spec, proxySettings, true)
+	request, err := bridgeRequest(spec, proxySettings, baseURL, true)
 	if err != nil {
 		return streamNotSent(
 			execution.ErrorKindInvalidRequest,
@@ -351,7 +382,7 @@ func (a *Adapter) ExecuteStream(
 	}
 	if validator, ok := provider.(providerRequestValidator); ok {
 		if err := validator.ValidateRequest(request); err != nil {
-			return streamNotSent(execution.ErrorKindInvalidRequest, "subscription request input is not supported", "unsupported_subscription_input")
+			return execution.StreamResult{DispatchState: execution.DispatchNotSent, Error: requestValidationEvidence(err)}
 		}
 	}
 	preparedCredential, evidence := a.credentials.Prepare(ctx, channel.ID(spec.ChannelID), spec.Credential, spec.ForceCredentialRefresh)
@@ -388,6 +419,9 @@ func (a *Adapter) ExecuteStream(
 	}
 	if err != nil {
 		result := unaryExecutionError(streamCtx, provider, err, credential)
+		if response != nil && result.ResponseStarted {
+			result.Header = subscriptionResponseHeaders(response.Headers, "application/json")
+		}
 		var applied *reasoning.Config
 		if response != nil {
 			applied = appliedReasoning(response.AppliedReasoningEffort)
@@ -413,6 +447,13 @@ func (a *Adapter) ExecuteStream(
 	emitPayloads := func(payloads [][]byte) *execution.StreamResult {
 		for _, unframed := range payloads {
 			payload := frameSSE(spec.ClientProtocol, unframed)
+			if spec.ClientProtocol == protocol.Anthropic && spec.RouteMode == execution.RouteConverted {
+				payload, err = normalizeConvertedAnthropicStartUsage(payload)
+				if err != nil {
+					failure := streamInternalError(upstreamProtocol, headers, applied, "normalize converted Anthropic usage", ready)
+					return &failure
+				}
+			}
 			payload, rewriteErr := rewriteStreamModelAlias(spec, payload)
 			if rewriteErr != nil {
 				failure := streamInternalError(upstreamProtocol, headers, applied, "rewrite subscription response model", ready)
@@ -510,63 +551,92 @@ func countTokensOperation(operation execution.Operation) bool {
 }
 
 func responseUsage(spec execution.AttemptSpec, body []byte) *execution.UsageEvidence {
-	if countTokensOperation(spec.Operation) || spec.ClientProtocol == protocol.OpenAIImages {
+	if countTokensOperation(spec.Operation) || spec.Operation == execution.OperationWebSearch || spec.ClientProtocol == protocol.OpenAIImages {
 		return nil
 	}
 	return usageEvidence(spec.ClientProtocol, body)
 }
 
-func (a *Adapter) validateSpec(spec execution.AttemptSpec) (providerBridge, error) {
+// validateSpec verifies that an attempt matches its declared channel provider,
+// route, request shape, and resolved execution target.
+func (a *Adapter) validateSpec(spec execution.AttemptSpec) (providerBridge, string, error) {
 	if a == nil || a.credentials == nil || a.channels == nil {
-		return nil, fmt.Errorf("subscription executor is unavailable")
+		return nil, "", fmt.Errorf("subscription executor is unavailable")
 	}
 	if err := spec.Validate(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	channelID := channel.ID(spec.ChannelID)
 	providerKind, ok := a.channels.ProviderKind(channelID)
 	if !ok {
-		return nil, fmt.Errorf("subscription target has no provider binding")
+		return nil, "", fmt.Errorf("subscription target has no provider binding")
 	}
 	provider, ok := a.provider(providerKind)
 	if !ok || provider == nil {
-		return nil, fmt.Errorf("subscription target is not bound to this adapter")
+		return nil, "", fmt.Errorf("subscription target is not bound to this adapter")
 	}
 	target, err := a.channels.ResolveExecutionTarget(channelID, spec.TargetConfig)
 	if err != nil {
-		return nil, fmt.Errorf("resolve subscription target: %w", err)
+		return nil, "", fmt.Errorf("resolve subscription target: %w", err)
 	}
 	if target.ProviderKind != providerKind {
-		return nil, fmt.Errorf("subscription target provider binding changed")
+		return nil, "", fmt.Errorf("subscription target provider binding changed")
 	}
 	mode, ok := target.ModeForModel(spec.ClientProtocol, spec.Operation, spec.UpstreamModel)
 	if !ok || execution.RouteMode(mode) != spec.RouteMode {
-		return nil, fmt.Errorf("subscription route is not declared by the channel")
+		return nil, "", fmt.Errorf("subscription route is not declared by the channel")
 	}
 	if spec.ClientProtocol == protocol.OpenAIImages {
 		if _, err := canonicalCPAImagesRequestPath(spec); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if _, err := dialect.NewOpenAIImages().InspectRequest(&dialect.ParsedRequest{
 			Method: spec.Method, Path: spec.Path, RawQuery: spec.RawQuery,
 			Header: spec.Header.Clone(), Body: append([]byte(nil), spec.Body...),
 		}); err != nil {
-			return nil, fmt.Errorf("invalid Images request: %w", err)
+			return nil, "", fmt.Errorf("invalid Images request: %w", err)
 		}
 	} else if !json.Valid(spec.Body) {
-		return nil, fmt.Errorf("subscription request body must be JSON")
+		return nil, "", fmt.Errorf("subscription request body must be JSON")
 	}
-	return provider, nil
+	baseURL, err := resolvedTargetBaseURL(target.TargetConfig)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve subscription base URL: %w", err)
+	}
+	return provider, baseURL, nil
 }
 
+// resolvedTargetBaseURL 提取编译目标中的可选订阅 API 代理根地址。
+func resolvedTargetBaseURL(raw json.RawMessage) (string, error) {
+	return (subscriptionruntime.Target{Config: raw}).BaseURL()
+}
+
+// bridgeRequest copies an attempt into the provider-neutral CPA request shape
+// and performs the additional Images request normalization when required.
 func bridgeRequest(
 	spec execution.AttemptSpec,
 	proxySettings cpaProxySettings,
+	baseURL string,
 	stream bool,
 ) (providerRequest, error) {
 	payload := append([]byte(nil), spec.Body...)
 	headers := spec.Header.Clone()
 	requestPath := ""
+	if spec.Operation == execution.OperationWebSearch {
+		if spec.Method != http.MethodPost || spec.Path != "/v1/alpha/search" || stream {
+			return providerRequest{}, fmt.Errorf("unsupported Codex search request")
+		}
+		requestPath = spec.Path
+		if spec.ClientModel != spec.UpstreamModel {
+			rewritten, err := dialect.NewOpenAIResponses().RewriteRequestModel(&dialect.ParsedRequest{
+				Method: spec.Method, Path: spec.Path, Header: headers, Body: payload,
+			}, spec.UpstreamModel)
+			if err != nil {
+				return providerRequest{}, err
+			}
+			payload = rewritten.Body
+		}
+	}
 	if spec.ClientProtocol == protocol.OpenAIImages {
 		var err error
 		requestPath, err = canonicalCPAImagesRequestPath(spec)
@@ -587,8 +657,10 @@ func bridgeRequest(
 		IdentityGeneration: spec.Credential.IdentityGeneration,
 		AttemptID:          spec.AttemptID, Model: spec.UpstreamModel, Payload: payload,
 		Format: formatFor(spec.ClientProtocol), RequestPath: requestPath, Headers: headers,
+		ConfiguredHeaders:    append([]string(nil), spec.ConfiguredHeaders...),
 		OriginalRequest:      append([]byte(nil), payload...),
 		ContinuityKey:        spec.ContinuityKey,
+		BaseURL:              baseURL,
 		ProxyURL:             proxySettings.URL,
 		ProxyFromEnvironment: proxySettings.FromEnvironment,
 		ProxyConfigID:        outboundproxy.ConfigID(spec.Proxy.Config),
@@ -612,7 +684,8 @@ func formatFor(clientProtocol protocol.Protocol) string {
 }
 
 func canonicalCPAImagesRequestPath(spec execution.AttemptSpec) (string, error) {
-	if spec.ClientProtocol != protocol.OpenAIImages || spec.RouteMode != execution.RouteNative ||
+	convertedGeneration := spec.RouteMode == execution.RouteConverted && spec.Operation == execution.OperationImagesGenerate
+	if spec.ClientProtocol != protocol.OpenAIImages || (spec.RouteMode != execution.RouteNative && !convertedGeneration) ||
 		spec.Method != http.MethodPost {
 		return "", fmt.Errorf("unsupported Images route tuple")
 	}
@@ -635,7 +708,9 @@ func normalizeCPAImagesAttemptResult(spec execution.AttemptSpec, result *executi
 	if result == nil || spec.ClientProtocol != protocol.OpenAIImages {
 		return
 	}
-	result.Usage = nil
+	if spec.RouteMode != execution.RouteConverted {
+		result.Usage = nil
+	}
 	if responseModel(result.Body, "") == "" {
 		result.Model = ""
 	}
@@ -833,6 +908,14 @@ func modelAttemptPreparationEvidence(evidence *execution.ErrorEvidence) *executi
 	projected := evidence.Clone()
 	projected.StatusCode = 0
 	return &projected
+}
+
+func requestValidationEvidence(err error) *execution.ErrorEvidence {
+	var classified interface{ ConversionCode() string }
+	if errors.As(err, &classified) {
+		return notSentEvidence(execution.ErrorKindConversionUnsupported, "subscription request conversion is not supported", classified.ConversionCode())
+	}
+	return notSentEvidence(execution.ErrorKindInvalidRequest, "subscription request input is not supported", "unsupported_subscription_input")
 }
 
 func notSentEvidence(kind execution.ErrorKind, summary, code string) *execution.ErrorEvidence {

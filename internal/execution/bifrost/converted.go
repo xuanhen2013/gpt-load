@@ -362,7 +362,11 @@ func encodeConvertedResponsesResponse(
 	var wire any
 	switch clientProtocol {
 	case protocol.OpenAIResponses:
-		wire = response.WithDefaults()
+		responsesWire := response.WithDefaults()
+		for i := range responsesWire.Output {
+			fillReasoningSummary(&responsesWire.Output[i])
+		}
+		wire = responsesWire
 	case protocol.Anthropic:
 		wire = anthropic.ToAnthropicResponsesResponse(ctx, response)
 	case protocol.Gemini:
@@ -592,6 +596,22 @@ func (r *Runtime) executeConvertedResponsesStream(
 
 	bifrostContext := r.newStreamingSDKContext(callContext, spec, prepared.directKey)
 	enableConvertedWireCapture(bifrostContext, prepared)
+	if prepared.request != nil && prepared.upstreamProtocol == protocol.Anthropic {
+		body, err := anthropic.BuildAnthropicChatRequestBody(bifrostContext, prepared.request, anthropic.AnthropicRequestBuildConfig{
+			Provider: prepared.request.Provider, IsStreaming: true,
+		})
+		if err != nil || len(body) == 0 {
+			return execution.StreamResult{DispatchState: execution.DispatchNotSent, Error: convertedSerializationEvidence()}
+		}
+		prepared.responsesRequest.RawRequestBody = body
+		bifrostContext.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	}
+	wireUsage := captureAnthropicWireUsage(bifrostContext, prepared)
+	defer func() {
+		if evidence := wireUsage.evidence(); evidence != nil {
+			result.Usage = evidence
+		}
+	}()
 	setTypedRequestURL(bifrostContext, prepared.typedURL)
 	outcomeChannel := make(chan responsesStreamSDKResult, 1)
 	go func() {
@@ -610,6 +630,7 @@ func (r *Runtime) executeConvertedResponsesStream(
 	}
 	preResponse.stop()
 	if outcome.err != nil {
+		wireUsage.discardErrorRaw(outcome.err)
 		captureAppliedReasoning(&outcome.err.ExtraFields.RawRequest, &appliedReasoning)
 		result := convertedStreamErrorResult(outcome.err, bifrostContext, prepared.secrets, false, 0, nil, "", nil)
 		markPromotedStreamRejectionReplaySafe(&result)
@@ -633,6 +654,7 @@ func (r *Runtime) executeConvertedResponsesStream(
 	}
 
 	encoder := newConvertedResponsesStreamEncoder(prepared.clientProtocol)
+	encoder.anthropicSource = wireUsage != nil
 	sequence := uint64(1)
 	model := spec.UpstreamModel
 	var usageEvidence *execution.UsageEvidence
@@ -670,6 +692,7 @@ func (r *Runtime) executeConvertedResponsesStream(
 			if chunk == nil || chunk.BifrostResponsesStreamResponse == nil {
 				callCancel()
 				if chunk != nil && chunk.BifrostError != nil {
+					wireUsage.discardErrorRaw(chunk.BifrostError)
 					captureAppliedReasoning(&chunk.BifrostError.ExtraFields.RawRequest, &appliedReasoning)
 					return streamErrorResult(chunk.BifrostError, bifrostContext, prepared.secrets, true, http.StatusOK, headers, model, usageEvidence)
 				}
@@ -678,19 +701,33 @@ func (r *Runtime) executeConvertedResponsesStream(
 
 			response := chunk.BifrostResponsesStreamResponse
 			captureAppliedReasoning(&response.ExtraFields.RawRequest, &appliedReasoning)
+			raw := response.ExtraFields.RawResponse
+			wireUsage.observe(&response.ExtraFields.RawResponse)
+			if wireUsage != nil && response.Type == "message_delta" && prepared.clientProtocol != protocol.Anthropic {
+				// 该事件只为取得原始用量；其他客户端协议在各自终止事件中接收最终用量。
+				idleTimer.resume()
+				continue
+			}
 			var chunkUsage *execution.UsageEvidence
 			if response.Response != nil {
 				if response.Response.Model != "" {
 					model = response.Response.Model
 				}
 				var err error
+				if err = wireUsage.applyResponses(response.Response.Usage); err != nil {
+					callCancel()
+					return streamErrorResult(nil, bifrostContext, prepared.secrets, true, http.StatusOK, headers, model, usageEvidence)
+				}
 				chunkUsage, err = usageEvidenceFromResponses(response.Response.Usage)
 				if err != nil {
 					callCancel()
 					return streamErrorResult(nil, bifrostContext, prepared.secrets, true, http.StatusOK, headers, model, usageEvidence)
 				}
 			}
-			frames, err := encoder.encode(bifrostContext, response)
+			if evidence := wireUsage.evidence(); evidence != nil {
+				chunkUsage = evidence
+			}
+			frames, err := encoder.encode(bifrostContext, response, raw)
 			if err != nil {
 				callCancel()
 				return streamErrorResult(nil, bifrostContext, prepared.secrets, true, http.StatusOK, headers, model, usageEvidence)
@@ -723,8 +760,10 @@ func (r *Runtime) executeConvertedResponsesStream(
 }
 
 type convertedResponsesStreamEncoder struct {
-	clientProtocol protocol.Protocol
-	geminiState    *gemini.BifrostToGeminiStreamState
+	clientProtocol  protocol.Protocol
+	anthropicSource bool
+	geminiState     *gemini.BifrostToGeminiStreamState
+	chatState       *anthropicChatStreamEncoder
 }
 
 func newConvertedResponsesStreamEncoder(clientProtocol protocol.Protocol) *convertedResponsesStreamEncoder {
@@ -732,19 +771,72 @@ func newConvertedResponsesStreamEncoder(clientProtocol protocol.Protocol) *conve
 	if clientProtocol == protocol.Gemini {
 		encoder.geminiState = gemini.NewBifrostToGeminiStreamState()
 	}
+	if clientProtocol == protocol.OpenAICompletions {
+		encoder.chatState = &anthropicChatStreamEncoder{state: anthropic.NewAnthropicStreamState()}
+	}
 	return encoder
+}
+
+// ensureResponsesReasoningSummary gives Chat→Responses reasoning items the
+// summary array Grok CLI requires. Bifrost puts reasoning text on content and
+// leaves ResponsesReasoning nil, so output_item.done marshals without summary.
+// CLIProxyAPI always emits summary: [{type: summary_text, text: ...}].
+func ensureResponsesReasoningSummary(response *schemas.BifrostResponsesStreamResponse) {
+	if response == nil {
+		return
+	}
+	fillReasoningSummary(response.Item)
+	if response.Response != nil {
+		for i := range response.Response.Output {
+			fillReasoningSummary(&response.Response.Output[i])
+		}
+	}
+}
+
+func fillReasoningSummary(item *schemas.ResponsesMessage) {
+	if item == nil || item.Type == nil || *item.Type != schemas.ResponsesMessageTypeReasoning {
+		return
+	}
+	if item.ResponsesReasoning != nil && item.ResponsesReasoning.Summary != nil {
+		return
+	}
+	var text string
+	if item.Content != nil {
+		for _, block := range item.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				text = *block.Text
+				break
+			}
+		}
+	}
+	summaries := []schemas.ResponsesReasoningSummary{}
+	if text != "" {
+		summaries = append(summaries, schemas.ResponsesReasoningSummary{
+			Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+			Text: text,
+		})
+	}
+	if item.ResponsesReasoning == nil {
+		item.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: summaries}
+		return
+	}
+	item.ResponsesReasoning.Summary = summaries
 }
 
 func (e *convertedResponsesStreamEncoder) encode(
 	ctx *schemas.BifrostContext,
 	response *schemas.BifrostResponsesStreamResponse,
+	raw any,
 ) ([][]byte, error) {
 	switch e.clientProtocol {
+	case protocol.OpenAICompletions:
+		return e.chatState.encode(ctx, response, raw)
 	case protocol.OpenAIResponses:
 		wire := response.WithDefaults()
 		if wire == nil {
 			return nil, nil
 		}
+		ensureResponsesReasoningSummary(wire)
 		body, err := marshalClientWire(protocol.OpenAIResponses, wire)
 		if err != nil {
 			return nil, err
@@ -760,6 +852,15 @@ func (e *convertedResponsesStreamEncoder) encode(
 			body, err := json.Marshal(event)
 			if err != nil {
 				return nil, fmt.Errorf("marshal Anthropic stream event")
+			}
+			// 同协议重建只沿用上游的原始用量事件，保留缺失/零及 iterations 的语义。
+			// SDK 已完成内容块状态推进；这里不重算或重复叠加用量。
+			if e.anthropicSource && raw != nil && (event.Type == anthropic.AnthropicStreamEventTypeMessageStart || event.Type == anthropic.AnthropicStreamEventTypeMessageDelta) {
+				original, ok := rawRequestJSON(raw)
+				if !ok {
+					return nil, fmt.Errorf("decode Anthropic usage event")
+				}
+				body = original
 			}
 			frames = append(frames, frameNamedSSE(string(event.Type), body))
 		}

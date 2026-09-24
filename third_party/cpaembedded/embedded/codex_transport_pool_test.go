@@ -41,7 +41,7 @@ func poolAuth(id string, p *fakeSOCKS) *cliproxyauth.Auth {
 	return auth
 }
 func poolClient(e *CodexHTTPExecutor, auth *cliproxyauth.Auth, generation uint64) *http.Client {
-	ctx := e.executionContext(e.RequestContext(context.Background()), auth, nil, false, generation)
+	ctx := e.executionContext(e.RequestContext(context.Background()), auth, nil, false, &ExecuteRequest{IdentityGeneration: generation})
 	return &http.Client{Transport: ctx.Value("cliproxy.roundtripper").(http.RoundTripper)}
 }
 func poolSize(p *codexTransportPool) int { p.mu.Lock(); defer p.mu.Unlock(); return len(p.all) }

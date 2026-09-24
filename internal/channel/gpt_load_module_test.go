@@ -66,6 +66,7 @@ func TestGPTLoadChannelContract(t *testing.T) {
 			execution.OperationProbe:          RouteNative,
 		},
 		protocol.OpenAIResponses: {
+			execution.OperationProbe:                RouteNative,
 			execution.OperationResponsesCreate:      RouteNative,
 			execution.OperationResponsesRetrieve:    RouteNative,
 			execution.OperationResponsesDelete:      RouteNative,
@@ -79,16 +80,19 @@ func TestGPTLoadChannelContract(t *testing.T) {
 			execution.OperationImagesGenerate: RouteNative,
 			execution.OperationImagesEdit:     RouteNative,
 		},
+		protocol.Rerank: {execution.OperationRerank: RouteNative, execution.OperationProbe: RouteNative},
 		protocol.OpenAIEmbeddings: {
 			execution.OperationEmbeddingsCreate: RouteNative,
 			execution.OperationProbe:            RouteNative,
 		},
 		protocol.Anthropic: {
+			execution.OperationProbe:          RouteNative,
 			execution.OperationChatCompletion: RouteNative,
 			execution.OperationCountTokens:    RouteNative,
 			execution.OperationListModels:     RouteNative,
 		},
 		protocol.Gemini: {
+			execution.OperationProbe:          RouteNative,
 			execution.OperationChatCompletion: RouteNative,
 			execution.OperationCountTokens:    RouteNative,
 			execution.OperationListModels:     RouteNative,

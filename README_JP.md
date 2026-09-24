@@ -32,6 +32,18 @@ API キー、サブスクリプションアカウント、トラフィック制�
 <table>
 <tbody>
 <tr>
+<td width="180"><a href="https://ofox.ai/?utm_source=github&amp;utm_medium=sponsorship&amp;utm_content=gpt_load" target="_blank" rel="noopener noreferrer"><img src="./screenshot/ofoxai.svg" alt="OfoxAI" width="150"></a></td>
+<td><strong>OfoxAI：テキスト・画像・動画 AI を一つのプラットフォームで</strong><br>OfoxAI は、複数のプロバイダーのテキスト・画像・動画モデルを集約する AI API プラットフォームです。OpenAI 互換 API と Anthropic・Gemini のネイティブ API に対応。開発者は一つのプラットフォームから AI アプリ、エージェント、コンテンツ制作向けのモデルを利用し、タスクに合った機能を選べます。 <a href="https://ofox.ai/?utm_source=github&amp;utm_medium=sponsorship&amp;utm_content=gpt_load" target="_blank" rel="noopener noreferrer">OfoxAI のモデルと API を見る →</a></td>
+</tr>
+<tr>
+<td width="180"><a href="https://www.packyapi.ai/register?aff=ahiS" target="_blank" rel="sponsored noopener noreferrer"><picture><source media="(prefers-color-scheme: dark)" srcset="./screenshot/packycode-dark.png"><source media="(prefers-color-scheme: light)" srcset="./screenshot/packycode-light.png"><img src="./screenshot/packycode-light.png" alt="PackyCode" width="150"></picture></a></td>
+<td><strong>PackyCode</strong><br>PackyCode は、安定性と効率性を重視した AI API 中継サービスです。ひとつの API エンドポイントと API キーで主要な大規模モデルに接続できます。統一ドメイン、統一キー、スマートな障害切り替えに対応し、可用性は 97% としています。人民元で 1:1 チャージでき、為替差損や追加手数料の心配はありません。新規ユーザーは初回チャージ割引と $1 の無料体験クレジットを受け取れ、複数グループでは最大 80% の割引、Codex／Claude Code 専用の高速ルートも利用できます。<a href="https://www.packyapi.ai/register?aff=ahiS" target="_blank" rel="sponsored noopener noreferrer">リンクから登録して、すぐに利用を開始できます。</a></td>
+</tr>
+<tr>
+<td width="180"><a href="https://fluxionai.space/register?source=github&amp;campaign=gptload&amp;promo=GPTLOAD" target="_blank" rel="sponsored noopener noreferrer"><img src="./screenshot/fluxionai-horizontal.png" alt="Fluxion AI" width="150"></a></td>
+<td><strong>一つの入口で、世界の主要AIモデルに接続・管理</strong><br>Fluxion AIは、個人開発者、技術チーム、企業向けに、統一APIで世界の主要AIモデルへの接続と管理を提供します。複数経路の動的なスケジューリングで可用性を高め、モデルの性能、応答時間、料金を透明に確認できます。モデルや経路によっては、API利用料を公式価格または基準価格より40%〜98%抑えられます。今すぐアクセスして登録すると、$7分のAPIクレジットを受け取れます。（<a href="https://fluxionai.space/register?source=github&amp;campaign=gptload&amp;promo=GPTLOAD" target="_blank" rel="sponsored noopener noreferrer">専用リンク</a>）</td>
+</tr>
+<tr>
 <td width="180"><a href="https://www.axisnow.io/zh"><img src="./screenshot/axisnow.jpg" alt="AxisNow" width="150"></a></td>
 <td>ウェブサイトと API を保護・高速化し、<strong>中国本土</strong>および世界各地のアクセス体験にも配慮し、クライアント SDK を通じて高速化とセキュリティの機能をネイティブ／モバイルアプリにまで拡張します — <strong>自社構築・プライベート運用 CDN｜サブスクリプション型高防御 CDN｜自主的に制御でき、柔軟に組み合わせられる CDN ネットワーク。</strong></td>
 </tr>
@@ -48,11 +60,11 @@ API キー、サブスクリプションアカウント、トラフィック制�
 
 アプリケーション側で必要なのは、一つの Base URL と一つの AccessKey だけです。プロバイダー、アカウント、認証情報、モデル、ルーティングポリシーはすべて管理画面で設定します。
 
-<img src="./screenshot/architecture-overview.png" alt="GPT-Load の統合アクセスとアップストリームルーティング構成図" width="860">
+<img src="./screenshot/architecture-overview.svg" alt="GPT-Load の統合アクセスとアップストリームルーティング構成図" width="860">
 
 - **単一ゲートウェイでネイティブプロトコルを維持** — 公式 API、クラウド基盤、モデルサービス、互換中継を一元管理しながら、クライアントは OpenAI、Anthropic、Gemini のネイティブインターフェイスをそのまま使えます。
 - **API キーとサブスクリプションを統一管理** — Codex、Claude、Antigravity、Grok と API キーチャネルで、認証情報管理・スケジューリング・健全性管理を共通化します。
-- **スケジューリングと障害分離を内蔵** — 複数認証情報のスケジューリング、自動ウェイト、リトライ、クールダウン、ブラックリスト、セッションアフィニティにより、過負荷や失効の影響を抑えます。
+- **スケジューリングと障害分離を内蔵** — 複数認証情報のスケジューリング、設定可能なウェイト、リトライ、クールダウン、ブラックリスト、セッションアフィニティにより、過負荷や失効の影響を抑えます。
 - **可観測で導入しやすく、データを自己管理** — 健全性、ルート、ログ、使用量、コスト概算を確認でき、SQLite、MySQL、PostgreSQL とローカル認証情報暗号化を単一バイナリで利用できます。
 
 ## クイックスタート
@@ -107,21 +119,13 @@ SSH やリモートブラウザ経由で操作する場合、ブラウザの `lo
 
 ## 画面プレビュー
 
-**グループ概要** — チャネル、モデル、認証情報数、健全性をまとめて確認
+**グループ概要** — チャネル、モデル、認証情報数、トラフィック、健全性をまとめて確認
 
-<img src="./screenshot/groups-overview.png" alt="GPT-Load グループ概要" width="860">
+<img src="./screenshot/groups-ja-JP.png" alt="GPT-Load の新しいグループ概要" width="860">
 
-**サブスクリプションアカウント** — アカウントの可用性、クォータ期間、リセット時刻、実行診断を確認
+**使用量統計** — リクエスト傾向、キャッシュヒット率、Token 分類、コスト概算を確認
 
-<img src="./screenshot/subscription-accounts.png" alt="GPT-Load サブスクリプションアカウントとクォータ状態" width="860">
-
-**AccessKey 読み取り専用ホーム** — AccessKey でログインし、そのキーに限定されたグループ、モデル、リクエスト、使用量、費用上限を表示
-
-<img src="./screenshot/access-key-home.png" alt="GPT-Load AccessKey 読み取り専用ホーム" width="860">
-
-**使用量とコスト** — リクエスト傾向、キャッシュヒット率、Token 分類、コスト概算を確認
-
-<img src="./screenshot/usage-cost.png" alt="GPT-Load 使用量とコストのモニタリング" width="860">
+<img src="./screenshot/usage-ja-JP.png" alt="GPT-Load の新しい使用量統計" width="860">
 
 ## サポート範囲
 
@@ -133,6 +137,7 @@ SSH やリモートブラウザ経由で操作する場合、ブラウザの `lo
 | OpenAI Responses        | `/v1/responses` およびそのリソースパス |
 | OpenAI Images           | `POST /v1/images/...`                  |
 | OpenAI Embeddings       | `POST /v1/embeddings`                  |
+| Rerank                  | `POST /v1/rerank`                      |
 | Anthropic Messages      | `POST /v1/messages`                    |
 | Gemini                  | `/v1beta/models/...`                   |
 
@@ -140,9 +145,7 @@ SSH やリモートブラウザ経由で操作する場合、ブラウザの `lo
 
 Embeddings は初期段階では OpenAI、OpenRouter、OpenAI Compatible の API Key チャネルでのみネイティブな OpenAI 互換ワイヤーを提供し、サブスクリプションチャネルとプロトコル変換には対応していません。プロトコルフィルターを設定していない AccessKey は既存の「有効なプロトコルをすべて許可する」動作を維持するため、アップグレード後に Embeddings へのアクセス権も得ます。最小権限で運用する場合は、プロトコルフィルターを明示的に設定してください。
 
-### Codex カタログ（カスタム版）
-
-このカスタム版は Codex モデルカタログに対応します。`GET /v1/models?client_version=0.153.1` は完全な `models` メタデータを返し、パラメーターがない場合は既存の OpenAI 形式を維持します。既存の AccessKey 認証と権限を適用し、検証済みメタデータを持つ Responses 作成ルートのみを掲載します。メタデータは Codex `rust-v0.153.1` に固定され、リクエスト時のオンライン更新は行いません。[詳細](docs/codex-model-catalog.md)。
+Rerank は独立した `rerank` プロトコルを使用し、OpenAI Compatible、New API、GPT-Load の API Key チャネルで `POST /v1/rerank` に対応します。リクエストには `model`、`query`、テキストのみの `documents` 配列を指定し、`top_n` や `return_documents` などの上流パラメーターも利用できます。ストリーミング、サブスクリプション、プロトコル変換には対応しません。OpenAI Compatible には完全な API プレフィックス（例：`https://host/v1`）、New API / GPT-Load にはゲートウェイのルートを設定します。上流は互換 Rerank API を提供する必要があります。プロトコルフィルターのない AccessKey は Rerank へのアクセス権も得ます。`search_units` など Token 以外の単位のみが返る場合は未計価とし、Token 数や無料リクエストとして扱いません。
 
 ### 組み込みチャネル
 
@@ -240,7 +243,9 @@ Windows の一般ユーザーは代わりに `gpt-load-windows-setup.exe` を利
 - 2.0 は**単一アプリケーションインスタンス**を前提に設計されています。インスタンス間で状態を共有しないため、そのままの水平スケールには対応していません。
 - 使用量とコストはアップストリームの応答に基づく**概算**です。運用分析やリソース評価には使えますが、プロバイダーの請求書や会計上の照合結果とは一致しません。
 - サブスクリプションチャネルはアップストリームの OAuth と互換プロトコルに依存し、アップストリームの変更に伴って調整が必要になる場合があります。利用権限のあるアカウントのみを接続し、各プロバイダーの規約に従ってください。
-- OpenAI Responses で `previous_response_id`、`conversation`、既存のリソース ID に依存するステートフルなリクエストは、単一の認証情報を使う場合、またはアップストリームが認証情報間でリソースを共有している場合にのみ確実に動作します。
+- Responses の `previous_response_id` による継続は、ネイティブ Responses と上流での状態管理を宣言した経路に自動で適用されます。現在は `openai`、`gpt_load`、`xai`、`newapi`、`cliproxyapi`、`sub2api` が該当します。帰属を AccessKey ごとに分離し、現在のルーティングで許可される元の認証情報へ固定します。ソフトアフィニティ設定には依存せず、状態が実際に利用できるかは上流に依存します。ステートレス応答と変換された応答は登録せず、Codex サブスクリプションの WebSocket 継続はまだ接続していません。アップグレード前やゲートウェイ外で作成されたものを含め、不明な ID は拒否されます。Group のパラメータ上書きでこのフィールドを変更することはできません。
+- 応答の帰属はメモリに最大 30 日間保持され、上限は 100,000 件および ID テキスト合計 16 MiB です。容量に達すると古い記録を削除します。通常終了時に checkpoint の保存が成功すれば、同じデータディレクトリから復元できます。クラッシュからの復元や、アップストリームの履歴が引き続き有効であることは保証しません。
+- `conversation` とその他の既存リソース ID はこの帰属ルーティングの対象外であり、単一の認証情報またはアップストリームでの認証情報間のリソース共有が引き続き必要です。
 
 ## 1.x からの移行
 

@@ -112,12 +112,37 @@ func buildEffectiveProviderConfigForAttempt(
 	if err != nil {
 		return base, err
 	}
+	if spec.ClientProtocol == protocol.Decisions && resolved.ProviderKind == channel.ProviderOpenRouter {
+		baseURL, configured, targetErr := targetBaseURL(resolved.TargetConfig)
+		if targetErr != nil {
+			return effectiveProviderConfig{}, targetErr
+		}
+		if !configured {
+			baseURL = openRouterDecisionsDefaultBaseURL
+		}
+		provider := customProviderKey(schemas.OpenAI, baseURL)
+		config := buildProviderConfig(provider, baseURL, true, schemas.OpenAI, allowPrivateNetwork)
+		base, err = newEffectiveProviderConfig(provider, baseURL, true, config)
+		if err != nil {
+			return effectiveProviderConfig{}, err
+		}
+		return applyAttemptProxy(base, spec.Proxy)
+	}
+	if nativeProvider, ok := nativeMessageProvider(resolved.ProviderKind, spec); ok {
+		provider := customProviderKey(nativeProvider, base.targetBaseURL)
+		config := buildProviderConfig(provider, base.targetBaseURL, true, nativeProvider, allowPrivateNetwork)
+		base, err = newEffectiveProviderConfig(provider, base.targetBaseURL, true, config)
+		if err != nil {
+			return effectiveProviderConfig{}, err
+		}
+		return applyAttemptProxy(base, spec.Proxy)
+	}
 	if !resolved.ProviderKind.SupportsOutboundProxy() {
 		return base, nil
 	}
 	if resolved.ProviderKind != channel.ProviderDeepSeek ||
 		spec.ClientProtocol != protocol.OpenAIResponses ||
-		(spec.Operation != execution.OperationResponsesCreate && spec.Operation != execution.OperationProbe) ||
+		spec.Operation != execution.OperationProbe ||
 		channel.RouteMode(spec.RouteMode) != channel.RouteNative {
 		return applyAttemptProxy(base, spec.Proxy)
 	}
@@ -141,7 +166,7 @@ func buildEffectiveProviderConfigForAttempt(
 func multiProtocolGatewayProviderProfile(clientProtocol protocol.Protocol) (schemas.ModelProvider, error) {
 	switch clientProtocol {
 	case "", protocol.OpenAICompletions, protocol.OpenAIResponses,
-		protocol.OpenAIImages, protocol.OpenAIEmbeddings:
+		protocol.OpenAIImages, protocol.OpenAIEmbeddings, protocol.Rerank:
 		return schemas.OpenAI, nil
 	case protocol.Anthropic:
 		return schemas.Anthropic, nil
@@ -223,7 +248,7 @@ func applyAttemptProxy(
 	return partitioned, nil
 }
 
-func buildDeepSeekResponsesConfig(
+func buildDeepSeekResponsesProbeConfig(
 	resolved channel.ResolvedTarget,
 	allowPrivateNetwork bool,
 ) (effectiveProviderConfig, error) {
@@ -231,7 +256,7 @@ func buildDeepSeekResponsesConfig(
 		resolved,
 		execution.AttemptSpec{
 			ClientProtocol: protocol.OpenAIResponses,
-			Operation:      execution.OperationResponsesCreate,
+			Operation:      execution.OperationProbe,
 			RouteMode:      execution.RouteNative,
 		},
 		allowPrivateNetwork,
@@ -251,6 +276,13 @@ func resolveSDKProviderConfig(resolved channel.ResolvedTarget) (schemas.ModelPro
 			}
 		}
 		return preset.provider, baseURL, false, nil
+	}
+	if resolved.ProviderKind == channel.ProviderJev {
+		baseURL, configured, err := targetBaseURL(resolved.TargetConfig)
+		if err != nil || !configured {
+			return "", "", false, fmt.Errorf("Jev base URL is required")
+		}
+		return customProviderKey(schemas.OpenAI, baseURL), baseURL, true, nil
 	}
 	if resolved.ProviderKind != channel.ProviderOpenAICompatible {
 		return "", "", false, fmt.Errorf("unsupported provider kind %q", resolved.ProviderKind)
@@ -774,10 +806,34 @@ func (manager *RuntimeManager) Reconcile(targets []provideradapter.RuntimeTarget
 			return fmt.Errorf("reconcile provider runtime %q proxy: %w", target.ChannelID, effectiveErr)
 		}
 		configs = append(configs, effectiveConfig)
+		for _, route := range []struct {
+			protocol  protocol.Protocol
+			operation execution.Operation
+		}{
+			{protocol.OpenAICompletions, execution.OperationChatCompletion},
+			{protocol.OpenAIResponses, execution.OperationResponsesCreate},
+			{protocol.Anthropic, execution.OperationChatCompletion},
+		} {
+			spec := execution.AttemptSpec{ClientProtocol: route.protocol, Operation: route.operation, RouteMode: execution.RouteNative}
+			if _, ok := nativeMessageProvider(target.ProviderKind, spec); !ok {
+				continue
+			}
+			if mode, ok := target.Mode(route.protocol, route.operation); !ok || mode != channel.RouteNative {
+				continue
+			}
+			for _, proxy := range []outboundproxy.Effective{{}, runtimeTarget.Proxy} {
+				spec.Proxy = proxy
+				nativeConfig, err := buildEffectiveProviderConfigForAttempt(target, spec, manager.options.allowPrivateNetwork)
+				if err != nil {
+					return fmt.Errorf("reconcile provider runtime %q native %q: %w", target.ChannelID, route.protocol, err)
+				}
+				configs = append(configs, nativeConfig)
+			}
+		}
 		if target.ProviderKind == channel.ProviderDeepSeek {
 			responsesMode, ok := target.Mode(protocol.OpenAIResponses, execution.OperationResponsesCreate)
 			if ok && responsesMode == channel.RouteNative {
-				responsesConfig, responsesErr := buildDeepSeekResponsesConfig(target, manager.options.allowPrivateNetwork)
+				responsesConfig, responsesErr := buildDeepSeekResponsesProbeConfig(target, manager.options.allowPrivateNetwork)
 				if responsesErr != nil {
 					return fmt.Errorf("reconcile provider runtime %q Responses: %w", target.ChannelID, responsesErr)
 				}
@@ -786,7 +842,7 @@ func (manager *RuntimeManager) Reconcile(targets []provideradapter.RuntimeTarget
 					target,
 					execution.AttemptSpec{
 						ClientProtocol: protocol.OpenAIResponses,
-						Operation:      execution.OperationResponsesCreate,
+						Operation:      execution.OperationProbe,
 						RouteMode:      execution.RouteNative,
 						Proxy:          runtimeTarget.Proxy,
 					},

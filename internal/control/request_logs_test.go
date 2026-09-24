@@ -19,6 +19,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 
+	"gpt-load/internal/automodel"
 	"gpt-load/internal/channel"
 	"gpt-load/internal/execution"
 	"gpt-load/internal/platform/config"
@@ -27,6 +28,8 @@ import (
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
 	"gpt-load/internal/requestlog"
+	"gpt-load/internal/scheduler"
+	"gpt-load/internal/state"
 	"gpt-load/internal/storage/models"
 	"gpt-load/internal/telemetry"
 	"gpt-load/internal/usage"
@@ -249,6 +252,37 @@ func TestRequestLogEndpointAcceptsCanonicalNumericBoundaries(t *testing.T) {
 	}
 }
 
+func TestRequestLogEndpointParsesOffsetPagination(t *testing.T) {
+	t.Parallel()
+	reader := &recordingRequestLogReader{pages: []requestlog.Page{{
+		Items: []requestlog.Record{},
+		Pagination: &requestlog.Pagination{
+			Page: 2, PageSize: 20, TotalItems: 31, TotalPages: 2,
+		},
+	}}}
+	engine := newRequestLogTestEngine(t, reader)
+	recorder := performRequestLogRequest(engine, "test-auth-key", "page=2&page_size=20")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("response = %d %s, want 200", recorder.Code, recorder.Body.String())
+	}
+	if len(reader.queries) != 1 || reader.queries[0].Page != 2 || reader.queries[0].PageSize != 20 {
+		t.Fatalf("List() queries = %#v", reader.queries)
+	}
+	var envelope struct {
+		Data struct {
+			Pagination requestLogPaginationResponse `json:"pagination"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Data.Pagination != (requestLogPaginationResponse{
+		Page: 2, PageSize: 20, TotalItems: 31, TotalPages: 2,
+	}) {
+		t.Fatalf("pagination = %#v", envelope.Data.Pagination)
+	}
+}
+
 func TestRequestLogEndpointParsesAdvancedFilters(t *testing.T) {
 	t.Parallel()
 	reader := &recordingRequestLogReader{}
@@ -263,6 +297,7 @@ func TestRequestLogEndpointParsesAdvancedFilters(t *testing.T) {
 		"cache_present=true",
 		"channel_id=openai",
 		"credential_id=9",
+		"model_consistency=mismatch",
 		"attempt_status_code=429",
 		"failure_category=rate_limited",
 		"error_code=provider_rate_limit",
@@ -295,6 +330,7 @@ func TestRequestLogEndpointParsesAdvancedFilters(t *testing.T) {
 		got.CachePresent == nil || !*got.CachePresent ||
 		got.ChannelID != channel.OpenAI ||
 		got.CredentialID == nil || *got.CredentialID != 9 ||
+		got.ModelConsistency != telemetry.ModelConsistencyMismatch ||
 		got.AttemptStatusCode == nil || *got.AttemptStatusCode != 429 ||
 		got.FailureCategory != telemetry.FailureCategoryRateLimited ||
 		got.AttemptErrorCode != "provider_rate_limit" || got.RetryState != requestlog.RetryStateRetried ||
@@ -314,6 +350,25 @@ func TestRequestLogEndpointParsesAdvancedFilters(t *testing.T) {
 	}
 }
 
+func TestRequestLogEndpointAcceptsModelConsistencyMismatchFilter(t *testing.T) {
+	t.Parallel()
+	reader := &recordingRequestLogReader{}
+	recorder := performRequestLogRequest(
+		newRequestLogTestEngine(t, reader),
+		"test-auth-key",
+		"model_consistency=mismatch",
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("response = %d %s, want 200", recorder.Code, recorder.Body.String())
+	}
+	if len(reader.queries) != 1 {
+		t.Fatalf("Reader calls = %d, want one", len(reader.queries))
+	}
+	if reader.queries[0].ModelConsistency != telemetry.ModelConsistencyMismatch {
+		t.Fatalf("ModelConsistency = %q, want mismatch", reader.queries[0].ModelConsistency)
+	}
+}
+
 func TestRequestLogEndpointRejectsInvalidAdvancedFilters(t *testing.T) {
 	t.Parallel()
 	tests := []string{
@@ -326,6 +381,7 @@ func TestRequestLogEndpointRejectsInvalidAdvancedFilters(t *testing.T) {
 		"cache_present=yes",
 		"channel_id=unknown",
 		"credential_id=0",
+		"model_consistency=invalid",
 		"attempt_status_code=-1",
 		"failure_category=unknown",
 		"error_code=",
@@ -385,6 +441,7 @@ func TestRequestLogEndpointReturnsOpaqueCursorAndSafeDTO(t *testing.T) {
 					StatusCode:             200,
 					DurationMs:             1234,
 					AffinityHit:            true,
+					AffinityKind:           telemetry.AffinityPromptCacheKey,
 					GroupID:                12,
 					ChannelID:              channel.OpenAI,
 					CredentialID:           99,
@@ -452,7 +509,8 @@ func TestRequestLogEndpointReturnsOpaqueCursorAndSafeDTO(t *testing.T) {
 	if _, exists := envelope.Data.Items[0]["attempts"]; exists {
 		t.Fatalf("list item unexpectedly exposes attempts: %#v", envelope.Data.Items[0])
 	}
-	if envelope.Data.Items[0]["upstream_reported_model"] != "reported-model" ||
+	if envelope.Data.Items[0]["affinity_kind"] != telemetry.AffinityPromptCacheKey ||
+		envelope.Data.Items[0]["upstream_reported_model"] != "reported-model" ||
 		envelope.Data.Items[0]["model_consistency"] != string(telemetry.ModelConsistencyMismatch) ||
 		envelope.Data.Items[0]["route_mode"] != string(channel.RouteNative) ||
 		envelope.Data.Items[0]["operation"] != string(execution.OperationChatCompletion) ||
@@ -1093,6 +1151,7 @@ func TestRequestLogEndpointsBindAccessKeyScopeAndRedactRoutingInternals(t *testi
 		DurationMs:            120,
 		AttemptCount:          2,
 		AffinityHit:           true,
+		AffinityKind:          telemetry.AffinityPromptCacheKey,
 		GroupID:               99,
 		ChannelID:             channel.OpenAI,
 		CredentialID:          101,
@@ -1104,6 +1163,14 @@ func TestRequestLogEndpointsBindAccessKeyScopeAndRedactRoutingInternals(t *testi
 		UncachedInputTokens:   10,
 		OutputTokens:          2,
 		EstimatedCostNanoUSD:  50,
+		AutoDecision: &automodel.Decision{
+			Provider: "private-decision-provider", GroupID: 98, GroupName: "private decision group",
+			ChannelID: "private-decision-channel", ChannelName: "private decision channel",
+			CredentialID: 102, RequestedModel: "private-decision-model",
+			UpstreamModel: "private-decision-upstream", ReportedModel: "private-decision-reported",
+			RequestID: "private-decision-request",
+			Receipt:   json.RawMessage(`{"schema_version":4,"method":"unit_rate_sum","method_version":1,"currency":"USD","pricing_mode":"standard","rule":{"channel_id":"openrouter","model_id":"private-receipt-model"},"line_items":[],"total_nano_usd":0}`),
+		},
 		Attempts: []requestlog.Attempt{{
 			Sequence: 1, GroupID: 99, GroupName: "private group",
 			ChannelID: channel.OpenAI, CredentialID: 101,
@@ -1138,6 +1205,7 @@ func TestRequestLogEndpointsBindAccessKeyScopeAndRedactRoutingInternals(t *testi
 		"channel_id=openai",
 		"credential_id=101",
 		"upstream_model=private-upstream-model",
+		"model_consistency=mismatch",
 		"retry_state=retried",
 	} {
 		recorder := performRequestLogRequest(engine, current.Key, query)
@@ -1201,6 +1269,7 @@ func assertAccessKeyLogRedaction(t *testing.T, body []byte, detail bool) {
 		"upstream_reported_model": "null",
 		"model_consistency":       `"not_applicable"`,
 		"affinity_hit":            "false",
+		"affinity_kind":           `""`,
 		"group_id":                "null",
 		"channel_id":              "null",
 		"credential_id":           "null",
@@ -1218,6 +1287,9 @@ func assertAccessKeyLogRedaction(t *testing.T, body []byte, detail bool) {
 	}
 	for _, secret := range []string{
 		"private-upstream-model", "private-reported-model", "private group",
+		"private-decision-provider", "private decision group", "private-decision-channel",
+		"private decision channel", "private-decision-model", "private-decision-upstream",
+		"private-decision-reported", "private-decision-request", "private-receipt-model",
 	} {
 		if bytes.Contains(body, []byte(secret)) {
 			t.Fatalf("AccessKey log exposes %q: %s", secret, body)
@@ -1339,7 +1411,7 @@ func Example_requestLogOpaqueCursor() {
 }
 
 // 日志里的凭据要显示成人话：密文常驻凭据注册表，按 ID 取出解密即可，
-// 不额外读库；注册表里没有的（已删除）留空，交由前端显示“已删除 · #id”。
+// 不额外读库；注册表里没有的（已删除）留空，交由前端显示“已删除”。
 func TestCredentialLabelsMasksFromRegistryWithoutDatabaseReads(t *testing.T) {
 	t.Parallel()
 	fixture := newServiceFixture(t)
@@ -1395,12 +1467,16 @@ func TestRequestLogResponsesCarryCredentialLabels(t *testing.T) {
 		UsageState:          usage.StateComplete,
 		CostState:           pricing.CostStatePriced,
 		PricingCompleteness: pricing.CompletenessComplete,
+		AutoDecision: &automodel.Decision{
+			GroupID: 7, GroupName: "decision group", ChannelID: "jev", ChannelName: "Jev",
+			CredentialID: 43,
+		},
 		Attempts: []requestlog.Attempt{
 			{Sequence: 1, GroupID: 3, CredentialID: 41},
 			{Sequence: 2, GroupID: 3, CredentialID: 42},
 		},
 	}
-	labels := map[uint]string{41: "m***t@example.com"}
+	labels := map[uint]string{41: "m***t@example.com", 43: "s***n@example.com"}
 
 	detail, err := mapRequestLogDetailResponse(record, labels)
 	if err != nil {
@@ -1408,6 +1484,11 @@ func TestRequestLogResponsesCarryCredentialLabels(t *testing.T) {
 	}
 	if detail.CredentialName != "m***t@example.com" {
 		t.Fatalf("item credential_name = %q", detail.CredentialName)
+	}
+	if detail.AutoDecision == nil || detail.AutoDecision.CredentialName != "s***n@example.com" ||
+		detail.AutoDecision.GroupID != 0 || detail.AutoDecision.ChannelID != "" ||
+		detail.AutoDecision.CredentialID != 0 {
+		t.Fatalf("automatic decision route = %#v", detail.AutoDecision)
 	}
 	if detail.Attempts[0].CredentialName != "m***t@example.com" {
 		t.Fatalf("attempt 1 credential_name = %q", detail.Attempts[0].CredentialName)
@@ -1430,10 +1511,10 @@ func TestRequestLogResponsesCarryCredentialLabels(t *testing.T) {
 func TestRequestLogCredentialIDsCollectsItemAndAttempts(t *testing.T) {
 	t.Parallel()
 	ids := requestLogCredentialIDs([]requestlog.Record{
-		{CredentialID: 41, Attempts: []requestlog.Attempt{{CredentialID: 41}, {CredentialID: 42}}},
+		{CredentialID: 41, AutoDecision: &automodel.Decision{CredentialID: 43}, Attempts: []requestlog.Attempt{{CredentialID: 41}, {CredentialID: 42}}},
 		{CredentialID: 41},
 	})
-	want := []uint{41, 41, 42, 41}
+	want := []uint{41, 43, 41, 42, 41}
 	if len(ids) != len(want) {
 		t.Fatalf("ids = %v, want %v", ids, want)
 	}
@@ -1441,5 +1522,180 @@ func TestRequestLogCredentialIDsCollectsItemAndAttempts(t *testing.T) {
 		if ids[index] != want[index] {
 			t.Fatalf("ids = %v, want %v", ids, want)
 		}
+	}
+}
+
+func TestHistoricalCredentialLabelsPreserveUnavailableDataWithoutSchedulingIt(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{
+		"disabled group", "zero group weight", "no models", "disabled credential",
+		"cooldown", "blacklisted", "refreshing", "reauthorization required", "outcome unknown",
+		"model cooldown", "zero credential weight",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			fixture := newServiceFixture(t)
+			zero := 0
+			var groupWeight *int
+			if scenario == "zero group weight" {
+				groupWeight = &zero
+			}
+			group := createGroupCollectionGroup(t, fixture, scenario, scenario != "disabled group", groupWeight)
+			setGroupCollectionRoute(t, fixture, group, "", `[{"id":"model-a"}]`)
+			if scenario == "no models" {
+				setGroupCollectionRoute(t, fixture, group, "", `[]`)
+			}
+			entry := createGroupCollectionKey(t, fixture, group.ID, models.CredentialStatusActive, nil)
+			switch scenario {
+			case "disabled credential":
+				entry.Status = state.CredentialStatusDisabled
+			case "cooldown":
+				entry.CooldownUntil = time.Now().Add(time.Hour)
+			case "blacklisted":
+				entry.Blacklisted = true
+			case "refreshing":
+				entry.AuthState = state.CredentialAuthStateRefreshing
+			case "reauthorization required":
+				entry.AuthState = state.CredentialAuthStateReauthorizationRequired
+			case "outcome unknown":
+				entry.AuthState = state.CredentialAuthStateOutcomeUnknown
+			case "model cooldown":
+				entry.ModelCooldowns = map[string]time.Time{"model-a": time.Now().Add(time.Hour)}
+			case "zero credential weight":
+				entry.WeightManual = &zero
+			}
+			publishGroupCollectionRuntime(t, fixture, []state.CredentialEntry{entry})
+			labels := fixture.service.CredentialLabels([]uint{entry.ID})
+			if label := labels[entry.ID]; label == "" {
+				t.Fatalf("existing unavailable credential has no historical label: %q", label)
+			}
+			snapshot := fixture.manager.Current()
+			if snapshot.GroupCatalog[group.ID].Name != group.Name {
+				t.Fatal("historical group identity disappeared")
+			}
+			model := "model-a"
+			query := scheduler.Query{
+				ClientProtocol: protocol.OpenAICompletions,
+				Operation:      execution.OperationChatCompletion, ExternalModel: &model,
+				AccessKey: state.AccessKeyView{Status: state.AccessKeyStatusActive},
+			}
+			if _, err := scheduler.New(snapshot, fixture.registry, query).Next(); !errors.Is(err, scheduler.ErrExhausted) {
+				t.Fatalf("unavailable data became schedulable: %v", err)
+			}
+		})
+	}
+}
+
+func TestHistoricalCredentialLabelFailuresAreNotDeletion(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	group := createGroupCollectionGroup(t, fixture, "unreadable identity", true, nil)
+	entry := createGroupCollectionKey(t, fixture, group.ID, models.CredentialStatusActive, nil)
+	entry.EncryptedValue = "invalid-ciphertext"
+	publishGroupCollectionRuntime(t, fixture, []state.CredentialEntry{entry})
+	labels := fixture.service.CredentialLabels([]uint{entry.ID, 9_999})
+	if _, exists := labels[entry.ID]; !exists {
+		t.Fatal("existing credential with unreadable identity was treated as deleted")
+	}
+	if _, exists := labels[9_999]; exists {
+		t.Fatal("missing credential was treated as existing")
+	}
+}
+
+func TestRequestLogCredentialLabelsPreserveExistingWireSchema(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		name         string
+		labels       map[uint]string
+		credentialID uint
+		wantLabel    string
+	}{
+		{name: "named", labels: map[uint]string{41: "masked"}, credentialID: 41, wantLabel: "masked"},
+		{name: "unreadable", labels: map[uint]string{41: ""}, credentialID: 41, wantLabel: "—"},
+		{name: "unknown catalog", credentialID: 41, wantLabel: "—"},
+		{name: "deleted", labels: map[uint]string{}, credentialID: 41},
+		{name: "unassociated", labels: map[uint]string{}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			record := requestlog.Record{
+				RequestID: "11111111-1111-4111-8111-111111111111", CompletedAtMS: 1_700_000_000_000,
+				GroupID: 3, CredentialID: scenario.credentialID, UsageState: usage.StateComplete,
+				CostState: pricing.CostStatePriced, PricingCompleteness: pricing.CompletenessComplete,
+				Attempts: []requestlog.Attempt{{Sequence: 1, GroupID: 3, CredentialID: scenario.credentialID}},
+			}
+			detail, err := mapRequestLogDetailResponse(record, scenario.labels)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(detail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result map[string]any
+			if err := json.Unmarshal(raw, &result); err != nil {
+				t.Fatal(err)
+			}
+			attempt := result["attempts"].([]any)[0].(map[string]any)
+			list, err := mapRequestLogListResponse(requestlog.Page{Items: []requestlog.Record{record}}, scenario.labels)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(list.Items) != 1 || list.Items[0].CredentialName != scenario.wantLabel {
+				t.Fatalf("list credential_name = %#v, want %q", list.Items, scenario.wantLabel)
+			}
+			for _, item := range []map[string]any{result, attempt} {
+				if label := item["credential_name"]; label != scenario.wantLabel {
+					t.Fatalf("credential_name = %v, want %q", label, scenario.wantLabel)
+				}
+				if _, exists := item["credential_deleted"]; exists {
+					t.Fatal("response added credential_deleted to the existing wire schema")
+				}
+			}
+		})
+	}
+}
+
+func TestHistoricalSubscriptionLabelsSurviveDisableUntilActualDeletion(t *testing.T) {
+	t.Parallel()
+	for _, email := range []string{"history@example.com", ""} {
+		t.Run(email, func(t *testing.T) {
+			t.Parallel()
+			fixture := newServiceFixture(t)
+			raw := []byte(fmt.Sprintf(`{"type":"codex","access_token":"history-access","refresh_token":"history-refresh","account_id":"history-account","email":%q,"expired":"2035-01-01T00:00:00Z"}`, email))
+			stage, err := fixture.service.ImportCredentialStage(t.Context(), channel.Codex, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := fixture.service.CreateGroup(t.Context(), GroupCreateRequest{
+				Name: stringPointer("history subscription"), ChannelID: channel.Codex,
+				ConnectionType: models.ConnectionTypeSubscription,
+				Models:         optionalGroupModels{Set: true}, StagedCredentialIDs: []string{stage.StageID},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var credential models.Credential
+			if err := fixture.db.Where("group_id = ?", created.GroupID).Take(&credential).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.db.Model(&models.Group{}).Where("id = ?", created.GroupID).Update("enabled", false).Error; err != nil {
+				t.Fatal(err)
+			}
+			entries, err := fixture.registry.SnapshotGroupCredentialEntriesExact(created.GroupID, []uint{credential.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			publishGroupCollectionRuntime(t, fixture, entries)
+			labels := fixture.service.CredentialLabels([]uint{credential.ID})
+			if label, exists := labels[credential.ID]; !exists || label != email {
+				t.Fatalf("disabled subscription label = %q, exists = %t", label, exists)
+			}
+			if err := fixture.service.DeleteGroupCredential(t.Context(), created.GroupID, credential.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := fixture.service.CredentialLabels([]uint{credential.ID})[credential.ID]; exists {
+				t.Fatal("actually deleted credential remains associated")
+			}
+		})
 	}
 }

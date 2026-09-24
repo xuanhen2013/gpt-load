@@ -23,11 +23,12 @@ func (d *OpenAI) InspectRequest(req *ParsedRequest) (RequestMetadata, error) {
 		return RequestMetadata{}, fmt.Errorf("parsed request is required")
 	}
 
-	metadata, err := inspectJSONRequestFields(req.Body, true)
+	metadata, err := inspectJSONRequestFields(req.Body, true, false)
 	if err != nil {
 		return RequestMetadata{}, fmt.Errorf("decode %s request: %w", d.Protocol(), err)
 	}
 	metadata.ObserveUsage = true
+	metadata.PromptCacheKey = inspectPromptCacheKey(req.Body)
 	metadata.AffinityPrefix = inspectPromptAffinityPrefix(d.Protocol(), req.Body)
 	metadata.PricingMode, metadata.UsageDiagnostics, err = openAIRequestPricing(req.Body)
 	if err != nil {

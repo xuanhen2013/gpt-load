@@ -75,7 +75,7 @@ func codexUpstreamProtocol(requestPath string) protocol.Protocol {
 	case strings.HasSuffix(requestPath, "/images/generations"),
 		strings.HasSuffix(requestPath, "/images/edits"):
 		return protocol.OpenAIImages
-	case strings.HasSuffix(requestPath, "/responses"):
+	case strings.HasSuffix(requestPath, "/responses"), strings.HasSuffix(requestPath, "/alpha/search"):
 		return protocol.OpenAIResponses
 	default:
 		return ""
@@ -85,7 +85,8 @@ func codexUpstreamProtocol(requestPath string) protocol.Protocol {
 func (*codexProviderBridge) ValidateRouteCapability(route channel.RouteDescriptor) error {
 	valid := route.ClientProtocol == protocol.OpenAIResponses &&
 		(route.Operation == execution.OperationResponsesCreate ||
-			route.Operation == execution.OperationResponsesInputTokens) &&
+			route.Operation == execution.OperationResponsesInputTokens ||
+			route.Operation == execution.OperationWebSearch) &&
 		route.RouteMode == execution.RouteNative
 	if route.ClientProtocol == protocol.OpenAICompletions ||
 		route.ClientProtocol == protocol.Anthropic ||
@@ -108,6 +109,8 @@ func (*codexProviderBridge) ValidateRouteCapability(route channel.RouteDescripto
 	return nil
 }
 
+// CountTokensLocal runs Codex's local token estimator through the embedded
+// bridge while preserving the request metadata used by execution reporting.
 func (bridge *codexProviderBridge) CountTokensLocal(
 	ctx context.Context,
 	request providerRequest,
@@ -120,7 +123,8 @@ func (bridge *codexProviderBridge) CountTokensLocal(
 		Model:              request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
 		RequestPath: request.RequestPath,
 		Headers:     request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
-		ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
+		ConfiguredHeaders: append([]string(nil), request.ConfiguredHeaders...),
+		BaseURL:           request.BaseURL, ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
 		ProxyConfigID: request.ProxyConfigID, ProxyRegion: proxyRegion(request.ProxyRegion),
 	})
 	headers := response.Headers.Clone()
@@ -309,6 +313,8 @@ func (*codexProviderBridge) ParseCredential(raw []byte) (providerCredential, err
 	return codexProviderCredential{value: credential}, nil
 }
 
+// Execute translates one provider-neutral request into a unary Codex request
+// and returns its protocol and passive quota evidence.
 func (bridge *codexProviderBridge) Execute(
 	ctx context.Context,
 	credentialID string,
@@ -322,14 +328,17 @@ func (bridge *codexProviderBridge) Execute(
 	response, err := bridge.executor.Execute(ctx, credentialID, codexCredential.value, codex.ExecuteRequest{
 		IdentityGeneration: request.IdentityGeneration,
 		AccountID:          codexCredential.value.AccountID,
-		Model:              request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
-		RequestPath: request.RequestPath,
-		Headers:     request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
-		ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
-		ProxyConfigID: request.ProxyConfigID, ProxyRegion: proxyRegion(request.ProxyRegion),
+		ProxyConfigID:      request.ProxyConfigID, ProxyRegion: proxyRegion(request.ProxyRegion),
+		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
+		ContinuityKey: request.ContinuityKey,
+		RequestPath:   request.RequestPath,
+		Headers:       request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
+		ConfiguredHeaders: append([]string(nil), request.ConfiguredHeaders...),
+		BaseURL:           request.BaseURL, ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
 	})
 	return providerResponse{
-		Payload: append([]byte(nil), response.Payload...), Headers: response.Headers.Clone(),
+		StatusCode: response.StatusCode,
+		Payload:    append([]byte(nil), response.Payload...), Headers: response.Headers.Clone(),
 		AppliedReasoningEffort:  response.AppliedReasoningEffort,
 		UpstreamProtocol:        codexUpstreamProtocol(response.UpstreamRequestPath),
 		QuotaObservedAt:         response.QuotaObservedAt,
@@ -338,6 +347,8 @@ func (bridge *codexProviderBridge) Execute(
 	}, err
 }
 
+// ExecuteStream translates one provider-neutral request into a streaming Codex
+// request and exposes its chunks together with passive quota evidence.
 func (bridge *codexProviderBridge) ExecuteStream(
 	ctx context.Context,
 	credentialID string,
@@ -351,11 +362,13 @@ func (bridge *codexProviderBridge) ExecuteStream(
 	response, err := bridge.executor.ExecuteStream(ctx, credentialID, codexCredential.value, codex.ExecuteRequest{
 		IdentityGeneration: request.IdentityGeneration,
 		AccountID:          codexCredential.value.AccountID,
-		Model:              request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
-		RequestPath: request.RequestPath,
-		Headers:     request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
-		ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
-		ProxyConfigID: request.ProxyConfigID, ProxyRegion: proxyRegion(request.ProxyRegion),
+		ProxyConfigID:      request.ProxyConfigID, ProxyRegion: proxyRegion(request.ProxyRegion),
+		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: request.Format,
+		ContinuityKey: request.ContinuityKey,
+		RequestPath:   request.RequestPath,
+		Headers:       request.Headers.Clone(), OriginalRequest: append([]byte(nil), request.OriginalRequest...),
+		ConfiguredHeaders: append([]string(nil), request.ConfiguredHeaders...),
+		BaseURL:           request.BaseURL, ProxyURL: request.ProxyURL, ProxyFromEnvironment: request.ProxyFromEnvironment,
 	})
 	if response == nil {
 		return nil, err
@@ -435,7 +448,7 @@ func (*codexProviderBridge) ClassifyError(
 		evidence.ReplaySafety = execution.ReplaySafetyRejectedBeforeProcessing
 	case status == http.StatusTooManyRequests && typeValue == "usage_limit_reached":
 		evidence.Hint = execution.FailureHintRateLimited
-		evidence.ScopeHint = execution.ErrorScopeCredential
+		evidence.ScopeHint = execution.ErrorScopeModel
 		evidence.ReplaySafety = execution.ReplaySafetyRejectedBeforeProcessing
 	case status == http.StatusTooManyRequests && codexModelCapacityError(err):
 		evidence.Hint = execution.FailureHintCandidateUnavailable
@@ -459,8 +472,13 @@ func (*codexProviderBridge) ClassifyError(
 }
 
 func codexBootstrapCapacityRejection(err error) bool {
-	_, codeValue := codexErrorTypeCode(err)
-	return codexBootstrapOverload(codeValue) || codexBootstrapRateLimit(codeValue)
+	typeValue, codeValue := codexErrorTypeCode(err)
+	if codexBootstrapOverload(codeValue) || codexBootstrapRateLimit(codeValue) || codexModelCapacityError(err) {
+		return true
+	}
+	// 仅在 ExecuteStream 返回首包前错误时调用；普通 server_error 不提供重试证据。
+	return (strings.EqualFold(typeValue, "server_error") || strings.EqualFold(codeValue, "server_error")) &&
+		strings.Contains(strings.ToLower(err.Error()), "you can retry your request")
 }
 
 func codexBootstrapOverload(codeValue string) bool {
@@ -488,6 +506,10 @@ func codexErrorTypeCode(err error) (string, string) {
 }
 
 func codexModelCapacityError(err error) bool {
+	_, code := codexErrorTypeCode(err)
+	if strings.EqualFold(code, "model_at_capacity") || strings.EqualFold(code, "model_is_at_capacity") {
+		return true
+	}
 	for current := err; current != nil; current = errors.Unwrap(current) {
 		message := strings.TrimSpace(current.Error())
 		var payload struct {
@@ -503,13 +525,9 @@ func codexModelCapacityError(err error) bool {
 				message = payload.Message
 			}
 		}
-		switch strings.ToLower(strings.TrimSpace(message)) {
-		case "selected model is at capacity",
-			"selected model is at capacity. please try a different model",
-			"selected model is at capacity. please try a different model.",
-			"the selected model is at capacity. please try a different model.",
-			"model is at capacity. please try a different model",
-			"model is at capacity. please try a different model.":
+		lower := strings.ToLower(message)
+		if strings.Contains(lower, "model_at_capacity") || strings.Contains(lower, "model_is_at_capacity") ||
+			strings.Contains(lower, "model") && strings.Contains(lower, "at capacity") {
 			return true
 		}
 	}

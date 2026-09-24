@@ -36,15 +36,19 @@ The complete Apache License 2.0 text is distributed in
 ## CLIProxyAPI
 
 - Module: `github.com/router-for-me/CLIProxyAPI/v7`
-- Version: `v7.2.152`
+- Version: `v7.3.15`
 - Copyright: 2025-2005.9 Luis Pater; 2025.9-present Router-For.ME
 - License: MIT License
 
 GPT-Load uses a pinned, execution-only embedded adapter around CLIProxyAPI's
 Codex, Claude, Antigravity, and xAI OAuth and HTTP executor code. GPT-Load retains ownership of
 credential storage, account selection, retry, health, affinity, logging, and
-usage policy; the embedded adapter does not use CLIProxyAPI's manager, pool,
-file store, WebSocket executor, fallback, or automatic retry.
+usage policy; the embedded adapter does not use CLIProxyAPI's manager, account pool,
+or file store. A separate, explicitly called Codex WebSocket session facade reuses
+the pinned WS executor with HTTP fallback and business-request replay blocked.
+The SDK can still attempt an extra handshake after a failed send; the facade
+rejects replacement connection binding before another business request is sent.
+This facade is not connected to the existing HTTP data plane.
 
 The complete MIT License text is distributed in `LICENSES/MIT.txt`.
 
@@ -66,14 +70,25 @@ The complete Inno Setup License text is distributed in
 ## fasthttp
 
 - Module: `github.com/valyala/fasthttp`
-- Replaced by: `github.com/tbphp/fasthttp v1.73.1-0.20260828150536-1c6c09a6f6bc`
+- Version: `v1.74.0`
 - Copyright: 2015-present Aliaksandr Valialkin, VertaMedia, Kirill Danshin, Erik
   Dubbelboer, FastHTTP Authors
 - License: MIT License
 
-GPT-Load builds against a pinned fork carrying an unreleased upstream stream
-lifecycle fix (<https://github.com/valyala/fasthttp/pull/2353>). The fork keeps
-the original copyright and MIT license unchanged.
+GPT-Load uses the official upstream release through Bifrost Core for provider
+HTTP requests and streaming responses.
+
+The complete MIT License text is distributed in `LICENSES/MIT.txt`.
+
+## go-brrr
+
+- Module: `github.com/molecule-man/go-brrr`
+- Version: `v1.0.1`
+- Copyright: 2026 Andrii Berezhynskyi
+- License: MIT License
+
+GPT-Load includes go-brrr through fasthttp for Brotli compression and
+decompression.
 
 The complete MIT License text is distributed in `LICENSES/MIT.txt`.
 

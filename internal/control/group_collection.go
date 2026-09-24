@@ -32,14 +32,16 @@ const (
 )
 
 type GroupCollectionCredentialCounts struct {
-	Total       int64 `json:"total"`
-	Available   int64 `json:"available"`
-	Cooldown    int64 `json:"cooldown"`
-	Blacklisted int64 `json:"blacklisted"`
-	Disabled    int64 `json:"disabled"`
+	ModelCooldown int   `json:"model_cooldown"`
+	Total         int64 `json:"total"`
+	Available     int64 `json:"available"`
+	Cooldown      int64 `json:"cooldown"`
+	Blacklisted   int64 `json:"blacklisted"`
+	Disabled      int64 `json:"disabled"`
 }
 
 type GroupCollectionItem struct {
+	PriceMultiplier  string                          `json:"price_multiplier"`
 	ID               uint                            `json:"id"`
 	Name             string                          `json:"name"`
 	ChannelID        channel.ID                      `json:"channel_id"`
@@ -52,6 +54,9 @@ type GroupCollectionItem struct {
 
 type groupCollectionRecord struct {
 	GroupCollectionItem
+	Enabled                    bool
+	Weight                     int
+	ModelNames                 []string
 	CreatedAtMS                int64
 	LastActiveAtMS             *int64
 	LastActiveHourRequestCount int64
@@ -81,10 +86,12 @@ func cloneGroupRows(rows []models.Group) []models.Group {
 			value := *rows[index].WeightManual
 			cloned[index].WeightManual = &value
 		}
+		cloned[index].ValidationProtocol = cloneString(rows[index].ValidationProtocol)
 		if rows[index].ValidationModel != nil {
 			value := *rows[index].ValidationModel
 			cloned[index].ValidationModel = &value
 		}
+		cloned[index].PriceMultiplierMicros = cloneOptionalInt64(rows[index].PriceMultiplierMicros)
 		cloned[index].Credentials = nil
 	}
 	return cloned
@@ -353,12 +360,23 @@ func mapGroupCollectionRecords(
 		catalog := snapshot.GroupCatalog[group.ID]
 		record := groupCollectionRecord{
 			GroupCollectionItem: GroupCollectionItem{
-				ID: group.ID, Name: group.Name, ChannelID: channelID,
+				PriceMultiplier: priceMultiplierResponse(group.PriceMultiplierMicros),
+				ID:              group.ID, Name: group.Name, ChannelID: channelID,
 				ConnectionType: normalizeGroupConnectionType(group.ConnectionType),
 				Params:         append(json.RawMessage(nil), params...),
 				ModelCount:     int64(len(groupModels)),
 			},
 			CreatedAtMS: group.CreatedAtMS,
+			Enabled:     group.Enabled,
+			Weight:      state.ConfiguredWeight(group.WeightManual),
+			ModelNames:  make([]string, 0, len(groupModels)),
+		}
+		for _, model := range groupModels {
+			name := model.ID
+			if model.Alias != "" {
+				name = model.Alias
+			}
+			record.ModelNames = append(record.ModelNames, name)
 		}
 		if activity, exists := activityByGroup[group.ID]; exists {
 			lastActiveAtMS := activity.LastActiveAtMS
@@ -368,6 +386,9 @@ func mapGroupCollectionRecords(
 		for _, persistedCredential := range credentialsByGroup[group.ID] {
 			bucket := classifyHealthKey(catalog, runtimeByID[persistedCredential.ID], observedAt)
 			addGroupCollectionCredentialCount(&record.CredentialCounts, bucket)
+			if hasModelCooldown(runtimeByID[persistedCredential.ID].ModelCooldowns, observedAt) {
+				record.CredentialCounts.ModelCooldown++
+			}
 		}
 		record.Status, record.UnavailableReason = groupCollectionStatusAndReason(
 			catalog,
@@ -429,7 +450,7 @@ func equalGroupCollectionWeight(left, right *int) bool {
 }
 
 func validateGroupCollectionModels(values []GroupModel) error {
-	seen := make(map[string]struct{}, len(values))
+	seen := make(map[[2]string]struct{}, len(values))
 	for _, value := range values {
 		id := strings.TrimSpace(value.ID)
 		if id == "" {
@@ -439,10 +460,11 @@ func validateGroupCollectionModels(values []GroupModel) error {
 		if external == "" {
 			external = id
 		}
-		if _, duplicate := seen[external]; duplicate {
-			return fmt.Errorf("duplicate external model %q", external)
+		mapping := [2]string{external, id}
+		if _, duplicate := seen[mapping]; duplicate {
+			return fmt.Errorf("duplicate model mapping %q -> %q", external, id)
 		}
-		seen[external] = struct{}{}
+		seen[mapping] = struct{}{}
 	}
 	return nil
 }

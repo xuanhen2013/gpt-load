@@ -30,11 +30,15 @@ func Antigravity() spec.Module {
 					spec.AuthorizationOAuthFile,
 				},
 			},
-			Params:      []spec.Field{},
+			Params: []spec.Field{{
+				Key: "base_url", Label: "API root URL", InputKind: spec.InputURL,
+				Normalizer: spec.NormalizeOptionalHTTPSBaseURL,
+			}},
 			Credentials: []spec.Field{},
 			Provider: spec.ProviderBinding{
-				ProviderKind:   spec.ProviderAntigravity,
-				EndpointPolicy: spec.EndpointNone,
+				ProviderKind:    spec.ProviderAntigravity,
+				EndpointPolicy:  spec.EndpointSDKDefault,
+				DefaultBaseURLs: []string{"https://daily-cloudcode-pa.googleapis.com", "https://cloudcode-pa.googleapis.com"},
 			},
 			Routes: []spec.Route{
 				spec.NewRoute(protocol.Gemini, execution.OperationChatCompletion, execution.RouteNative),
@@ -42,6 +46,7 @@ func Antigravity() spec.Module {
 				spec.NewRoute(protocol.Anthropic, execution.OperationChatCompletion, execution.RouteConverted),
 				spec.NewRoute(protocol.Anthropic, execution.OperationCountTokens, execution.RouteConverted),
 				spec.NewRoute(protocol.OpenAICompletions, execution.OperationChatCompletion, execution.RouteConverted),
+				spec.NewRoute(protocol.OpenAIImages, execution.OperationImagesGenerate, execution.RouteConverted),
 				spec.NewResponsesCreateRoute(execution.RouteConverted, spec.ResponsesStoreHandlingStateless),
 				spec.NewRoute(protocol.OpenAIResponses, execution.OperationResponsesInputTokens, execution.RouteConverted),
 			},

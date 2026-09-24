@@ -10,12 +10,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"gpt-load/internal/automodel"
 	"gpt-load/internal/execution"
 	"gpt-load/internal/health"
 	"gpt-load/internal/platform/redact"
 	"gpt-load/internal/pricing"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
+	"gpt-load/internal/requestaudit"
 	"gpt-load/internal/scheduler"
 	"gpt-load/internal/state"
 	"gpt-load/internal/telemetry"
@@ -46,25 +48,33 @@ type frozenAttemptPricing struct {
 	applicable       bool
 	metadataSet      bool
 	pricingMode      pricing.Mode
+	priceMultipliers pricing.PriceMultipliers
 	usageDiagnostics usage.Diagnostics
 	reasoning        reasoning.Config
 }
 
 type requestRecorder struct {
+	audit                *requestaudit.Result
+	auditCache           map[[32]byte]bool
+	auditCalled          bool
+	autoDecision         *automodel.Decision
 	sink                 telemetry.RequestLogSink
 	requestID            string
 	startedAt            time.Time
 	accessKeyID          uint
+	accessKeyMultiplier  pricing.PriceMultiplier
 	protocol             protocol.Protocol
 	operation            execution.Operation
 	clientModel          string
 	stream               bool
 	firstResponseMs      *int64
+	forwardStartedAt     time.Time
 	reasoning            reasoning.Config
 	usageApplicable      bool
 	requestedPricingMode pricing.Mode
 	usageDiagnostics     usage.Diagnostics
 	affinityHit          bool
+	affinityKind         string
 	attempts             []telemetry.Attempt
 	attemptPricing       []frozenAttemptPricing
 	pendingPricing       frozenAttemptPricing
@@ -97,10 +107,11 @@ func newRequestRecorder(
 	return &requestRecorder{
 		sink: sink, requestID: requestID, startedAt: startedAt,
 		accessKeyID: accessKeyID, protocol: value, now: now,
-		pendingRetry:    -1,
-		redactor:        redact.New(),
-		usageApplicable: true,
-		usage:           notApplicableUsageObservation(),
+		accessKeyMultiplier: pricing.DefaultPriceMultiplier,
+		pendingRetry:        -1,
+		redactor:            redact.New(),
+		usageApplicable:     true,
+		usage:               notApplicableUsageObservation(),
 	}
 }
 
@@ -128,6 +139,8 @@ func (recorder *requestRecorder) emit() {
 	}
 	reportedModel, modelConsistency := requestOutcomeModelConsistency(recorder.outcome)
 	recorder.sink.Emit(telemetry.RequestEvent{
+		AutoDecision:          recorder.autoLogDecision(),
+		RequestAudit:          recorder.audit,
 		RequestID:             recorder.requestID,
 		CompletedAt:           completedAt.UTC(),
 		AccessKeyID:           recorder.accessKeyID,
@@ -144,6 +157,7 @@ func (recorder *requestRecorder) emit() {
 		FirstResponseMs:       recorder.firstResponseMs,
 		DurationMs:            duration.Milliseconds(),
 		AffinityHit:           recorder.affinityHit,
+		AffinityKind:          recorder.affinityKind,
 		Reasoning:             recorder.reasoning,
 		Operation:             recorder.operation,
 		Attempts:              append([]telemetry.Attempt(nil), recorder.attempts...),
@@ -154,7 +168,8 @@ func (recorder *requestRecorder) emit() {
 func (recorder *requestRecorder) freezeSensitiveInputErrorSummaries() {
 	if recorder == nil ||
 		(recorder.protocol != protocol.OpenAIImages &&
-			recorder.protocol != protocol.OpenAIEmbeddings) {
+			recorder.protocol != protocol.OpenAIEmbeddings && recorder.protocol != protocol.Rerank &&
+			recorder.protocol != protocol.Decisions) {
 		return
 	}
 	if recorder.outcome.errorCode != "" {
@@ -173,12 +188,13 @@ func (recorder *requestRecorder) estimatedCostNanoUSD() int64 {
 	if recorder == nil {
 		return 0
 	}
-	return recorder.usage.Pricing.EstimatedCostNanoUSD
+	return telemetry.TotalPricing(recorder.usage.Pricing, recorder.autoDecision, recorder.audit).EstimatedCostNanoUSD
 }
 
-func (recorder *requestRecorder) setAffinityHit(hit bool) {
+func (recorder *requestRecorder) setAffinityHit(hit bool, kind string) {
 	if recorder != nil && hit {
 		recorder.affinityHit = true
+		recorder.affinityKind = kind
 	}
 }
 
@@ -236,6 +252,12 @@ func (recorder *requestRecorder) recordFirstResponse() {
 	}
 	value := duration.Milliseconds()
 	recorder.firstResponseMs = &value
+	if recorder.autoDecision != nil && !recorder.forwardStartedAt.IsZero() {
+		elapsed := recorder.now().Sub(recorder.forwardStartedAt).Milliseconds()
+		if elapsed >= 0 {
+			recorder.autoDecision.AnswerFirstResponseMs = &elapsed
+		}
+	}
 }
 
 func (recorder *requestRecorder) setUsageApplicable(applicable bool) {
@@ -264,7 +286,8 @@ func (recorder *requestRecorder) beforeForward() time.Time {
 		recorder.attempts[recorder.pendingRetry].WillRetry = true
 		recorder.pendingRetry = -1
 	}
-	return recorder.now()
+	recorder.forwardStartedAt = recorder.now()
+	return recorder.forwardStartedAt
 }
 
 func (recorder *requestRecorder) recordAttempt(
@@ -363,7 +386,6 @@ func (recorder *requestRecorder) appendDecisionAttempt(
 		DispatchState:           result.DispatchState,
 		ResponseStarted:         result.ResponseStarted,
 		UpstreamProtocol:        result.UpstreamProtocol,
-		OutboundIdentityHeaders: result.OutboundIdentityHeaders,
 		Reasoning:               result.AppliedReasoning.Clone(),
 		StatusCode:              result.StatusCode,
 		DurationMs:              duration.Milliseconds(),
@@ -372,11 +394,13 @@ func (recorder *requestRecorder) appendDecisionAttempt(
 		FailureScope:            decision.Scope,
 		RetryDirective:          telemetry.RetryDirective(decision.Retry),
 		Effect:                  telemetry.Effect(decision.Effect),
+		CooldownUntil:           decision.CooldownUntil,
 		RuleID:                  string(decision.RuleID),
 		Action:                  telemetryAction(decision),
 		ErrorCode:               errorCode,
 		ErrorSummary:            errorSummary,
 		Committed:               result.Committed,
+		OutboundIdentityHeaders: result.OutboundIdentityHeaders,
 	}
 	if attempt.ErrorCode != "" && attempt.ErrorSummary == "" {
 		attempt.ErrorSummary = fixedErrorSummary(attempt.ErrorCode)
@@ -491,14 +515,15 @@ func (recorder *requestRecorder) completeProviderError(
 	if recorder == nil {
 		return
 	}
-	summary := reasonUpstreamProtocol.Message
+	value := providerErrorReason(result)
+	summary := value.Message
 	if attemptIndex >= 0 && attemptIndex < len(recorder.attempts) && recorder.attempts[attemptIndex].ErrorSummary != "" {
 		summary = recorder.attempts[attemptIndex].ErrorSummary
 	}
 	recorder.outcome = requestOutcome{
 		status:        telemetry.RequestStatusError,
-		statusCode:    reasonUpstreamProtocol.Status,
-		errorCode:     reasonUpstreamProtocol.Code,
+		statusCode:    value.Status,
+		errorCode:     value.Code,
 		errorSummary:  summary,
 		upstreamModel: upstreamModel,
 	}
@@ -575,10 +600,11 @@ func quoteFrozenAttempt(
 	if frozen.table == nil || frozen.upstreamModel == "" {
 		return observation
 	}
-	quote, receipt := frozen.table.QuoteForModeWithReceipt(pricing.Identity{
+	identity := pricing.Identity{
 		ChannelID: frozen.channelID,
 		ModelID:   frozen.upstreamModel,
-	}, result, pricingMode)
+	}
+	quote, receipt := frozen.table.QuoteForModeWithMultipliers(identity, result, pricingMode, frozen.priceMultipliers)
 	observation.CostState = string(quote.State)
 	observation.PricingCompleteness = string(quote.Completeness)
 	observation.EstimatedCostNanoUSD = int64(quote.EstimatedCostNanoUSD)
@@ -713,7 +739,8 @@ func upstreamErrorCode(result UpstreamResult, category health.FailureCategory) s
 			"credential_proxy_prepare_failed",
 			"group_proxy_prepare_failed",
 			"server_is_overloaded",
-			"rate_limit_exceeded":
+			"rate_limit_exceeded",
+			health.EmptyResponseCode:
 			return result.ExecutionError.Code
 		}
 	}
@@ -781,6 +808,8 @@ func fixedErrorSummary(code string) string {
 		return "Upstream stream terminated before completion."
 	case "upstream_stream_idle_timeout":
 		return "Upstream stream timed out while idle."
+	case health.EmptyResponseCode:
+		return "Upstream completed without producing any content."
 	case "downstream_write_failed":
 		return "The downstream response could not be completed."
 	case "internal_error":

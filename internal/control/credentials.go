@@ -15,6 +15,7 @@ import (
 	"gpt-load/internal/connection"
 	"gpt-load/internal/outboundproxy"
 	app_errors "gpt-load/internal/platform/errors"
+	"gpt-load/internal/rpm"
 	"gpt-load/internal/state"
 	stateloader "gpt-load/internal/state/loader"
 	"gpt-load/internal/storage/models"
@@ -48,6 +49,7 @@ type CredentialCollectionQuery struct {
 	Status   *string
 	Page     int
 	PageSize int
+	modern   *modernCredentialFilters
 }
 
 type CredentialCollectionResponse struct {
@@ -74,6 +76,8 @@ type CredentialAccountResponse struct {
 }
 
 type CredentialItemResponse struct {
+	RPMPeakHour             *int64                         `json:"-"`
+	ModelCooldowns          []ModelCooldownResponse        `json:"model_cooldowns"`
 	CredentialID            uint                           `json:"credential_id"`
 	ConnectionType          string                         `json:"connection_type"`
 	SecretVersion           uint64                         `json:"secret_version"`
@@ -84,8 +88,8 @@ type CredentialItemResponse struct {
 	Observation             *CredentialObservationResponse `json:"observation,omitempty"`
 	ConfiguredStatus        string                         `json:"configured_status"`
 	EffectiveStatus         string                         `json:"effective_status"`
-	WeightMode              string                         `json:"weight_mode"`
-	Weight                  *int                           `json:"weight"`
+	Weight                  int                            `json:"weight"`
+	WeightManual            *int                           `json:"-"` // 仅新版展示投影使用，经典接口不增加字段。
 	RecentSuccessCount      uint64                         `json:"recent_success_count"`
 	RecentFailureCount      uint64                         `json:"recent_failure_count"`
 	ConsecutiveFailureCount uint64                         `json:"consecutive_failure_count"`
@@ -131,6 +135,7 @@ const (
 	CredentialBatchEnable   CredentialBatchAction = "enable"
 	CredentialBatchDisable  CredentialBatchAction = "disable"
 	CredentialBatchDelete   CredentialBatchAction = "delete"
+	CredentialBatchRestore  CredentialBatchAction = "restore"
 	CredentialBatchScopeAll CredentialBatchScope  = "all"
 )
 
@@ -162,8 +167,10 @@ type credentialObservation struct {
 }
 
 type credentialCollectionRecord struct {
-	item   CredentialItemResponse
-	bucket healthBucket
+	credentialKey string
+	createdAtMS   int64
+	item          CredentialItemResponse
+	bucket        healthBucket
 }
 
 func normalizeGroupConnectionType(value models.ConnectionType) models.ConnectionType {
@@ -438,7 +445,26 @@ func (s *Service) mapCredentialCollection(
 		if item.ConnectionType == string(models.ConnectionTypeSubscription) {
 			item.Observation = presentCredentialObservation(observation.subscription[row.ID], row.IdentityFingerprint)
 		}
-		records = append(records, credentialCollectionRecord{item: item, bucket: bucket})
+		var filterKey string
+		if query.modern != nil && query.modern.credentialKey != "" {
+			filterKey, err = s.credentialFilterKey(observation.group, row, canonical)
+			if err != nil {
+				return CredentialCollectionResponse{}, err
+			}
+		}
+		records = append(records, credentialCollectionRecord{item: item, bucket: bucket, createdAtMS: row.CreatedAtMS, credentialKey: filterKey})
+	}
+	if query.modern != nil {
+		ids := make([]uint, len(records))
+		for i, record := range records {
+			ids[i] = record.item.CredentialID
+		}
+		peaks := s.rpmPeaks(ctx, rpm.Credential, ids, observation.observedAt)
+		for i := range records {
+			if peak, ok := peaks[records[i].item.CredentialID]; ok {
+				records[i].item.RPMPeakHour = &peak
+			}
+		}
 	}
 	summary := summarizeCredentialCollection(records)
 	filtered := make([]credentialCollectionRecord, 0, len(records))
@@ -449,6 +475,9 @@ func (s *Service) mapCredentialCollection(
 	}
 	sort.Slice(filtered, func(i, j int) bool {
 		left, right := filtered[i], filtered[j]
+		if query.modern != nil && query.modern.sort != "priority" {
+			return modernCredentialLess(left, right, query.modern.sort)
+		}
 		if credentialCollectionBucketOrder(left.bucket) != credentialCollectionBucketOrder(right.bucket) {
 			return credentialCollectionBucketOrder(left.bucket) < credentialCollectionBucketOrder(right.bucket)
 		}
@@ -482,6 +511,9 @@ func summarizeCredentialCollection(records []credentialCollectionRecord) Credent
 }
 
 func credentialCollectionMatches(record credentialCollectionRecord, query CredentialCollectionQuery) bool {
+	if query.modern != nil && !matchesModernCredential(record, *query.modern) {
+		return false
+	}
 	if query.Status != nil && record.item.EffectiveStatus != *query.Status {
 		return false
 	}

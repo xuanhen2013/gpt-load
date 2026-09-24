@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gpt-load/internal/accessquota"
+	"gpt-load/internal/execution"
 	"gpt-load/internal/pricing"
 )
 
@@ -20,17 +21,27 @@ type reason struct {
 	Message string
 }
 
+func providerErrorReason(result UpstreamResult) reason {
+	if result.ExecutionError != nil && result.ExecutionError.Hint == execution.FailureHintRateLimited {
+		return reasonUpstreamRateLimited
+	}
+	return reasonUpstreamProtocol
+}
+
 var (
 	reasonInvalidAccessKey              = reason{Status: http.StatusUnauthorized, Code: "invalid_access_key", Message: "Invalid access key."}
 	reasonEndpointNotFound              = reason{Status: http.StatusNotFound, Code: "protocol_endpoint_not_found", Message: "Protocol endpoint not found."}
 	reasonMethodNotAllowed              = reason{Status: http.StatusMethodNotAllowed, Code: "method_not_allowed", Message: "Method not allowed."}
 	reasonInvalidProtocolRequest        = reason{Status: http.StatusBadRequest, Code: "invalid_protocol_request", Message: "Invalid protocol request."}
+	reasonResponseBindingNotFound       = reason{Status: http.StatusBadRequest, Code: "response_binding_not_found", Message: "Previous response ownership could not be located."}
 	reasonModelRequiredByFilter         = reason{Status: http.StatusBadRequest, Code: "model_required_by_filter", Message: "A model is required by the access key filter."}
 	reasonNoCandidate                   = reason{Status: http.StatusServiceUnavailable, Code: "no_available_candidate", Message: "No available upstream candidate."}
 	reasonAccountConcurrencyLimited     = reason{Status: http.StatusTooManyRequests, Code: "account_concurrency_limited", Message: "All available upstream accounts are at their concurrency limit."}
+	reasonUpstreamRateLimited           = reason{Status: http.StatusTooManyRequests, Code: "upstream_rate_limited", Message: "Upstream rate limit exceeded."}
 	reasonUpstreamConnect               = reason{Status: http.StatusBadGateway, Code: "upstream_connect_failed", Message: "Could not connect to an upstream service."}
 	reasonUpstreamTimeout               = reason{Status: http.StatusGatewayTimeout, Code: "upstream_timeout", Message: "Upstream request timed out."}
 	reasonUpstreamProtocol              = reason{Status: http.StatusBadGateway, Code: "upstream_protocol_error", Message: "Upstream returned an unsupported response."}
+	reasonResponseRedactionFailed       = reason{Status: http.StatusBadGateway, Code: "response_redaction_failed", Message: "Response content could not be restored safely."}
 	reasonProtocolConversionUnsupported = reason{Status: http.StatusUnprocessableEntity, Code: "protocol_conversion_unsupported", Message: "No upstream target could preserve or convert the request."}
 	reasonRequestTooLarge               = reason{Status: http.StatusRequestEntityTooLarge, Code: "request_too_large", Message: "Request body is too large."}
 	reasonUnsupportedContentEncoding    = reason{

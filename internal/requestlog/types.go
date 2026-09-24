@@ -4,11 +4,13 @@ import (
 	"errors"
 	"time"
 
+	"gpt-load/internal/automodel"
 	"gpt-load/internal/channel"
 	"gpt-load/internal/execution"
 	"gpt-load/internal/pricing"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
+	"gpt-load/internal/requestaudit"
 	"gpt-load/internal/telemetry"
 	"gpt-load/internal/usage"
 )
@@ -37,7 +39,6 @@ type Attempt struct {
 	RouteMode               channel.RouteMode         `json:"route_mode"`
 	UpstreamModel           string                    `json:"upstream_model"`
 	UpstreamRequestID       string                    `json:"upstream_request_id"`
-	OutboundIdentityHeaders *OutboundIdentityHeaders  `json:"outbound_identity_headers,omitempty"`
 	DispatchState           execution.DispatchState   `json:"dispatch_state"`
 	ResponseStarted         bool                      `json:"response_started"`
 	UpstreamProtocol        protocol.Protocol         `json:"upstream_protocol"`
@@ -49,6 +50,7 @@ type Attempt struct {
 	FailureScope            execution.ErrorScope      `json:"failure_scope"`
 	RetryDirective          telemetry.RetryDirective  `json:"retry_directive"`
 	Effect                  telemetry.Effect          `json:"effect"`
+	CooldownUntilMS         *int64                    `json:"cooldown_until_ms"`
 	RuleID                  string                    `json:"rule_id"`
 	Action                  telemetry.Action          `json:"action"`
 	WillRetry               bool                      `json:"will_retry"`
@@ -56,6 +58,7 @@ type Attempt struct {
 	ErrorSummary            string                    `json:"error_summary"`
 	Committed               bool                      `json:"committed"`
 	PricingReceipt          *pricing.Receipt          `json:"pricing_receipt,omitempty"`
+	OutboundIdentityHeaders *OutboundIdentityHeaders  `json:"outbound_identity_headers,omitempty"`
 }
 
 // OutboundIdentityHeaders is the bounded snapshot of the desktop identity
@@ -88,10 +91,14 @@ type ListQuery struct {
 	ChannelID           channel.ID
 	ClientModel         string
 	UpstreamModel       string
+	ModelConsistency    telemetry.ModelConsistency
 	AccessKeyID         *uint
 	Status              telemetry.RequestStatus
+	AuditStatus         string
+	AuditRule           string
 	RequestID           string
 	Protocol            protocol.Protocol
+	Operation           execution.Operation
 	Stream              *bool
 	FinalStatusCode     *int
 	UsageState          usage.State
@@ -117,6 +124,8 @@ type ListQuery struct {
 	CostMaxNanoUSD      *int64
 	Limit               int
 	Cursor              *Cursor
+	Page                int
+	PageSize            int
 }
 
 type AccessKeyRef struct {
@@ -126,6 +135,9 @@ type AccessKeyRef struct {
 }
 
 type Record struct {
+	RequestAudit            *requestaudit.Result
+	AutoDecision            *automodel.Decision
+	TotalPricing            telemetry.PricingObservation
 	RequestID               string
 	CompletedAtMS           int64
 	AccessKey               AccessKeyRef
@@ -145,6 +157,7 @@ type Record struct {
 	ErrorCode               string
 	ErrorSummary            string
 	AffinityHit             bool
+	AffinityKind            string
 	Reasoning               reasoning.Config
 	Attempts                []Attempt
 	GroupID                 uint
@@ -168,13 +181,23 @@ type Record struct {
 type Page struct {
 	Items      []Record
 	NextCursor *Cursor
+	Pagination *Pagination
+}
+
+type Pagination struct {
+	Page       int
+	PageSize   int
+	TotalItems int64
+	TotalPages int64
 }
 
 type UsageGranularity string
 
 const (
-	UsageGranularityHour UsageGranularity = "hour"
-	UsageGranularityDay  UsageGranularity = "day"
+	UsageGranularityMinute  UsageGranularity = "minute"
+	UsageGranularityHour    UsageGranularity = "hour"
+	UsageGranularityDay     UsageGranularity = "day"
+	UsageFiveMinuteBucketMS int64            = 5 * 60 * 1000
 )
 
 type UsageDistributionDimension string
@@ -194,8 +217,11 @@ const (
 )
 
 type UsageQuery struct {
-	FromMS        int64
-	ToMS          int64
+	// SelfScoped 控制只读用户视图，与管理员的密钥筛选独立。
+	SelfScoped bool
+	FromMS     int64
+	ToMS       int64
+	// 供管理 API 描述时间桶；QueryUsage 始终从 FromMS/ToMS 推导，不接受覆盖。
 	Granularity   UsageGranularity
 	BucketWidthMS int64
 	AccessKeyID   *uint

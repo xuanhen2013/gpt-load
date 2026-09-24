@@ -9,308 +9,289 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/gin-gonic/gin"
-
+	"gpt-load/internal/automodel"
+	"gpt-load/internal/catalog"
 	"gpt-load/internal/channel"
 	"gpt-load/internal/execution"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/state"
 )
 
-func codexTestSnapshot() *state.ConfigSnapshot {
-	return &state.ConfigSnapshot{ExecutionCandidates: state.ExecutionCandidateIndex{
-		protocol.OpenAIResponses: {execution.OperationResponsesCreate: {
-			"gpt-6-astra": {{GroupID: 1, UpstreamModelID: "gpt-6-astra"}},
-			"friendly":    {{GroupID: 1, UpstreamModelID: "gpt-5.5"}},
-			"unknown":     {{GroupID: 1, UpstreamModelID: "unknown"}},
-			"conflict":    {{GroupID: 1, UpstreamModelID: "gpt-5.5"}, {GroupID: 2, UpstreamModelID: "gpt-5.4"}},
-			"mixed":       {{GroupID: 1, UpstreamModelID: "gpt-5.5"}, {GroupID: 2, UpstreamModelID: "unknown"}},
-		}},
-		protocol.OpenAIImages: {execution.OperationImagesGenerate: {"gpt-image-2": {{GroupID: 1, UpstreamModelID: "gpt-image-2"}}}},
-	}}
+func TestCodexModelCatalogResponseContract(t *testing.T) {
+	engine := newModelListHandlerEngine(t, state.FilterSet{})
+	request := httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.154.0", nil)
+	request.Header.Set("Authorization", "Bearer gl-client")
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Models []map[string]json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Models == nil {
+		t.Fatalf("Codex cannot decode model directory: missing field models; body=%s", recorder.Body.String())
+	}
+	var slugs []string
+	for _, model := range response.Models {
+		for _, field := range []string{
+			"slug", "display_name", "description", "supported_reasoning_levels", "shell_type",
+			"visibility", "supported_in_api", "priority", "support_verbosity", "truncation_policy",
+			"experimental_supported_tools", "input_modalities", "supports_reasoning_summary_parameter",
+			"base_instructions", "model_messages",
+		} {
+			if _, exists := model[field]; !exists {
+				t.Errorf("missing Codex model field %s", field)
+			}
+		}
+		var shellType string
+		if err := json.Unmarshal(model["shell_type"], &shellType); err != nil || shellType != "shell_command" {
+			t.Fatalf("shell type must match the pinned Codex fallback template: %q, %v", shellType, err)
+		}
+		var truncationPolicy codexTruncationPolicy
+		if err := json.Unmarshal(model["truncation_policy"], &truncationPolicy); err != nil ||
+			truncationPolicy != (codexTruncationPolicy{Mode: "tokens", Limit: 10000}) {
+			t.Fatalf("truncation policy = %#v, %v", truncationPolicy, err)
+		}
+		var slug string
+		if err := json.Unmarshal(model["slug"], &slug); err != nil {
+			t.Fatal(err)
+		}
+		slugs = append(slugs, slug)
+		var baseInstructions string
+		if err := json.Unmarshal(model["base_instructions"], &baseInstructions); err != nil || baseInstructions == "" {
+			t.Fatalf("base instructions = %q, %v", baseInstructions, err)
+		}
+	}
+	if !reflect.DeepEqual(slugs, []string{"alpha", "beta", "zeta"}) {
+		t.Fatalf("catalog changed visible models: %v", slugs)
+	}
 }
 
-func TestCodexModelEndpointAuthenticationAndCompiledRoutes(t *testing.T) {
-	handler, manager, _ := newHandlerForTest(t, panicForwarder{})
-	_, err := manager.Publish(state.CompileInput{
+func TestCodexCatalogNegotiationKeepsOtherFormats(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		target string
+		header string
+		field  string
+	}{
+		{"standard", "/v1/models", "", "data"},
+		{"empty version", "/v1/models?client_version=", "", "data"},
+		{"codex", "/v1/models?client_version=0.154.0", "", "models"},
+		{"anthropic wins", "/v1/models?client_version=0.154.0", "2023-06-01", "data"},
+		{"gemini unchanged", "/v1beta/models?client_version=0.154.0", "", "models"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			engine := newModelListHandlerEngine(t, state.FilterSet{Groups: map[uint]struct{}{99: {}}})
+			request := httptest.NewRequest(http.MethodGet, test.target, nil)
+			request.Header.Set("Authorization", "Bearer gl-client")
+			request.Header.Set("anthropic-version", test.header)
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, request)
+			var response map[string]json.RawMessage
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != http.StatusOK || string(response[test.field]) != "[]" {
+				t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
+			}
+			if test.name == "codex" && recorder.Header().Get("Cache-Control") != "private, no-store" {
+				t.Fatal("access-key scoped catalog must not be shared in HTTP caches")
+			}
+		})
+	}
+}
+
+func TestCodexCatalogUsesExistingVisibilityAndScopedMetadata(t *testing.T) {
+	snapshot, err := state.Compile(state.CompileInput{
 		ChannelRegistry: channel.NewRegistry(),
-		Groups: []state.GroupConfig{{ConnectionType: "api_key", ID: 1, Name: "codex-catalog-test", ChannelID: channel.OpenAI,
-			Params: json.RawMessage(`{}`), Models: []state.ModelConfig{{ID: "gpt-6-astra"}, {ID: "gpt-image-2"}}, Enabled: true}},
-		AccessKeys: []state.AccessKeyConfig{
-			{ID: 1, Name: "allowed", KeyHash: handler.encryption.Hash("gl-allowed"), Status: state.AccessKeyStatusActive},
-			{ID: 2, Name: "disabled", KeyHash: handler.encryption.Hash("gl-disabled"), Status: state.AccessKeyStatusDisabled},
-			{ID: 3, Name: "restricted", KeyHash: handler.encryption.Hash("gl-restricted"), Status: state.AccessKeyStatusActive, Filters: state.FilterSet{Groups: map[uint]struct{}{99: {}}}},
+		Groups: []state.GroupConfig{
+			{ID: 1, Name: "large", ChannelID: channel.OpenAI, ConnectionType: "api_key", Params: json.RawMessage(`{}`), Enabled: true,
+				Models: []state.ModelConfig{{ID: "upstream-large", Alias: "gpt-5.6-sol"}}},
+			{ID: 2, Name: "small", ChannelID: channel.OpenAI, ConnectionType: "api_key", Params: json.RawMessage(`{}`), Enabled: true,
+				Models: []state.ModelConfig{{ID: "upstream-small", Alias: "gpt-5.6-sol"}, {ID: "private"}}},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler.registry = panicRuntimeRegistry{}
-	engine := gin.New()
-	bindGatewayRoutesForTest(t, engine, handler)
-	for _, test := range []struct {
-		key    string
-		status int
-		count  int
-	}{
-		{"", http.StatusUnauthorized, 0}, {"wrong", http.StatusUnauthorized, 0},
-		{"gl-disabled", http.StatusUnauthorized, 0}, {"gl-restricted", http.StatusOK, 0}, {"gl-allowed", http.StatusOK, 1},
-	} {
-		t.Run(test.key, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.153.1", nil)
-			if test.key != "" {
-				request.Header.Set("Authorization", "Bearer "+test.key)
-			}
-			response := httptest.NewRecorder()
-			engine.ServeHTTP(response, request)
-			if response.Code != test.status {
-				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-			}
-			if response.Code == http.StatusOK && len(codexSlugs(t, response.Body.Bytes())) != test.count {
-				t.Fatal("unexpected catalog")
-			}
-		})
-	}
-}
-
-func TestCodexCatalogIntegrityAndNoCrossRequestMutation(t *testing.T) {
-	var payload struct {
-		Models []map[string]json.RawMessage `json:"models"`
-	}
-	if err := json.Unmarshal(codexCatalogJSON, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if len(payload.Models) == 0 || len(payload.Models) != len(codexCatalog()) {
-		t.Fatal("empty or duplicate catalog")
-	}
-	for _, entry := range payload.Models {
-		var base string
-		_ = json.Unmarshal(entry["base_instructions"], &base)
-		var messages struct {
-			InstructionsTemplate string `json:"instructions_template"`
-		}
-		_ = json.Unmarshal(entry["model_messages"], &messages)
-		if base == "" && messages.InstructionsTemplate == "" {
-			t.Fatalf("missing instructions: %s", entry["slug"])
-		}
-	}
-	before, err := buildCodexModelList(codexTestSnapshot(), state.AccessKeyView{}, "0.153.1", math.MaxInt64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := buildCodexModelList(codexTestSnapshot(), state.AccessKeyView{}, "0.140.0", math.MaxInt64); err != nil {
-		t.Fatal(err)
-	}
-	after, err := buildCodexModelList(codexTestSnapshot(), state.AccessKeyView{}, "0.153.1", math.MaxInt64)
-	if err != nil || string(before) != string(after) {
-		t.Fatal("shared catalog mutated")
-	}
-}
-
-func TestCodexOldReasoningLevels(t *testing.T) {
-	entry := map[string]json.RawMessage{
-		"supported_reasoning_levels": json.RawMessage(`[{"effort":"medium","description":"medium"},{"effort":"max","description":"max"},{"effort":"ultra","description":"ultra"}]`),
-		"default_reasoning_level":    json.RawMessage(`"ultra"`),
-	}
-	sanitizeCodexReasoning(entry, "0.143.0")
-	if string(entry["default_reasoning_level"]) != `"medium"` {
-		t.Fatal("invalid default")
-	}
-	assertJSONEqual(t, string(entry["supported_reasoning_levels"]), `[{"effort":"medium","description":"medium"}]`)
-}
-
-func codexSlugs(t *testing.T, body []byte) []string {
-	t.Helper()
-	var result struct {
-		Models []struct {
-			Slug string `json:"slug"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Models == nil {
-		t.Fatal("models must not be null")
-	}
-	ids := make([]string, 0, len(result.Models))
-	for _, model := range result.Models {
-		ids = append(ids, model.Slug)
-	}
-	return ids
-}
-
-func TestCodexModelListPermissionsAndAliases(t *testing.T) {
+	snapshot.ClientModelOverrides = map[string]catalog.ClientModelOverrides{}
+	key := state.AccessKeyView{Filters: state.FilterSet{Groups: map[uint]struct{}{1: {}}}}
 	for _, test := range []struct {
 		name string
 		key  state.AccessKeyView
-		want []string
 	}{
-		{"unrestricted", state.AccessKeyView{}, []string{"friendly", "gpt-6-astra"}},
-		{"groups", state.AccessKeyView{Filters: state.FilterSet{Groups: map[uint]struct{}{1: {}}}}, []string{"conflict", "friendly", "gpt-6-astra", "mixed"}},
-		{"group two unknown and conflict resolved", state.AccessKeyView{Filters: state.FilterSet{Groups: map[uint]struct{}{2: {}}}}, []string{"conflict"}},
-		{"missing group", state.AccessKeyView{Filters: state.FilterSet{Groups: map[uint]struct{}{99: {}}}}, []string{}},
-		{"models use public alias", state.AccessKeyView{Filters: state.FilterSet{Models: map[string]struct{}{"friendly": {}, "gpt-5.5": {}}}}, []string{"friendly"}},
-		{"responses", state.AccessKeyView{Filters: state.FilterSet{Protocols: map[protocol.Protocol]struct{}{protocol.OpenAIResponses: {}}}}, []string{"friendly", "gpt-6-astra"}},
-		{"chat only", state.AccessKeyView{Filters: state.FilterSet{Protocols: map[protocol.Protocol]struct{}{protocol.OpenAICompletions: {}}}}, []string{}},
-		{"images only", state.AccessKeyView{Filters: state.FilterSet{Protocols: map[protocol.Protocol]struct{}{protocol.OpenAIImages: {}}}}, []string{}},
+		{"one group", key},
+		{"all groups", state.AccessKeyView{Filters: state.FilterSet{Models: map[string]struct{}{"gpt-5.6-sol": {}}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			body, err := buildCodexModelList(codexTestSnapshot(), test.key, "0.153.1", math.MaxInt64)
+			body, err := buildCodexModelList(snapshot, test.key, math.MaxInt64)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := codexSlugs(t, body); !reflect.DeepEqual(got, test.want) {
-				t.Fatalf("got %v want %v", got, test.want)
+			var response struct {
+				Models []struct {
+					Slug                     string   `json:"slug"`
+					DisplayName              string   `json:"display_name"`
+					ContextWindow            int64    `json:"context_window"`
+					InputModalities          []string `json:"input_modalities"`
+					BaseInstructions         string   `json:"base_instructions"`
+					SupportedReasoningLevels []struct {
+						Effort string `json:"effort"`
+					} `json:"supported_reasoning_levels"`
+				} `json:"models"`
+			}
+			if err := json.Unmarshal(body, &response); err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Models) != 1 || response.Models[0].Slug != "gpt-5.6-sol" ||
+				response.Models[0].DisplayName != "GPT-5.6-Sol" || response.Models[0].ContextWindow != 272000 ||
+				response.Models[0].BaseInstructions == "" {
+				t.Fatalf("catalog = %s", body)
+			}
+			if strings.Contains(string(body), "upstream-") || strings.Contains(string(body), "private") {
+				t.Fatalf("catalog exposed upstream identity or denied model: %s", body)
+			}
+			standard := visibleModelIDs(snapshot, test.key, protocol.OpenAICompletions)
+			if !reflect.DeepEqual(standard, []string{response.Models[0].Slug}) {
+				t.Fatalf("visibility drift: %v", standard)
 			}
 		})
 	}
-}
-
-func TestCodexModelListPreservesInstructionsAndCapabilities(t *testing.T) {
-	body, err := buildCodexModelList(codexTestSnapshot(), state.AccessKeyView{}, "0.153.1", math.MaxInt64)
+	var overrides catalog.ClientModelOverrides
+	if err := json.Unmarshal([]byte(`{"display_name":"Friendly","context_window":32000,"supported_reasoning_levels":["low","high"],"input_modalities":["text"]}`), &overrides); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.ClientModelOverrides["gpt-5.6-sol"] = overrides
+	body, err := buildCodexModelList(snapshot, key, math.MaxInt64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var payload struct {
-		Models []map[string]json.RawMessage `json:"models"`
+	var response struct {
+		Models []struct {
+			DisplayName              string   `json:"display_name"`
+			ContextWindow            int64    `json:"context_window"`
+			InputModalities          []string `json:"input_modalities"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
 	}
-	if err = json.Unmarshal(body, &payload); err != nil {
+	if err := json.Unmarshal(body, &response); err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range payload.Models {
-		var slug string
-		_ = json.Unmarshal(entry["slug"], &slug)
-		originalID := "gpt-6-astra"
-		if slug == "friendly" {
-			originalID = "gpt-5.5"
-		}
-		var original map[string]json.RawMessage
-		_ = json.Unmarshal(codexCatalog()[originalID], &original)
-		for _, field := range []string{"model_messages", "base_instructions", "shell_type", "context_window", "supported_reasoning_levels"} {
-			if string(compactCodexJSON(t, entry[field])) != string(compactCodexJSON(t, original[field])) {
-				t.Fatalf("%s changed %s", slug, field)
-			}
-		}
-		if slug == "gpt-6-astra" && string(entry["visibility"]) != `"list"` {
-			t.Fatal("Astra is not visible")
-		}
+	model := response.Models[0]
+	if model.DisplayName != "Friendly" || model.ContextWindow != 32000 ||
+		len(model.SupportedReasoningLevels) != 2 || model.SupportedReasoningLevels[1].Effort != "high" ||
+		!reflect.DeepEqual(model.InputModalities, []string{"text"}) {
+		t.Fatalf("overrides absent from wire catalog: %s", body)
+	}
+	if bounded, err := buildCodexModelList(snapshot, key, int64(len(body))); err != nil || string(bounded) != string(body) {
+		t.Fatalf("exact byte boundary failed: %v", err)
+	}
+	if partial, err := buildCodexModelList(snapshot, key, int64(len(body)-1)); !errors.Is(err, errModelListTooLarge) || partial != nil {
+		t.Fatalf("overflow leaked partial JSON: %s, %v", partial, err)
 	}
 }
 
-func compactCodexJSON(t *testing.T, raw json.RawMessage) []byte {
-	t.Helper()
-	if raw == nil {
-		return nil
-	}
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		t.Fatal(err)
-	}
-	b, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
-}
-
-func TestCodexModelListSizeAndEmpty(t *testing.T) {
-	empty, err := buildCodexModelList(nil, state.AccessKeyView{}, "", 13)
-	if err != nil || string(empty) != `{"models":[]}` {
-		t.Fatalf("empty=%s err=%v", empty, err)
-	}
+func TestCodexCatalogEmptyAndUnknownValues(t *testing.T) {
 	for _, limit := range []int64{-1, 0, 12} {
-		if _, err := buildCodexModelList(nil, state.AccessKeyView{}, "", limit); !errors.Is(err, errModelListTooLarge) {
-			t.Fatalf("limit %d: %v", limit, err)
+		if body, err := buildCodexModelList(nil, state.AccessKeyView{}, limit); !errors.Is(err, errModelListTooLarge) || body != nil {
+			t.Fatalf("limit %d = %s, %v", limit, body, err)
 		}
 	}
-	body, err := buildCodexModelList(codexTestSnapshot(), state.AccessKeyView{}, "0.153.1", math.MaxInt64)
+	body, err := buildCodexModelList(nil, state.AccessKeyView{}, 13)
+	if err != nil || string(body) != `{"models":[]}` {
+		t.Fatalf("empty catalog = %s, %v", body, err)
+	}
+}
+
+func TestCodexCatalogOnlyListsResponsesCreateModelsAndUsesGPT55ForAutoModels(t *testing.T) {
+	autoModels, err := automodel.Compile(automodel.Config{
+		Enabled: true, Model: "decision-model", TimeoutSeconds: 2,
+		Models: []automodel.Entry{{
+			ID: "auto-id", Name: "gpt-5.4", Fallback: "balanced",
+			Presets: []automodel.Preset{{
+				ID: "balanced", Name: "Balanced", Description: "General tasks",
+				Model: "responses-model", ParameterOverrides: json.RawMessage(`[]`),
+			}},
+		}},
+	}, map[string]struct{}{"responses-model": {}}, map[string]struct{}{"decision-model": {}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, delta := range []int64{-1, 0, 1} {
-		_, err = buildCodexModelList(codexTestSnapshot(), state.AccessKeyView{}, "0.153.1", int64(len(body))+delta)
-		if (delta < 0) != errors.Is(err, errModelListTooLarge) {
-			t.Fatalf("boundary %d: %v", delta, err)
-		}
+	snapshot := &state.ConfigSnapshot{
+		ExecutionCandidates: state.ExecutionCandidateIndex{
+			protocol.OpenAIResponses: {
+				execution.OperationResponsesCreate: {
+					"responses-model": {{GroupID: 1, Mode: channel.RouteNative}},
+				},
+				execution.OperationResponsesInputTokens: {
+					"responses-input-only": {{GroupID: 1}},
+				},
+			},
+			protocol.OpenAIEmbeddings: {
+				execution.OperationEmbeddingsCreate: {
+					"embedding-only": {{GroupID: 2}},
+				},
+			},
+		},
+		GroupCatalog: map[uint]state.GroupCatalogView{1: {ID: 1, Enabled: true}, 2: {ID: 2, Enabled: true}},
+		AutoModels:   autoModels,
 	}
-}
-
-func TestCodexModelListFormatNegotiation(t *testing.T) {
-	for _, query := range []string{"", "?client_version", "?client_version=", "?client_version=0.153.1", "?client_version=bad", "?client_version=0.153.1&client_version=bad"} {
-		t.Run(query, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			ctx, _ := gin.CreateTestContext(recorder)
-			ctx.Request = httptest.NewRequest("GET", "/v1/models"+query, nil)
-			h := &Handler{modelListLimit: math.MaxInt64, writeTimeout: time.Second}
-			h.writeVisibleModelList(ctx, codexTestSnapshot(), state.AccessKeyView{}, protocol.OpenAICompletions)
-			if recorder.Code != 200 {
-				t.Fatal(recorder.Code)
-			}
-			if query == "" {
-				if !strings.Contains(recorder.Body.String(), `"object":"list"`) {
-					t.Fatal("standard format changed")
-				}
-				if recorder.Header().Get("Cache-Control") != "" {
-					t.Fatal("standard headers changed")
-				}
-			} else {
-				if len(codexSlugs(t, recorder.Body.Bytes())) != 2 {
-					t.Fatal("unexpected models")
-				}
-				if recorder.Header().Get("Cache-Control") != "private, no-store" {
-					t.Fatal("private cache header missing")
-				}
-			}
-		})
+	body, err := buildCodexModelList(snapshot, state.AccessKeyView{}, math.MaxInt64)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestCodexModelListVersionFiltering(t *testing.T) {
-	for _, version := range []string{"", "bad", "0.153.1", "v0.153.1-alpha+build", "0.137.0"} {
-		body, err := buildCodexModelList(codexTestSnapshot(), state.AccessKeyView{}, version, math.MaxInt64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if version == "0.137.0" {
-			if strings.Contains(string(body), `"gpt-6-astra"`) {
-				t.Fatal("minimum client version ignored")
-			}
-		} else if len(codexSlugs(t, body)) != 2 {
-			t.Fatal(version)
-		}
+	var response struct {
+		Models []struct {
+			Slug                     string   `json:"slug"`
+			DisplayName              string   `json:"display_name"`
+			Description              string   `json:"description"`
+			Visibility               string   `json:"visibility"`
+			ContextWindow            int64    `json:"context_window"`
+			InputModalities          []string `json:"input_modalities"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
 	}
-	for _, version := range []string{"", "x", "1.2", "1.2.3.4", "-1.2.3", "0.+2.3", "999999999999999999999.2.3"} {
-		if _, ok := codexVersion(version); ok {
-			t.Fatalf("accepted invalid version %q", version)
-		}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestCodexFormatDoesNotOverrideOtherDialects(t *testing.T) {
-	for _, value := range []protocol.Protocol{protocol.Anthropic, protocol.Gemini} {
-		recorder := httptest.NewRecorder()
-		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.153.1", nil)
-		handler := &Handler{modelListLimit: math.MaxInt64, writeTimeout: time.Second}
-		handler.writeVisibleModelList(ctx, codexTestSnapshot(), state.AccessKeyView{}, value)
-		want, err := buildVisibleModelList(codexTestSnapshot(), state.AccessKeyView{}, value, math.MaxInt64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if recorder.Body.String() != string(want) {
-			t.Fatalf("%s format changed", value)
-		}
+	if len(response.Models) != 2 || response.Models[0].Slug != "gpt-5.4" || response.Models[1].Slug != "responses-model" {
+		t.Fatalf("catalog = %s", body)
 	}
-}
-
-func TestCodexModelListRequiresCreateOperation(t *testing.T) {
-	snapshot := &state.ConfigSnapshot{ExecutionCandidates: state.ExecutionCandidateIndex{
-		protocol.OpenAIResponses: {execution.OperationResponsesRetrieve: {"gpt-6-astra": {{GroupID: 1, UpstreamModelID: "gpt-6-astra"}}}},
-	}}
-	body, err := buildCodexModelList(snapshot, state.AccessKeyView{}, "0.153.1", math.MaxInt64)
+	auto := response.Models[0]
+	if auto.DisplayName != "gpt-5.4" || auto.Description != "gpt-5.4" || auto.Visibility != "list" ||
+		auto.ContextWindow != 272000 || !reflect.DeepEqual(auto.InputModalities, []string{"text", "image"}) ||
+		len(auto.SupportedReasoningLevels) != 4 || auto.SupportedReasoningLevels[0].Effort != "low" ||
+		auto.SupportedReasoningLevels[3].Effort != "xhigh" {
+		t.Fatalf("automatic model did not inherit gpt-5.5: %#v", auto)
+	}
+	body, err = buildCodexModelList(snapshot, state.AccessKeyView{Filters: state.FilterSet{
+		Protocols: map[protocol.Protocol]struct{}{protocol.OpenAIEmbeddings: {}},
+	}}, math.MaxInt64)
 	if err != nil || string(body) != `{"models":[]}` {
-		t.Fatalf("retrieve-only route exposed: %s %v", body, err)
+		t.Fatalf("protocol-filtered catalog = %s, %v", body, err)
+	}
+}
+
+func TestCodexCatalogRequiresAccessKeyAndBoundsResponse(t *testing.T) {
+	for _, authorized := range []bool{false, true} {
+		engine := newModelListHandlerEngineWithLimit(t, state.FilterSet{}, 512)
+		request := httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.154.0", nil)
+		if authorized {
+			request.Header.Set("Authorization", "Bearer gl-client")
+		}
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code == http.StatusOK || strings.Contains(recorder.Body.String(), `"slug"`) {
+			t.Fatalf("expected bounded local failure: %d %s", recorder.Code, recorder.Body.String())
+		}
 	}
 }

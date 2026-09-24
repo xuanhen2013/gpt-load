@@ -3,17 +3,25 @@ package subscription
 import (
 	"sort"
 	"sync"
+	"time"
 
 	providerobservation "gpt-load/internal/subscription/providers/observation"
 )
 
-// PassiveQuotaObservation is one credential's not-yet-persisted passive quota
-// snapshot, captured from a single upstream response's headers.
+// PassiveQuotaSample 保留一份额度信号及其原始观测时间。
+type PassiveQuotaSample struct {
+	ObservedAtMS int64
+	Windows      []providerobservation.QuotaWindow
+}
+
+// PassiveQuotaObservation 保存一个凭据的最新待写样本。
+// WS 可附带同一连接的握手样本，时间独立保留，不累积事件历史。
 type PassiveQuotaObservation struct {
 	CredentialID       uint
 	IdentityGeneration uint64
 	ObservedAtMS       int64
 	Windows            []providerobservation.QuotaWindow
+	Preceding          *PassiveQuotaSample
 	Version            uint64
 }
 
@@ -21,23 +29,34 @@ type passiveQuotaEntry struct {
 	identityGeneration uint64
 	observedAtMS       int64
 	windows            []providerobservation.QuotaWindow
+	preceding          *PassiveQuotaSample
 	version            uint64
 	dirty              bool
 }
 
-// passiveQuotaPending is the process-local, credential-keyed dirty set for
-// passive quota observations. It holds at most one entry per credential and
-// never grows with request volume, only with the number of accounts that
-// have produced a valid quota signal.
+// passiveQuotaPending 每个凭据仅保留一份实时快照；历史待解析观测与待写点分别有界。
 type passiveQuotaPending struct {
-	mu            sync.Mutex
-	entries       map[uint]*passiveQuotaEntry
-	nextVersion   uint64
-	dirtyNotifier func()
+	mu                      sync.Mutex
+	entries                 map[uint]*passiveQuotaEntry
+	history                 map[quotaHistorySampleKey]quotaHistorySample
+	historyStates           map[quotaHistoryKey]quotaHistoryState
+	historySources          map[quotaHistoryCredential]quotaHistorySource
+	historyObservations     map[quotaHistoryCredential][]quotaHistoryObservation
+	historyRetryAt          map[quotaHistoryCredential]time.Time
+	historyObservationCount int
+	nextVersion             uint64
+	dirtyNotifier           func()
 }
 
 func newPassiveQuotaPending() *passiveQuotaPending {
-	return &passiveQuotaPending{entries: make(map[uint]*passiveQuotaEntry)}
+	return &passiveQuotaPending{
+		entries:             make(map[uint]*passiveQuotaEntry),
+		history:             make(map[quotaHistorySampleKey]quotaHistorySample),
+		historyStates:       make(map[quotaHistoryKey]quotaHistoryState),
+		historySources:      make(map[quotaHistoryCredential]quotaHistorySource),
+		historyObservations: make(map[quotaHistoryCredential][]quotaHistoryObservation),
+		historyRetryAt:      make(map[quotaHistoryCredential]time.Time),
+	}
 }
 
 // RecordPassiveQuotaObservation stores one response's passive quota windows
@@ -53,16 +72,48 @@ func newPassiveQuotaPending() *passiveQuotaPending {
 //
 // A response with no windows is a no-op: it must not advance the pending
 // observation time. An observedAtMS older than the pending entry is dropped.
+// Removed credentials and responses from an outdated target are also ignored.
 func (manager *CredentialManager) RecordPassiveQuotaObservation(
 	credentialID uint,
 	identityGeneration uint64,
 	observedAtMS int64,
 	windows []providerobservation.QuotaWindow,
 ) {
-	if manager == nil || manager.passiveQuota == nil || credentialID == 0 || len(windows) == 0 {
+	manager.recordPassiveQuotaObservation(credentialID, identityGeneration, observedAtMS, windows, nil)
+}
+
+// RecordPassiveQuotaPair 让 WS 的最新事件携带同一连接的握手证据。
+// 两份样本分别校验时间；每个凭据仍仅保留一组，不合并其他请求或事件。
+func (manager *CredentialManager) RecordPassiveQuotaPair(
+	credentialID uint,
+	identityGeneration uint64,
+	preceding, latest PassiveQuotaSample,
+) {
+	var earlier *PassiveQuotaSample
+	if len(preceding.Windows) > 0 && preceding.ObservedAtMS <= latest.ObservedAtMS {
+		earlier = &preceding
+	}
+	manager.recordPassiveQuotaObservation(credentialID, identityGeneration, latest.ObservedAtMS, latest.Windows, earlier)
+}
+
+func (manager *CredentialManager) recordPassiveQuotaObservation(
+	credentialID uint,
+	identityGeneration uint64,
+	observedAtMS int64,
+	windows []providerobservation.QuotaWindow,
+	preceding *PassiveQuotaSample,
+) {
+	if manager == nil || manager.passiveQuota == nil || manager.registry == nil || credentialID == 0 || len(windows) == 0 {
 		return
 	}
-	manager.passiveQuota.record(credentialID, identityGeneration, observedAtMS, windows)
+	manager.passiveQuota.record(credentialID, identityGeneration, observedAtMS, windows, preceding, func() (uint, bool) {
+		// 在短内存锁内核对当前身份；不等待后台持有的数据库 mutation 锁。
+		ref, ok := manager.registry.CredentialRef(credentialID)
+		if !ok || ref.IdentityGeneration != identityGeneration {
+			return 0, false
+		}
+		return ref.GroupID, true
+	})
 }
 
 // DirtyPassiveQuotaObservations returns up to limit pending observations that
@@ -90,8 +141,15 @@ func (pending *passiveQuotaPending) record(
 	identityGeneration uint64,
 	observedAtMS int64,
 	windows []providerobservation.QuotaWindow,
+	preceding *PassiveQuotaSample,
+	current func() (uint, bool),
 ) {
 	pending.mu.Lock()
+	groupID, accepted := current()
+	if !accepted {
+		pending.mu.Unlock()
+		return
+	}
 	entry, exists := pending.entries[credentialID]
 	if !exists || entry.identityGeneration != identityGeneration {
 		entry = &passiveQuotaEntry{identityGeneration: identityGeneration}
@@ -101,10 +159,15 @@ func (pending *passiveQuotaPending) record(
 		return
 	}
 	entry.windows = cloneQuotaWindows(windows)
+	entry.preceding = clonePassiveQuotaSample(preceding)
 	entry.observedAtMS = observedAtMS
 	pending.nextVersion++
 	entry.version = pending.nextVersion
 	entry.dirty = true
+	if preceding != nil {
+		pending.recordHistoryLocked(groupID, credentialID, identityGeneration, preceding.ObservedAtMS, preceding.Windows)
+	}
+	pending.recordHistoryLocked(groupID, credentialID, identityGeneration, observedAtMS, windows)
 	notifier := pending.dirtyNotifier
 	pending.mu.Unlock()
 	if notifier != nil {
@@ -134,6 +197,7 @@ func (pending *passiveQuotaPending) dirtyObservations(limit int) []PassiveQuotaO
 			IdentityGeneration: entry.identityGeneration,
 			ObservedAtMS:       entry.observedAtMS,
 			Windows:            cloneQuotaWindows(entry.windows),
+			Preceding:          clonePassiveQuotaSample(entry.preceding),
 			Version:            entry.version,
 		})
 		if len(result) >= limit {
@@ -141,6 +205,13 @@ func (pending *passiveQuotaPending) dirtyObservations(limit int) []PassiveQuotaO
 		}
 	}
 	return result
+}
+
+func clonePassiveQuotaSample(sample *PassiveQuotaSample) *PassiveQuotaSample {
+	if sample == nil {
+		return nil
+	}
+	return &PassiveQuotaSample{ObservedAtMS: sample.ObservedAtMS, Windows: cloneQuotaWindows(sample.Windows)}
 }
 
 // cloneQuotaWindows detaches a window slice from its caller, including the

@@ -74,12 +74,15 @@ func (d *OpenAIImages) InspectRequest(request *ParsedRequest) (RequestMetadata, 
 	if mediaType != "" && mediaType != "application/json" {
 		return RequestMetadata{}, fmt.Errorf("unsupported %s Content-Type %q", d.Protocol(), contentType)
 	}
-	metadata, err := inspectJSONRequestFields(request.Body, true)
+	metadata, err := inspectJSONRequestFields(request.Body, true, false)
 	if err != nil {
 		return RequestMetadata{}, fmt.Errorf("decode %s request: %w", d.Protocol(), err)
 	}
 	metadata.Operation = operation
 	metadata.RouteRequirement = execution.RouteRequirementNative
+	if operation == execution.OperationImagesGenerate {
+		metadata.RouteRequirement = execution.RouteRequirementAny
+	}
 	metadata.ObserveUsage = true
 	return metadata, nil
 }

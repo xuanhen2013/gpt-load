@@ -11,15 +11,15 @@ type CredentialRuntimeView struct {
 	Version                 uint64
 	IdentityGeneration      uint64
 	WeightManual            *int
-	WeightAuto              int
-	AccountConcurrencyLimit *int
 	Status                  CredentialStatus
 	AuthState               CredentialAuthState
 	CooldownUntil           time.Time
+	ModelCooldowns          map[string]time.Time
 	Blacklisted             bool
 	FailureCount            int
 	QuotaRemaining          *float64
 	QuotaResetAt            time.Time
+	AccountConcurrencyLimit *int
 }
 
 func (view CredentialRuntimeView) AuthReady() bool {
@@ -59,15 +59,15 @@ func runtimeView(entry *CredentialEntry) CredentialRuntimeView {
 		Version:                 entry.Version,
 		IdentityGeneration:      entry.IdentityGeneration,
 		WeightManual:            cloneWeight(entry.WeightManual),
-		WeightAuto:              entry.WeightAuto,
-		AccountConcurrencyLimit: cloneWeight(entry.AccountConcurrencyLimit),
 		Status:                  entry.Status,
 		AuthState:               entry.AuthState.normalize(),
 		CooldownUntil:           entry.CooldownUntil,
+		ModelCooldowns:          cloneModelCooldowns(entry.ModelCooldowns),
 		Blacklisted:             entry.Blacklisted,
 		FailureCount:            entry.FailureCount,
 		QuotaRemaining:          cloneFloat(entry.quotaRemaining),
 		QuotaResetAt:            entry.quotaResetAt,
+		AccountConcurrencyLimit: cloneWeight(entry.AccountConcurrencyLimit),
 	}
 }
 

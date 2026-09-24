@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -954,8 +953,8 @@ func TestHandlerPublishesUsageForActualNonStreamingResponseAttempt(t *testing.T)
 		{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), ClassificationBody: []byte(`{"error":{"type":"rate_limit_error"}}`), Usage: usage.Result{State: usage.StateComplete, Tokens: usage.Tokens{Output: 99}}, RequestWritten: true},
 		{StatusCode: http.StatusOK, Header: make(http.Header), Body: []byte(`{"ok":true}`), Usage: usage.Result{State: usage.StateComplete, Tokens: usage.Tokens{UncachedInput: 80, CacheRead: 20, Output: 30}}, RequestWritten: true},
 	}}
-	engine, handler, _, _ := newRequestLogHandlerTestRuntime(t, forwarder, &recordingAccessKeyRPMLimiter{}, sink, "sk-first", "sk-second")
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+	engine, _, _, _ := newRequestLogHandlerTestRuntime(t, forwarder, &recordingAccessKeyRPMLimiter{}, sink, "sk-first", "sk-second")
+
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`))
 	request.Header.Set("Authorization", "Bearer gl-client")
 	engine.ServeHTTP(httptest.NewRecorder(), request)
@@ -1023,6 +1022,7 @@ func TestRequestRecorderPreservesKnownCostWhenUsedOutputPriceIsUnavailable(t *te
 	recorder.freezeNextAttemptPricing(frozenAttemptPricing{
 		channelID: string(channel.OpenAI), groupID: 1,
 		upstreamModel: model, table: table, applicable: true,
+		priceMultipliers: pricing.PriceMultipliers{Group: pricing.DefaultPriceMultiplier, AccessKey: pricing.DefaultPriceMultiplier},
 	})
 	selection := requestLogSelection(1, 2, "group")
 	selection.UpstreamModelID = &model
@@ -1062,6 +1062,7 @@ func TestRequestRecorderMergesRequestPricingDiagnosticsIntoKnownCost(t *testing.
 	recorder.freezeNextAttemptPricing(frozenAttemptPricing{
 		channelID: string(channel.OpenAI), groupID: 1,
 		upstreamModel: model, table: table, applicable: true,
+		priceMultipliers: pricing.PriceMultipliers{Group: pricing.DefaultPriceMultiplier, AccessKey: pricing.DefaultPriceMultiplier},
 	})
 	selection := requestLogSelection(1, 2, "group")
 	selection.UpstreamModelID = &model
@@ -1104,12 +1105,13 @@ func TestRequestRecorderUsesFrozenAttemptMetadata(t *testing.T) {
 	model := "gpt-4o"
 	recorder.freezeNextAttemptPricing(frozenAttemptPricing{
 		channelID: string(channel.OpenAI), groupID: 1,
-		upstreamModel: model,
-		table:         mustGatewayPriceTableWithFast(t, 2_000_000_000, 5_000_000_000),
-		applicable:    true,
-		metadataSet:   true,
-		pricingMode:   pricing.ModeFast,
-		reasoning:     reasoning.Config{Effort: "high"},
+		upstreamModel:    model,
+		table:            mustGatewayPriceTableWithFast(t, 2_000_000_000, 5_000_000_000),
+		priceMultipliers: pricing.PriceMultipliers{Group: pricing.DefaultPriceMultiplier, AccessKey: pricing.DefaultPriceMultiplier},
+		applicable:       true,
+		metadataSet:      true,
+		pricingMode:      pricing.ModeFast,
+		reasoning:        reasoning.Config{Effort: "high"},
 	})
 	selection := requestLogSelection(1, 2, "group")
 	selection.UpstreamModelID = &model
@@ -1156,6 +1158,7 @@ func TestRequestRecorderDoesNotReuseClientMetadataWhenAttemptObservationIsUnavai
 		selection,
 		dialect.RequestMetadata{ObserveUsage: true},
 		false,
+		pricing.DefaultPriceMultiplier,
 	))
 	index := recorder.appendAttempt(
 		selection,
@@ -1446,10 +1449,10 @@ func mustGatewayPriceTableWithFast(t *testing.T, standard, fast int64) *pricing.
 func TestHandlerDiscardsPreCommitStreamUsageOnRetry(t *testing.T) {
 	sink := &recordingRequestLogSink{}
 	forwarder := &usageObservingStreamRetryForwarder{}
-	engine, handler, _, _ := newRequestLogHandlerTestRuntime(
+	engine, _, _, _ := newRequestLogHandlerTestRuntime(
 		t, forwarder, &recordingAccessKeyRPMLimiter{}, sink, "sk-first", "sk-second",
 	)
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
@@ -1487,7 +1490,7 @@ func TestHandlerRecordsCandidatePreparationFailureThroughJudge(t *testing.T) {
 	engine, handler, _, _ := newRequestLogHandlerTestRuntime(
 		t, forwarder, &recordingAccessKeyRPMLimiter{}, sink, "sk-first", "sk-second",
 	)
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 	handler.encryption = &failCredentialDecrypt{Service: handler.encryption, remaining: 1}
 	request := httptest.NewRequest(
 		http.MethodPost,
@@ -1527,7 +1530,7 @@ func TestHandlerCandidatePreparationFailuresDoNotExhaustForwardBudget(t *testing
 		t, forwarder, &recordingAccessKeyRPMLimiter{}, sink,
 		"sk-first", "sk-second", "sk-third", "sk-fourth",
 	)
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 	handler.encryption = &failCredentialDecrypt{Service: handler.encryption, remaining: 3}
 	request := httptest.NewRequest(
 		http.MethodPost,
@@ -1573,14 +1576,14 @@ func TestHandlerFirstProviderErrorRequestLogContract(t *testing.T) {
 			},
 		}),
 	}}
-	engine, handler, _, _ := newRequestLogHandlerTestRuntime(
+	engine, _, _, _ := newRequestLogHandlerTestRuntime(
 		t,
 		forwarder,
 		&recordingAccessKeyRPMLimiter{},
 		sink,
 		apiKey,
 	)
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
@@ -1595,10 +1598,10 @@ func TestHandlerFirstProviderErrorRequestLogContract(t *testing.T) {
 		t.Fatalf("events = %#v", events)
 	}
 	event := events[0]
-	if response.Code != http.StatusBadGateway ||
+	if response.Code != http.StatusTooManyRequests ||
 		event.Status != telemetry.RequestStatusError ||
-		event.StatusCode != http.StatusBadGateway ||
-		event.ErrorCode != reasonUpstreamProtocol.Code ||
+		event.StatusCode != http.StatusTooManyRequests ||
+		event.ErrorCode != reasonUpstreamRateLimited.Code ||
 		event.ErrorSummary != fixedErrorSummary("upstream_sse_error") ||
 		event.Usage.Result != (usage.Result{
 			State: usage.StateComplete,
@@ -1617,11 +1620,11 @@ func TestHandlerFirstProviderErrorRequestLogContract(t *testing.T) {
 	if attempt.StatusCode != http.StatusOK ||
 		attempt.FailureCategory != telemetry.FailureCategoryRateLimited ||
 		attempt.FailureOrigin != execution.ErrorOriginUpstream ||
-		attempt.FailureScope != "" ||
+		attempt.FailureScope != execution.ErrorScopeModel ||
 		attempt.RetryDirective != telemetry.RetryNextCandidate ||
-		attempt.Effect != telemetry.EffectCooldownCredential ||
-		attempt.RuleID != "rate_limit.reset_header" ||
-		attempt.Action != telemetry.ActionCooldownCredential ||
+		attempt.Effect != telemetry.EffectCooldownModel ||
+		attempt.RuleID != "rate_limit.retry_after" ||
+		attempt.Action != telemetry.ActionRetry ||
 		attempt.Committed ||
 		attempt.ErrorSummary != fixedErrorSummary("upstream_sse_error") {
 		t.Fatalf("attempt = %#v", attempt)
@@ -1654,10 +1657,10 @@ func TestHandlerBootstrapCapacityRetryRequestLogContract(t *testing.T) {
 		},
 	}}
 	sink := &recordingRequestLogSink{}
-	engine, handler, _, _ := newRequestLogHandlerTestRuntime(
+	engine, _, _, _ := newRequestLogHandlerTestRuntime(
 		t, forwarder, &recordingAccessKeyRPMLimiter{}, sink, "sk-first", "sk-second",
 	)
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
@@ -1727,7 +1730,7 @@ func TestHandlerRetryExhaustionUsesProviderErrorAttemptAndItsFrozenPrice(t *test
 		"sk-second",
 		"sk-third",
 	)
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 	handler.priceTables = provider
 	request := httptest.NewRequest(
 		http.MethodPost,
@@ -1739,7 +1742,7 @@ func TestHandlerRetryExhaustionUsesProviderErrorAttemptAndItsFrozenPrice(t *test
 	engine.ServeHTTP(response, request)
 
 	events := sink.snapshot()
-	if response.Code != http.StatusBadGateway || len(events) != 1 ||
+	if response.Code != http.StatusTooManyRequests || len(events) != 1 ||
 		len(events[0].Attempts) != 3 {
 		t.Fatalf("response/events = %d/%#v", response.Code, events)
 	}
@@ -1766,8 +1769,8 @@ func TestHandlerRememberedLastResponseKeepsOriginalUsageAttempt(t *testing.T) {
 		{Err: errors.New("transport two")},
 		{Err: errors.New("transport three")},
 	}}
-	engine, handler, _, _ := newRequestLogHandlerTestRuntime(t, forwarder, &recordingAccessKeyRPMLimiter{}, sink, "sk-first", "sk-second", "sk-third")
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+	engine, _, _, _ := newRequestLogHandlerTestRuntime(t, forwarder, &recordingAccessKeyRPMLimiter{}, sink, "sk-first", "sk-second", "sk-third")
+
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`))
 	request.Header.Set("Authorization", "Bearer gl-client")
 	engine.ServeHTTP(httptest.NewRecorder(), request)
@@ -1847,8 +1850,8 @@ func TestHandlerTerminalAttemptUsageKeepsRouteAttribution(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sink := &recordingRequestLogSink{}
-			engine, handler, _, _ := newRequestLogHandlerTestRuntime(t, test.forwarder, &recordingAccessKeyRPMLimiter{}, sink, test.upstreamKeys...)
-			handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+			engine, _, _, _ := newRequestLogHandlerTestRuntime(t, test.forwarder, &recordingAccessKeyRPMLimiter{}, sink, test.upstreamKeys...)
+
 			request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`))
 			request.Header.Set("Authorization", "Bearer gl-client")
 			engine.ServeHTTP(httptest.NewRecorder(), request)
@@ -2230,10 +2233,10 @@ func TestHandlerRPMAdmissionOrderingAndSingleCharge(t *testing.T) {
 	}}
 	limiter := &recordingAccessKeyRPMLimiter{}
 	sink := &recordingRequestLogSink{}
-	engine, handler, _, _ := newRequestLogHandlerTestRuntime(
+	engine, _, _, _ := newRequestLogHandlerTestRuntime(
 		t, forwarder, limiter, sink, "sk-first", "sk-second",
 	)
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 	body := &observingReadCloser{
 		reader: strings.NewReader(`{"model":"gpt-4o"}`),
 	}
@@ -2447,10 +2450,10 @@ func TestHandlerRequestLogScopeAndExactlyOnce(t *testing.T) {
 				decisions: []ratelimit.LimitDecision{test.decision},
 			}
 			sink := &recordingRequestLogSink{}
-			engine, handler, _, _ := newRequestLogHandlerTestRuntime(
+			engine, _, _, _ := newRequestLogHandlerTestRuntime(
 				t, forwarder, limiter, sink, test.upstreamKeys...,
 			)
-			handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 			request := httptest.NewRequest(
 				test.method, test.target, strings.NewReader(test.body),
 			)
@@ -2655,10 +2658,10 @@ func TestHandlerRecordsNonStreamingRetryChain(t *testing.T) {
 		}}
 		limiter := &recordingAccessKeyRPMLimiter{}
 		sink := &recordingRequestLogSink{}
-		engine, handler, _, _ := newRequestLogHandlerTestRuntime(
+		engine, _, _, _ := newRequestLogHandlerTestRuntime(
 			t, forwarder, limiter, sink, "sk-first", "sk-second",
 		)
-		handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 		request := httptest.NewRequest(
 			http.MethodPost,
 			"/v1/chat/completions",
@@ -2708,14 +2711,14 @@ func TestHandlerRecordsNonStreamingRetryChain(t *testing.T) {
 			RequestWritten: true,
 		}}}
 		sink := &recordingRequestLogSink{}
-		engine, handler, _, _ := newRequestLogHandlerTestRuntime(
+		engine, _, _, _ := newRequestLogHandlerTestRuntime(
 			t,
 			forwarder,
 			&recordingAccessKeyRPMLimiter{},
 			sink,
 			"sk-only",
 		)
-		handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 		request := httptest.NewRequest(
 			http.MethodPost,
 			"/v1/chat/completions",
@@ -2973,10 +2976,10 @@ func TestHandlerRejectsFinalSwitchingProtocolsAsLocalProtocolError(t *testing.T)
 		RequestWritten: true,
 	}}}
 	sink := &recordingRequestLogSink{}
-	engine, handler, _, _ := newRequestLogHandlerTestRuntime(
+	engine, _, _, _ := newRequestLogHandlerTestRuntime(
 		t, forwarder, &recordingAccessKeyRPMLimiter{}, sink, "sk-one",
 	)
-	handler.newRandom = func() *rand.Rand { return rand.New(zeroSource{}) }
+
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/chat/completions",
@@ -3817,5 +3820,54 @@ func TestRequestRecorderTerminalErrorsUseSanitizedAttemptSummary(t *testing.T) {
 				t.Fatalf("event = %#v, want sanitized attempt summary %q", events, wantSummary)
 			}
 		})
+	}
+}
+
+func TestRerankRequestLogFreezesProviderInputEcho(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingRequestLogSink{}
+	recorder := newRequestRecorder(
+		sink,
+		"req-embeddings-error",
+		time.Unix(100, 0),
+		9,
+		protocol.Rerank,
+		func() time.Time { return time.Unix(101, 0) },
+	)
+	recorder.setOperation(execution.OperationRerank)
+	providerSummary := "invalid input=input-sentinel vector=VkVDVE9SX1NFTlRJTkVM"
+	index := recorder.appendAttempt(
+		requestLogSelection(12, 22, "embeddings"),
+		UpstreamResult{StatusCode: http.StatusBadRequest},
+		telemetry.FailureCategoryClientError,
+		telemetry.ActionTerminate,
+		"upstream_client_error",
+		providerSummary,
+		time.Unix(100, 0),
+		time.Unix(100, 0),
+	)
+	recorder.completeResponse(
+		UpstreamResult{StatusCode: http.StatusBadRequest, ErrorSummary: providerSummary},
+		health.Decision{Category: health.FailureCategoryClientError},
+		"provider-embedding",
+		index,
+	)
+	recorder.emit()
+
+	if len(sink.events) != 1 {
+		t.Fatalf("events = %#v", sink.events)
+	}
+	event := sink.events[0]
+	want := fixedErrorSummary("upstream_client_error")
+	if event.ErrorSummary != want || len(event.Attempts) != 1 ||
+		event.Attempts[0].ErrorSummary != want {
+		t.Fatalf("Embeddings summaries = %q / %#v", event.ErrorSummary, event.Attempts)
+	}
+	encoded, _ := json.Marshal(event)
+	for _, forbidden := range []string{"input-sentinel", "VkVDVE9SX1NFTlRJTkVM"} {
+		if bytes.Contains(encoded, []byte(forbidden)) {
+			t.Fatalf("Embeddings request log retained %q: %s", forbidden, encoded)
+		}
 	}
 }

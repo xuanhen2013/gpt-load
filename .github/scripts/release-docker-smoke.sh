@@ -38,8 +38,7 @@ fake_container="gpt-load-release-fake-${suffix}"
 fake_alias="fake-upstream"
 volume="gpt-load-release-smoke-${suffix}"
 network="gpt-load-release-network-${suffix}"
-app_port="${RELEASE_SMOKE_APP_PORT:-39413}"
-base_url="http://127.0.0.1:${app_port}"
+app_port="${RELEASE_SMOKE_APP_PORT:-0}"
 task_tmp="$(mktemp -d)"
 smoke_stage="preflight"
 
@@ -55,6 +54,8 @@ cleanup_temp() {
   fi
 }
 trap cleanup_temp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 for target in "${container}" "${probe}" "${fake_container}"; do
   if docker container inspect "${target}" >/dev/null 2>&1; then
@@ -207,9 +208,14 @@ start_container() {
   docker run -d \
     --name "${container}" \
     --network "${network}" \
-    --publish "${app_port}:3001" \
+    --publish "127.0.0.1:${app_port}:3001" \
     --volume "${volume}:/app/data" \
     "${image}" >/dev/null
+  # Docker 原子分配可用端口；重建容器后也重新查询，避免多个 Runner 抢占端口。
+  local binding
+  binding="$(docker port "${container}" 3001/tcp)"
+  [[ "${binding}" =~ ^127\.0\.0\.1:[0-9]+$ ]]
+  base_url="http://${binding}"
 }
 
 wait_for_health() {
@@ -227,6 +233,12 @@ api_get() {
   curl -fsS \
     -H "Authorization: Bearer ${auth_key}" \
     "${base_url}${path}"
+}
+
+api_get_usage() {
+  local to_ms
+  to_ms="$(node -e 'process.stdout.write(String(Date.now()))')"
+  api_get "/api/usage?from_ms=$((to_ms - 86400000))&to_ms=${to_ms}"
 }
 
 api_write() {
@@ -281,7 +293,7 @@ test "$(
     --data-binary '{"model":"task13-release-model","messages":[]}' \
     "${base_url}/v1/chat/completions"
 )" = "401"
-api_get "/api/usage?range=24h" >"${task_tmp}/usage-empty.json"
+api_get_usage >"${task_tmp}/usage-empty.json"
 api_get "/api/model-prices" >"${task_tmp}/prices-empty.json"
 
 smoke_stage="create-group"
@@ -385,7 +397,7 @@ node -e '
 smoke_stage="verify-usage"
 usage_complete=false
 for _ in $(seq 1 80); do
-  api_get "/api/usage?range=24h" >"${task_tmp}/usage-first.json"
+  api_get_usage >"${task_tmp}/usage-first.json"
   if node -e '
     const fs=require("fs");
     const value=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
@@ -432,7 +444,7 @@ test "$(
 
 api_get "/api/groups" >"${task_tmp}/groups-second.json"
 api_get "${model_price_list_path}" >"${task_tmp}/prices-second.json"
-api_get "/api/usage?range=24h" >"${task_tmp}/usage-second.json"
+api_get_usage >"${task_tmp}/usage-second.json"
 access_list="$(api_get "/api/access-keys")"
 printf '%s' "${access_list}" | node -e '
   const fs=require("fs");

@@ -74,6 +74,17 @@ func NewGrokHTTPExecutor() GrokHTTPExecutor {
 	return &grokHTTPExecutor{cfg: cfg, inner: internalexecutor.NewXAIExecutor(cfg)}
 }
 
+func (executor *grokHTTPExecutor) executionBaseURL(apiRoot string) (string, error) {
+	endpoints, err := ResolveGrokAPIEndpoints(apiRoot)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(apiRoot) == "" && executor.baseURL != "" {
+		return executor.baseURL, nil
+	}
+	return endpoints.ExecutionBase, nil
+}
+
 func NewGrokAuth(id string, credential GrokCredential, baseURL string) *cliproxyauth.Auth {
 	metadata := map[string]any{
 		"type": ProviderGrok, "access_token": credential.AccessToken,
@@ -81,6 +92,12 @@ func NewGrokAuth(id string, credential GrokCredential, baseURL string) *cliproxy
 	}
 	attributes := map[string]string{
 		"auth_kind": "oauth", "using_api": "false",
+		// CPA 默认仅向官方域附加这些头，API 代理仍需保持相同订阅协议。
+		"header:X-XAI-Token-Auth":         "xai-grok-cli",
+		"header:x-grok-client-version":    grokClientVersion,
+		"header:User-Agent":               "xai-grok-workspace/" + grokClientVersion,
+		"header:x-grok-client-identifier": "grok-shell",
+		"header:x-authenticateresponse":   "authenticate-response",
 	}
 	if value := strings.TrimSpace(baseURL); value != "" {
 		attributes["base_url"] = value
@@ -102,9 +119,13 @@ func (executor *grokHTTPExecutor) ExecuteCanonical(
 	if err := validateGrokCredential(credential); err != nil {
 		return ExecuteResponse{}, err
 	}
-	request = prepareGrokExecutionRequest(request)
+	baseURL, err := executor.executionBaseURL(request.BaseURL)
+	if err != nil {
+		return ExecuteResponse{}, err
+	}
+	request = scopeGrokExecutionRequest(request, baseURL)
 	format := sdktranslator.FromString(request.Format)
-	auth := NewGrokAuth(credentialID, credential, executor.baseURL)
+	auth := NewGrokAuth(credentialID, credential, baseURL)
 	auth.ProxyURL = request.ProxyURL
 	observation := newProviderExecutionObservation(request, grokCPAProvider)
 	executionCtx := executor.executionContext(ctx, auth, observation)
@@ -112,7 +133,7 @@ func (executor *grokHTTPExecutor) ExecuteCanonical(
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: format,
 	}, grokExecutorOptions(request, format, false))
 	if err != nil {
-		return ExecuteResponse{AppliedReasoningEffort: observation.reasoningEffort()}, normalizeGrokExecutionError(err)
+		return ExecuteResponse{Headers: observation.responseHeaders(), AppliedReasoningEffort: observation.reasoningEffort()}, normalizeGrokExecutionError(err)
 	}
 	return ExecuteResponse{
 		Payload: append([]byte(nil), response.Payload...), Headers: response.Headers.Clone(),
@@ -127,9 +148,14 @@ func (executor *grokHTTPExecutor) CountTokensCanonical(
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	baseURL, err := executor.executionBaseURL(request.BaseURL)
+	if err != nil {
+		return ExecuteResponse{}, err
+	}
 	request = prepareGrokExecutionRequest(request)
+	request.ContinuityKey = targetContinuityScope(request.ContinuityKey, baseURL)
 	format := sdktranslator.FromString(request.Format)
-	response, err := executor.inner.CountTokens(ctx, NewGrokAuth("local-token-count", GrokCredential{}, executor.baseURL), cliproxyexecutor.Request{
+	response, err := executor.inner.CountTokens(ctx, NewGrokAuth("local-token-count", GrokCredential{}, baseURL), cliproxyexecutor.Request{
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: format,
 	}, grokExecutorOptions(request, format, false))
 	if err != nil {
@@ -157,9 +183,13 @@ func (executor *grokHTTPExecutor) ExecuteStreamCanonical(
 	if err := validateGrokCredential(credential); err != nil {
 		return nil, err
 	}
-	request = prepareGrokExecutionRequest(request)
+	baseURL, err := executor.executionBaseURL(request.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	request = scopeGrokExecutionRequest(request, baseURL)
 	format := sdktranslator.FromString(request.Format)
-	auth := NewGrokAuth(credentialID, credential, executor.baseURL)
+	auth := NewGrokAuth(credentialID, credential, baseURL)
 	auth.ProxyURL = request.ProxyURL
 	observation := newProviderExecutionObservation(request, grokCPAProvider)
 	executionCtx := executor.executionContext(ctx, auth, observation)
@@ -167,7 +197,7 @@ func (executor *grokHTTPExecutor) ExecuteStreamCanonical(
 		Model: request.Model, Payload: append([]byte(nil), request.Payload...), Format: format,
 	}, grokExecutorOptions(request, format, true))
 	if err != nil {
-		return &ExecuteStreamResponse{AppliedReasoningEffort: observation.reasoningEffort()}, normalizeGrokExecutionError(err)
+		return &ExecuteStreamResponse{Headers: observation.responseHeaders(), AppliedReasoningEffort: observation.reasoningEffort()}, normalizeGrokExecutionError(err)
 	}
 	chunks := make(chan ExecuteStreamChunk)
 	go func() {
@@ -196,7 +226,10 @@ func grokExecutorOptions(request ExecuteRequest, format sdktranslator.Format, st
 		OriginalRequest: append([]byte(nil), request.OriginalRequest...),
 		SourceFormat:    format, ResponseFormat: format,
 	}
-	if scope := strings.TrimSpace(request.ContinuityKey); scope != "" {
+	// Responses/Chat 把网关 UUID 写在请求体 prompt_cache_key 上，CPA 用它同时填 x-grok-conv-id。
+	// 不要放进 ExecutionSessionMetadataKey：那会被当成可信的 reasoning replay 会话，
+	// 下一轮把推理块插到用户输入前面，提示词缓存就只剩固定前缀。
+	if scope := strings.TrimSpace(request.ContinuityKey); scope != "" && !grokCarriesPromptCacheKey(string(format)) {
 		options.Metadata = map[string]any{
 			cliproxyexecutor.ExecutionSessionMetadataKey: grokConversationID(scope),
 		}
@@ -210,6 +243,44 @@ func grokConversationID(scope string) string {
 		return ""
 	}
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("gpt-load-grok\x00"+scope)).String()
+}
+
+// scopeGrokExecutionRequest 先丢掉调用方会话字段，再把网关自己的缓存键写回 Responses/Chat 请求体。
+// cli-chat-proxy 只按 prompt_cache_key 复用提示词缓存，不认 x-grok-conv-id。
+func scopeGrokExecutionRequest(request ExecuteRequest, baseURL string) ExecuteRequest {
+	request = prepareGrokExecutionRequest(request)
+	request.ContinuityKey = targetContinuityScope(request.ContinuityKey, baseURL)
+	return applyGrokPromptCacheKey(request)
+}
+
+func applyGrokPromptCacheKey(request ExecuteRequest) ExecuteRequest {
+	if !grokCarriesPromptCacheKey(request.Format) {
+		return request
+	}
+	cacheKey := grokConversationID(request.ContinuityKey)
+	if cacheKey == "" {
+		return request
+	}
+	request.Payload = writeGrokPromptCacheKey(request.Payload, cacheKey)
+	request.OriginalRequest = writeGrokPromptCacheKey(request.OriginalRequest, cacheKey)
+	return request
+}
+
+func grokCarriesPromptCacheKey(format string) bool {
+	switch sdktranslator.FromString(format) {
+	case sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAIResponse:
+		return true
+	default:
+		return false
+	}
+}
+
+func writeGrokPromptCacheKey(raw []byte, cacheKey string) []byte {
+	updated, err := sjson.SetBytes(raw, "prompt_cache_key", cacheKey)
+	if err != nil {
+		return raw
+	}
+	return updated
 }
 
 func prepareGrokExecutionRequest(request ExecuteRequest) ExecuteRequest {

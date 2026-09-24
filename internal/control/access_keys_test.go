@@ -155,6 +155,8 @@ func TestAccessKeyCreateAcceptsAllEnabledProtocolsInCanonicalOrder(t *testing.T)
 				protocol.Gemini,
 				protocol.OpenAIImages,
 				protocol.OpenAIEmbeddings,
+				protocol.Rerank,
+				protocol.Decisions,
 				protocol.OpenAIResponses,
 				protocol.Anthropic,
 				protocol.OpenAICompletions,
@@ -251,7 +253,7 @@ func TestListAccessKeyCollectionReturnsMaskedMetadataWithoutDecrypting(t *testin
 		context.Background(),
 		AccessKeyCollectionQuery{Page: 1, PageSize: 20},
 	); err != nil ||
-		!reflect.DeepEqual(afterCorruption, listed) {
+		!reflect.DeepEqual(afterCorruption.Items, listed.Items) {
 		t.Fatalf(
 			"ListAccessKeyCollection() after ciphertext corruption = %#v, %v, want unchanged metadata",
 			afterCorruption,

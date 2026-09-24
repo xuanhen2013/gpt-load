@@ -519,6 +519,8 @@ func TestBuildContainerResolvesAllDialects(t *testing.T) {
 		openAIResponses *dialect.OpenAIResponses,
 		openAIImages *dialect.OpenAIImages,
 		openAIEmbeddings *dialect.OpenAIEmbeddings,
+		rerank *dialect.Rerank,
+		decisions *dialect.Decisions,
 		anthropic *dialect.Anthropic,
 		gemini *dialect.Gemini,
 		values dialect.Set,
@@ -534,8 +536,10 @@ func TestBuildContainerResolvesAllDialects(t *testing.T) {
 			values[protocol.OpenAIResponses] != openAIResponses ||
 			values[protocol.OpenAIImages] != openAIImages ||
 			values[protocol.OpenAIEmbeddings] != openAIEmbeddings ||
+			values[protocol.Rerank] != rerank ||
+			values[protocol.Decisions] != decisions ||
 			values[protocol.Anthropic] != anthropic ||
-			values[protocol.Gemini] != gemini || len(values) != 6 {
+			values[protocol.Gemini] != gemini || len(values) != 8 {
 			t.Fatalf("dialect Set = %#v", values)
 		}
 	})
@@ -722,7 +726,6 @@ func TestBuildContainerWiresSingletonMutationCoordinator(t *testing.T) {
 		})
 		want := reflect.ValueOf(coordinator).Pointer()
 		handlerMutation := mutationCoordinatorFieldPointer(t, reflect.ValueOf(handler), "mutations")
-		runtimeMutation := mutationCoordinatorFieldPointer(t, reflect.ValueOf(runtime), "mutations")
 
 		runtimeValue := reflect.ValueOf(runtime).Elem()
 		validator := runtimeValue.FieldByName("validator")
@@ -730,11 +733,10 @@ func TestBuildContainerWiresSingletonMutationCoordinator(t *testing.T) {
 			t.Fatal("Runtime validator is not wired")
 		}
 		validationMutation := mutationCoordinatorFieldPointer(t, validator.Elem(), "mutations")
-		if handlerMutation != want || runtimeMutation != want || validationMutation != want {
+		if handlerMutation != want || validationMutation != want {
 			t.Fatalf(
-				"mutation coordinators = handler:%#x runtime:%#x validation:%#x want:%#x",
+				"mutation coordinators = handler:%#x validation:%#x want:%#x",
 				handlerMutation,
-				runtimeMutation,
 				validationMutation,
 				want,
 			)

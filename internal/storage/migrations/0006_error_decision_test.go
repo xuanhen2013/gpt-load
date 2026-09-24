@@ -8,6 +8,7 @@ import (
 )
 
 func TestErrorDecisionMigrationPreservesAttemptsAndAddsDecisionContract(t *testing.T) {
+	t.Parallel()
 	db := openInitialTestDatabase(t)
 	if err := migrations.Up0001(db); err != nil {
 		t.Fatalf("Up0001() error = %v", err)
@@ -20,7 +21,10 @@ func TestErrorDecisionMigrationPreservesAttemptsAndAddsDecisionContract(t *testi
 		UsageState: "not_applicable", CostState: "not_applicable",
 		PricingCompleteness: "not_applicable",
 	}
-	if err := db.Create(&request).Error; err != nil {
+	if err := db.Omit(
+		"RequestAudit", "AuditCostNanoUSD", "AuditPricingCompleteness", "AffinityKind", "AutoDecision", "DecisionModel", "DecisionCostNanoUSD",
+		"DecisionPricingCompleteness", "DecisionGroupID", "DecisionChannelID", "DecisionCredentialID",
+	).Create(&request).Error; err != nil {
 		t.Fatalf("create request log: %v", err)
 	}
 	attempt := models.RequestLogAttempt{
@@ -31,7 +35,7 @@ func TestErrorDecisionMigrationPreservesAttemptsAndAddsDecisionContract(t *testi
 	}
 	if err := db.Omit(
 		"FailureOrigin", "FailureScope", "RetryDirective", "Effect", "RuleID",
-		"OutboundIdentityHeaders",
+		"CooldownUntilMS", "OutboundIdentityHeaders",
 	).Create(&attempt).Error; err != nil {
 		t.Fatalf("create legacy attempt: %v", err)
 	}
@@ -72,13 +76,13 @@ func TestErrorDecisionMigrationPreservesAttemptsAndAddsDecisionContract(t *testi
 		RetryDirective: "refresh_credential", Effect: "none", RuleID: "auth.refresh_required",
 		Action: "retry", ErrorSummary: "refresh required",
 	}
-	if err := db.Create(&newAttempt).Error; err != nil {
+	if err := db.Omit("CooldownUntilMS", "OutboundIdentityHeaders").Create(&newAttempt).Error; err != nil {
 		t.Fatalf("create decision attempt: %v", err)
 	}
 	invalid := newAttempt
 	invalid.Sequence = 3
 	invalid.FailureOrigin = "unknown"
-	if err := db.Create(&invalid).Error; err == nil {
+	if err := db.Omit("CooldownUntilMS", "OutboundIdentityHeaders").Create(&invalid).Error; err == nil {
 		t.Fatal("migration accepted an invalid failure origin")
 	}
 
@@ -88,6 +92,7 @@ func TestErrorDecisionMigrationPreservesAttemptsAndAddsDecisionContract(t *testi
 }
 
 func TestErrorDecisionMigrationPreservesAttemptIndexesAndForeignKey(t *testing.T) {
+	t.Parallel()
 	db := openInitialTestDatabase(t)
 	if err := migrations.Up0001(db); err != nil {
 		t.Fatal(err)

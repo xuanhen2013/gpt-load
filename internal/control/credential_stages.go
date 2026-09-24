@@ -28,6 +28,7 @@ const (
 	credentialStageAuthTTL      = 5 * time.Minute
 	credentialStageDeviceMaxTTL = 30 * time.Minute
 	credentialStageTombstoneTTL = 24 * time.Hour
+	maxCredentialStageIDs       = 1000
 	maxOAuthFileBytes           = 64 * 1024
 	maxDeviceAuthorizationURL   = 4096
 	maxDeviceAuthorizationCode  = 128
@@ -187,6 +188,11 @@ func (s *Service) ImportCredentialStage(
 	if err != nil {
 		return CredentialStageResult{}, err
 	}
+	normalized, err := normalizedSingleCredentialImport(channelID, raw, driver)
+	if err != nil {
+		return CredentialStageResult{}, err
+	}
+	defer clear(normalized)
 	var proxyConfig *outboundproxy.Config
 	if len(proxyConfigs) > 0 {
 		proxyConfig = proxyConfigs[0]
@@ -195,7 +201,7 @@ func (s *Service) ImportCredentialStage(
 	if err != nil {
 		return CredentialStageResult{}, err
 	}
-	return s.importCredentialStageWithNetwork(ctx, channelID, raw, driver, network)
+	return s.importCredentialStageWithNetwork(ctx, channelID, normalized, driver, network)
 }
 
 func (s *Service) ImportGroupCredentialStage(
@@ -208,11 +214,16 @@ func (s *Service) ImportGroupCredentialStage(
 	if err != nil {
 		return CredentialStageResult{}, err
 	}
+	normalized, err := normalizedSingleCredentialImport(channelID, raw, driver)
+	if err != nil {
+		return CredentialStageResult{}, err
+	}
+	defer clear(normalized)
 	network, err := s.groupCredentialStageNetworkContext(ctx, groupID, channelID)
 	if err != nil {
 		return CredentialStageResult{}, err
 	}
-	return s.importCredentialStageWithNetwork(ctx, channelID, raw, driver, network)
+	return s.importCredentialStageWithNetwork(ctx, channelID, normalized, driver, network)
 }
 
 func (s *Service) credentialStageImportDriver(
@@ -248,7 +259,7 @@ func (s *Service) importCredentialStageWithNetwork(
 	defer cancelImport()
 	credential, err := s.subscriptions.ImportCredential(importContext, channelID, raw)
 	if err != nil {
-		return CredentialStageResult{}, credentialImportAPIError(err)
+		return CredentialStageResult{}, classifyCredentialImportError(driver, err)
 	}
 	credential, err = s.prepareTransientSubscriptionCredential(ctx, channelID, driver, credential)
 	if err != nil {
@@ -286,7 +297,7 @@ func (s *Service) prepareTransientSubscriptionCredential(
 		}
 		return subscriptionruntime.Credential{}, app_errors.ErrCredentialAuthOutcomeUnknown
 	}
-	if refreshed.Identity() == "" || refreshed.Identity() != credential.Identity() {
+	if !subscriptionruntime.RefreshPreservesIdentity(driver, credential, refreshed) {
 		return subscriptionruntime.Credential{}, app_errors.ErrCredentialReauthorizationRequired
 	}
 	return refreshed, nil
@@ -382,8 +393,8 @@ func (s *Service) prepareReadySubscriptionStageCredential(
 		}
 		return subscriptionruntime.Credential{}, apiErr
 	}
-	if refreshed.Identity() == "" || refreshed.Identity() != credential.Identity() ||
-		s.subscriptionIdentityFingerprint(channel.ID(row.ChannelID), refreshed.Identity()) != row.IdentityFingerprint {
+	if !subscriptionruntime.RefreshPreservesIdentity(driver, credential, refreshed) ||
+		s.subscriptionIdentityFingerprint(channel.ID(row.ChannelID), credential.Identity()) != row.IdentityFingerprint {
 		if err := s.finishCredentialStageRefreshFailure(
 			ctx,
 			row.ID,
@@ -485,7 +496,7 @@ func (s *Service) finishCredentialStageRefresh(
 			"status": models.CredentialStageReady, "encrypted_payload": ciphertext,
 			"payload_schema_version": stagedSubscriptionSchemaV2,
 			"safe_summary_json":      models.JSON(summaryJSON),
-			"identity_fingerprint":   row.IdentityFingerprint,
+			"identity_fingerprint":   s.subscriptionIdentityFingerprint(channel.ID(row.ChannelID), credential.Identity()),
 			"expires_at_ms":          row.ExpiresAtMS,
 			"error_code":             "", "updated_at_ms": s.now().UnixMilli(),
 		})
@@ -1364,7 +1375,7 @@ func (s *Service) subscriptionIdentityFingerprint(channelID channel.ID, accountI
 }
 
 func normalizeCredentialStageIDs(values []string) ([]string, error) {
-	if len(values) == 0 || len(values) > maxCredentialLines {
+	if len(values) == 0 || len(values) > maxCredentialStageIDs {
 		return nil, app_errors.ErrValidation
 	}
 	normalized := make([]string, 0, len(values))

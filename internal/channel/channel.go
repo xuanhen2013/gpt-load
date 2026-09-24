@@ -43,6 +43,7 @@ const (
 	Alibaba          = spec.Alibaba
 	Volcengine       = spec.Volcengine
 	OpenRouter       = spec.OpenRouter
+	Jev              = spec.Jev
 	Groq             = spec.Groq
 	XAI              = spec.XAI
 )
@@ -142,6 +143,7 @@ type Descriptor struct {
 	Capabilities     CapabilityDescriptor `json:"capabilities"`
 	Routes           []RouteDescriptor    `json:"routes"`
 	ClientProtocols  []protocol.Protocol  `json:"client_protocols"`
+	DefaultBaseURLs  []string             `json:"default_base_urls"`
 }
 
 // Params is one validated, canonical channel parameter object.
@@ -212,12 +214,15 @@ const (
 	ProviderGoogleVertex         = spec.ProviderGoogleVertex
 	ProviderDeepSeek             = spec.ProviderDeepSeek
 	ProviderOpenRouter           = spec.ProviderOpenRouter
+	ProviderJev                  = spec.ProviderJev
 	ProviderGroq                 = spec.ProviderGroq
 	ProviderXAI                  = spec.ProviderXAI
 )
 
 // ResolvedTarget is the provider-neutral execution target derived from a channel preset.
 type ResolvedTarget struct {
+	ResponsesWebsocket execution.WebsocketCapabilities `json:"-"`
+
 	ChannelID         ID              `json:"channel_id"`
 	ProviderKind      ProviderKind    `json:"-"`
 	TargetConfig      json.RawMessage `json:"-"`
@@ -534,6 +539,8 @@ func (r *Registry) Resolve(id ID, raw json.RawMessage) (ResolvedTarget, error) {
 	}
 	targetConfig := resolvedTargetConfig(definition, params)
 	return ResolvedTarget{
+		ResponsesWebsocket: definition.responsesWebsocket,
+
 		ChannelID:         id,
 		ProviderKind:      definition.providerKind,
 		TargetConfig:      append(json.RawMessage(nil), targetConfig...),
@@ -648,12 +655,16 @@ func (s objectSchema) validate(prefix string, raw json.RawMessage) (map[string]s
 		if err != nil {
 			return nil, &ValidationError{Field: prefix + "." + field.descriptor.Key, Reason: err.Error()}
 		}
+		if normalized == "" && !field.descriptor.Required {
+			continue
+		}
 		values[field.descriptor.Key] = normalized
 	}
 	return values, nil
 }
 
 type definition struct {
+	responsesWebsocket      execution.WebsocketCapabilities
 	descriptor              Descriptor
 	params                  objectSchema
 	validateParams          func(json.RawMessage) (map[string]string, error)
@@ -767,6 +778,7 @@ func (r *Registry) lookup(id ID) (definition, bool) {
 }
 
 func cloneDescriptor(source Descriptor) Descriptor {
+	source.DefaultBaseURLs = append([]string{}, source.DefaultBaseURLs...)
 	source.SearchTerms = append([]string{}, source.SearchTerms...)
 	source.Notices = append([]NoticeDescriptor{}, source.Notices...)
 	source.ParamFields = append([]FieldDescriptor{}, source.ParamFields...)
