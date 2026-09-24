@@ -71,7 +71,8 @@ func (r *Runtime) Execute(parent context.Context, spec execution.AttemptSpec) (r
 		normalizeEmbeddingsAttemptResult(spec, &result)
 		normalizeRerankAttemptResult(spec, &result)
 		normalizeDecisionsAttemptResult(spec, &result)
-		if r.providerKind(spec) == channel.ProviderMultiProtocolGateway {
+		if kind := r.providerKind(spec); kind == channel.ProviderMultiProtocolGateway ||
+			(kind == channel.ProviderOpenAICompatible && spec.RouteMode == execution.RouteNative) {
 			normalizeGatewayProtocolProbeResult(spec, &result)
 		}
 	}()
@@ -554,7 +555,8 @@ func (r *Runtime) prepare(spec execution.AttemptSpec, stream bool) (preparedAtte
 				secrets:   secrets,
 			}, nil
 		}
-		if providerKind == channel.ProviderMultiProtocolGateway && spec.ClientProtocol != protocol.OpenAICompletions {
+		if (providerKind == channel.ProviderMultiProtocolGateway && spec.ClientProtocol != protocol.OpenAICompletions) ||
+			(providerKind == channel.ProviderOpenAICompatible && mode == channel.RouteNative && spec.ClientProtocol == protocol.OpenAIResponses) {
 			return prepareGatewayProtocolProbe(spec, resolved, provider, directKey, secrets)
 		}
 		request := newProbeRequest(provider, providerKind, spec.UpstreamModel)

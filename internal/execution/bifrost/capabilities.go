@@ -112,6 +112,16 @@ func nativeRouteImplemented(
 			return false
 		}
 	case channel.ProviderOpenAICompatible:
+		if clientProtocol == protocol.OpenAIResponses {
+			switch operation {
+			case execution.OperationResponsesCreate, execution.OperationProbe,
+				execution.OperationResponsesRetrieve, execution.OperationResponsesDelete,
+				execution.OperationResponsesInputItems:
+				return true
+			default:
+				return false
+			}
+		}
 		if clientProtocol == protocol.OpenAIEmbeddings {
 			return operation == execution.OperationEmbeddingsCreate || operation == execution.OperationProbe
 		}

@@ -53,7 +53,7 @@ func TestResponsesContinuationPinsCredentialWithoutSoftAffinity(t *testing.T) {
 
 func TestResponsesContinuationUsesNativeStorageCapabilities(t *testing.T) {
 	for _, channelID := range []channel.ID{
-		channel.OpenAI, channel.GPTLoad, channel.XAI, channel.NewAPI, channel.CLIProxyAPI, channel.Sub2API,
+		channel.OpenAI, channel.GPTLoad, channel.XAI, channel.NewAPI, channel.CLIProxyAPI, channel.Sub2API, channel.Volcengine,
 	} {
 		t.Run(string(channelID), func(t *testing.T) {
 			type observedRequest struct {
@@ -64,6 +64,9 @@ func TestResponsesContinuationUsesNativeStorageCapabilities(t *testing.T) {
 			requests := make(chan observedRequest, 8)
 			var count atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if channelID == channel.Volcengine && request.URL.Path != "/api/v3/responses" {
+					t.Errorf("Volcengine continuation path = %q", request.URL.Path)
+				}
 				var observed observedRequest
 				if err := json.NewDecoder(request.Body).Decode(&observed); err != nil {
 					t.Error(err)
@@ -77,7 +80,11 @@ func TestResponsesContinuationUsesNativeStorageCapabilities(t *testing.T) {
 			}))
 			defer server.Close()
 			handler, engine, sink := newContinuationFixture(t, newTestExecutionForwarder(t))
-			setContinuationChannel(t, handler, channelID, server.URL)
+			baseURL := server.URL
+			if channelID == channel.Volcengine {
+				baseURL += "/api/v3"
+			}
+			setContinuationChannel(t, handler, channelID, baseURL)
 			serveContinuation(t, engine, "gl-client", `{"model":"gpt-4o","input":"initial"}`, http.StatusOK)
 			serveContinuation(t, engine, "gl-client", `{"model":"gpt-4o","previous_response_id":"response-1","input":"continue"}`, http.StatusOK)
 			serveContinuation(t, engine, "gl-client", `{"model":"gpt-4o","previous_response_id":"response-2","input":"continue","store":false}`, http.StatusOK)

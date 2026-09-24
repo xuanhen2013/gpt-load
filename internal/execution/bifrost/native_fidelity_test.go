@@ -38,6 +38,7 @@ func TestNativeMessagesPreserveConversationAndExtensions(t *testing.T) {
 		{channel.OpenAICompatible, protocol.OpenAICompletions, "/custom/api/v4", "/chat/completions"},
 		{channel.ZhipuAI, protocol.OpenAICompletions, "/api/paas/v4", "/chat/completions"},
 		{channel.Volcengine, protocol.OpenAICompletions, "/api/v3", "/chat/completions"},
+		{channel.Volcengine, protocol.OpenAIResponses, "/api/v3", "/responses"},
 	}
 	for _, test := range tests {
 		for _, stream := range []bool{false, true} {

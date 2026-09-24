@@ -845,7 +845,7 @@ func TestEveryResponsesCreateChannelDeclaresStoreHandling(t *testing.T) {
 		SiliconFlow:      ResponsesStoreHandlingStateless,
 		ZhipuAI:          ResponsesStoreHandlingStateless,
 		Alibaba:          ResponsesStoreHandlingStateless,
-		Volcengine:       ResponsesStoreHandlingStateless,
+		Volcengine:       ResponsesStoreHandlingUpstreamManaged,
 		OpenRouter:       ResponsesStoreHandlingStateless,
 		Groq:             ResponsesStoreHandlingStateless,
 		XAI:              ResponsesStoreHandlingUpstreamManaged,

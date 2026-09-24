@@ -17,7 +17,7 @@ import (
 	"gpt-load/internal/protocol"
 )
 
-// 原生网关 Probe 复用透传，避开 SDK typed request 在取消时的 Model 读写竞争。
+// 原生协议 Probe 复用透传，避开 SDK typed request 在取消时的 Model 读写竞争。
 func prepareGatewayProtocolProbe(
 	spec execution.AttemptSpec,
 	resolved channel.ResolvedTarget,
@@ -56,6 +56,10 @@ func prepareGatewayProtocolProbe(
 	if err != nil || !configured {
 		failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "invalid multi-protocol gateway probe target")
 		return preparedAttempt{}, &failure
+	}
+	if resolved.ProviderKind == channel.ProviderOpenAICompatible {
+		// Compatible targets include the complete API prefix, such as Ark's /api/v3.
+		path = strings.TrimPrefix(path, "/v1")
 	}
 	headers := safePassthroughHeaders(spec.Header)
 	headers["Content-Type"] = "application/json"
