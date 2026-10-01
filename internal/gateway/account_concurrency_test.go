@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -52,5 +53,50 @@ func TestAccountConcurrencyLimiterWaitsForRelease(t *testing.T) {
 	release()
 	if !<-done {
 		t.Fatal("waiter did not acquire after release")
+	}
+}
+
+// 虚拟时钟确保验证的是账号等待预算，而不是请求 deadline 或真实调度延迟。
+func TestAccountConcurrencyLimiterWaitDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		waitTimeout    time.Duration
+		contextTimeout time.Duration
+		wantContextErr bool
+	}{
+		{"account timeout", 20 * time.Millisecond, 200 * time.Millisecond, false},
+		{"context timeout", 200 * time.Millisecond, 20 * time.Millisecond, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				limiter := newAccountConcurrencyLimiter()
+				release, ok := limiter.tryAcquire(t.Context(), "account", 1, 0)
+				if !ok {
+					t.Fatal("could not occupy account")
+				}
+				defer release()
+				ctx, cancel := context.WithTimeout(t.Context(), test.contextTimeout)
+				defer cancel()
+				started := time.Now()
+				if _, admitted := limiter.tryAcquire(ctx, "account", 1, test.waitTimeout); admitted {
+					t.Fatal("occupied account admitted a waiter")
+				}
+				if elapsed := time.Since(started); elapsed != 20*time.Millisecond {
+					t.Fatalf("wait elapsed = %s, want 20ms", elapsed)
+				}
+				if got := ctx.Err() != nil; got != test.wantContextErr {
+					t.Fatalf("context canceled = %t, want %t", got, test.wantContextErr)
+				}
+				if _, admitted := limiter.tryAcquire(t.Context(), "account", 1, 0); admitted {
+					t.Fatal("timed-out waiter released the holder's slot")
+				}
+				release()
+				releaseNext, admitted := limiter.tryAcquire(t.Context(), "account", 1, 0)
+				if !admitted {
+					t.Fatal("timed-out waiter leaked an account slot")
+				}
+				releaseNext()
+			})
+		})
 	}
 }

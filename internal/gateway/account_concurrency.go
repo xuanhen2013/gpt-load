@@ -59,6 +59,8 @@ func (l *accountConcurrencyLimiter) tryAcquire(ctx context.Context, key string, 
 		}
 		t := time.NewTimer(remaining)
 		select {
+		case <-t.C:
+			return nil, false
 		case <-ctx.Done():
 			if !t.Stop() {
 				<-t.C

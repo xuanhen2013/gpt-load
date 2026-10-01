@@ -234,14 +234,18 @@ func TestConcurrencyControlAndLocalQuery(t *testing.T) {
 
 func TestConcurrencyCancelSkipsAuditUnderSaturation(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		auditLimit int64
-		key        string
-		status     int
+		name            string
+		auditLimit      int64
+		accountLimit    int
+		accountOccupied bool
+		key             string
+		status          int
 	}{
-		{"unlimited audit group", 0, "gl-client", http.StatusOK},
-		{"full audit group", 1, "gl-client", http.StatusOK},
-		{"invalid access key", 1, "invalid-client", http.StatusUnauthorized},
+		{"unlimited audit group", 0, 0, false, "gl-client", http.StatusOK},
+		{"full audit group", 1, 0, false, "gl-client", http.StatusOK},
+		{"available account", 1, 1, false, "gl-client", http.StatusOK},
+		{"full account", 1, 1, true, "gl-client", http.StatusOK},
+		{"invalid access key", 1, 1, true, "invalid-client", http.StatusUnauthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := &scriptedForwarder{results: []UpstreamResult{auditReply(`{}`), auditReply(`{}`)}}
@@ -250,11 +254,34 @@ func TestConcurrencyCancelSkipsAuditUnderSaturation(t *testing.T) {
 			snapshot := h.manager.Current()
 			snapshot.Settings.GlobalConcurrencyLimit = 1
 			snapshot.Settings.DefaultAccessKeyConcurrencyLimit = 1
+			snapshot.Settings.AccountConcurrencyWaitTimeout = 0
 			for id, limit := range map[uint]int64{1: 1, 2: test.auditLimit} {
 				group := snapshot.Groups[id]
 				group.ConcurrencyLimit = limit
+				if id == 1 {
+					group.AccountConcurrencyLimit = test.accountLimit
+				}
 				snapshot.Groups[id] = group
 			}
+			wantAccountCount := 0
+			if test.accountOccupied {
+				releaseAccount, ok := h.accountConcurrency.tryAcquire(t.Context(), "1", 1, 0)
+				if !ok {
+					t.Fatal("cannot occupy account capacity")
+				}
+				defer releaseAccount()
+				wantAccountCount = 1
+			}
+			assertAccountCount := func() {
+				t.Helper()
+				h.accountConcurrency.mu.Lock()
+				count := h.accountConcurrency.active["1"]
+				h.accountConcurrency.mu.Unlock()
+				if count != wantAccountCount {
+					t.Fatalf("cancel changed account capacity: count=%d, want %d", count, wantAccountCount)
+				}
+			}
+			f.onCall = func(int) { assertAccountCount() }
 			releaseRequest, ok := h.manager.Concurrency().TryAcquireRequest(1, 1, 1)
 			if !ok {
 				t.Fatal("cannot occupy request capacity")
@@ -274,7 +301,9 @@ func TestConcurrencyCancelSkipsAuditUnderSaturation(t *testing.T) {
 			}
 			before := h.manager.Concurrency().Snapshot()
 			body := `{"input":"reviewable cancellation payload"}`
-			request := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_test/cancel", strings.NewReader(body))
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			request := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_test/cancel", strings.NewReader(body)).WithContext(ctx)
 			request.Header.Set("Authorization", "Bearer "+test.key)
 			response := httptest.NewRecorder()
 			engine.ServeHTTP(response, request)
@@ -288,6 +317,7 @@ func TestConcurrencyCancelSkipsAuditUnderSaturation(t *testing.T) {
 			} else if len(f.inputs) != 0 {
 				t.Fatal("unauthorized cancellation reached upstream")
 			}
+			assertAccountCount()
 			after := h.manager.Concurrency().Snapshot()
 			if after.Global != before.Global || after.AccessKeys[1] != before.AccessKeys[1] || after.Groups[1] != before.Groups[1] || after.Groups[2] != before.Groups[2] {
 				t.Fatal("cancel changed occupied capacity")

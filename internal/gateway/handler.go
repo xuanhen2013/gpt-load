@@ -1273,10 +1273,15 @@ func (handler *Handler) executeAttempts(
 			quotaAdmission.ticket = ticket
 			quotaAdmission.admitted = true
 		}
-		releaseAccount, admitted := handler.accountConcurrency.tryAcquire(ginContext.Request.Context(), accountKey, accountLimit, accountConcurrencyWaitTimeout)
-		if !admitted {
-			accountConcurrencyLimited = true
-			continue
+		releaseAccount := func() {}
+		// 取消已有响应不占用账号容量，必须能够在账号满额时转发。
+		if operation != execution.OperationResponsesCancel {
+			var admitted bool
+			releaseAccount, admitted = handler.accountConcurrency.tryAcquire(ginContext.Request.Context(), accountKey, accountLimit, accountConcurrencyWaitTimeout)
+			if !admitted {
+				accountConcurrencyLimited = true
+				continue
+			}
 		}
 		// Release immediately after this attempt so failover can use the same
 		// account slot. The deferred call is a panic/early-return safety net;
