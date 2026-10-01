@@ -1,3 +1,4 @@
+import { codexLiveModes, type CodexLiveMode } from '@shared/codex-live'
 import { readRedactionRules, type RedactionRule } from './request-redaction'
 import {
   readJev,
@@ -41,6 +42,10 @@ import {
 } from './auto-model'
 
 export const runtimeSettingKeys = [
+  'global_concurrency_limit',
+  'default_access_key_concurrency_limit',
+  'default_group_concurrency_limit',
+  'codex_live_mode',
   'route_strategy',
   'first_byte_timeout',
   'request_timeout',
@@ -70,10 +75,14 @@ export const runtimeSettingKeys = [
 export type RuntimeSettingKey = (typeof runtimeSettingKeys)[number]
 export type TimeoutSettingKey = Exclude<
   RuntimeSettingKey,
+  | 'codex_live_mode'
   | 'route_strategy'
   | 'account_concurrency_limit'
   | 'account_concurrency_wait_timeout'
   | 'codex_connection_reuse_enabled'
+  | 'global_concurrency_limit'
+  | 'default_access_key_concurrency_limit'
+  | 'default_group_concurrency_limit'
   | 'retry_count'
   | 'blacklist_threshold'
   | 'header_rules'
@@ -95,7 +104,9 @@ export type PolicyCountSettingKey =
   | 'blacklist_threshold'
   | 'account_concurrency_limit'
   | 'account_concurrency_wait_timeout'
-
+  | 'global_concurrency_limit'
+  | 'default_access_key_concurrency_limit'
+  | 'default_group_concurrency_limit'
 export interface CORSConfigDto {
   enabled: boolean
   allowed_origins: string[]
@@ -111,6 +122,7 @@ export interface SettingsValues {
   jev: JevConfig
   request_audit: AuditConfig
   auto_model?: AutoModelConfigDto
+  codex_live_mode: CodexLiveMode
   route_strategy: RouteStrategy
   first_byte_timeout: number
   request_timeout: number
@@ -118,6 +130,9 @@ export interface SettingsValues {
   account_concurrency_limit: number
   account_concurrency_wait_timeout: number
   codex_connection_reuse_enabled: boolean
+  global_concurrency_limit: number
+  default_access_key_concurrency_limit: number
+  default_group_concurrency_limit: number
   retry_count: number
   blacklist_threshold: number
   header_rules: HeaderRulesDto
@@ -150,6 +165,7 @@ export type SettingsPatch = Partial<{
   jev: JevConfig | null
   request_redaction: RedactionRule[] | null
   request_audit: AuditConfig | null
+  codex_live_mode: CodexLiveMode | null
   route_strategy: RouteStrategy | null
   first_byte_timeout: number | null
   request_timeout: number | null
@@ -157,6 +173,9 @@ export type SettingsPatch = Partial<{
   account_concurrency_limit: number | null
   account_concurrency_wait_timeout: number | null
   codex_connection_reuse_enabled: boolean | null
+  global_concurrency_limit: number | null
+  default_access_key_concurrency_limit: number | null
+  default_group_concurrency_limit: number | null
   retry_count: number | null
   blacklist_threshold: number | null
   header_rules: HeaderRulesDto | null
@@ -275,6 +294,7 @@ export function projectSettings(value: unknown): SettingsDto {
       jev: readJev(values.jev),
       request_audit: readAudit(values.request_audit),
       request_redaction: readRedactionRules(values.request_redaction),
+      codex_live_mode: projectEnum(values.codex_live_mode, codexLiveModes),
       route_strategy: projectEnum(values.route_strategy, routeStrategies),
       first_byte_timeout: projectSafeInteger(values.first_byte_timeout, { minimum: 1 }),
       request_timeout: projectSafeInteger(values.request_timeout, { minimum: 1 }),
@@ -287,6 +307,14 @@ export function projectSettings(value: unknown): SettingsDto {
         { minimum: 0, maximum: 9_223_372_036 },
       ),
       codex_connection_reuse_enabled: projectBoolean(values.codex_connection_reuse_enabled),
+      global_concurrency_limit: projectSafeInteger(values.global_concurrency_limit, { minimum: 0 }),
+      default_access_key_concurrency_limit: projectSafeInteger(
+        values.default_access_key_concurrency_limit,
+        { minimum: 0 },
+      ),
+      default_group_concurrency_limit: projectSafeInteger(values.default_group_concurrency_limit, {
+        minimum: 0,
+      }),
       retry_count: projectSafeInteger(values.retry_count, { minimum: 0 }),
       blacklist_threshold: projectSafeInteger(values.blacklist_threshold, { minimum: 0 }),
       header_rules: projectHeaderRules(values.header_rules),

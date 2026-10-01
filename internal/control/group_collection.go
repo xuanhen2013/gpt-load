@@ -41,6 +41,7 @@ type GroupCollectionCredentialCounts struct {
 }
 
 type GroupCollectionItem struct {
+	Concurrency      ConcurrencyView                 `json:"concurrency"`
 	PriceMultiplier  string                          `json:"price_multiplier"`
 	ID               uint                            `json:"id"`
 	Name             string                          `json:"name"`
@@ -137,6 +138,10 @@ func (s *Service) captureGroupCollectionRecords(
 	}
 	if err != nil {
 		return 0, nil, err
+	}
+	counts := s.manager.Concurrency().Snapshot()
+	for i := range records {
+		records[i].Concurrency = ConcurrencyView{Current: counts.Groups[records[i].ID], Limit: snapshot.Groups[records[i].ID].ConcurrencyLimit}
 	}
 	return observedAt.UnixMilli(), records, nil
 }
@@ -356,6 +361,12 @@ func mapGroupCollectionRecords(
 				err,
 			)
 		}
+		visibleModels := make([]GroupModel, 0, len(groupModels))
+		for _, model := range groupModels {
+			if !isBuiltInCodexLiveModel(group.ChannelID, model.ID) {
+				visibleModels = append(visibleModels, model)
+			}
+		}
 
 		catalog := snapshot.GroupCatalog[group.ID]
 		record := groupCollectionRecord{
@@ -364,14 +375,14 @@ func mapGroupCollectionRecords(
 				ID:              group.ID, Name: group.Name, ChannelID: channelID,
 				ConnectionType: normalizeGroupConnectionType(group.ConnectionType),
 				Params:         append(json.RawMessage(nil), params...),
-				ModelCount:     int64(len(groupModels)),
+				ModelCount:     int64(len(visibleModels)),
 			},
 			CreatedAtMS: group.CreatedAtMS,
 			Enabled:     group.Enabled,
 			Weight:      state.ConfiguredWeight(group.WeightManual),
-			ModelNames:  make([]string, 0, len(groupModels)),
+			ModelNames:  make([]string, 0, len(visibleModels)),
 		}
-		for _, model := range groupModels {
+		for _, model := range visibleModels {
 			name := model.ID
 			if model.Alias != "" {
 				name = model.Alias
@@ -508,7 +519,7 @@ func groupCollectionStatusAndReason(
 		reason := GroupUnavailableReasonNoAvailableCredentials
 		return GroupCollectionStatusUnavailable, &reason
 	}
-	if modelCount > 0 {
+	if modelCount > 0 || group.ChannelID == channel.Codex {
 		return GroupCollectionStatusAvailable, nil
 	}
 	reason := GroupUnavailableReasonNoModels

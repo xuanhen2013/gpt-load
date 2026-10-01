@@ -1,3 +1,5 @@
+import { readConcurrency } from '@shared/concurrency'
+import { codexLiveModes, type CodexLiveMode } from '@shared/codex-live'
 import { keepPreviousData, queryOptions, type QueryClient } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 
@@ -84,6 +86,7 @@ const groupModelItemFields = [
 const groupCollectionFields = ['observed_at_ms', 'summary', 'items', 'pagination'] as const
 const groupCollectionSummaryFields = ['total', 'available', 'unavailable', 'disabled'] as const
 const groupCollectionItemFields = [
+  'concurrency',
   'id',
   'name',
   'price_multiplier',
@@ -117,6 +120,7 @@ const groupCollectionStatuses = ['available', 'unavailable', 'disabled'] as cons
 const groupUnavailableReasons = ['no_available_credentials', 'no_models'] as const
 const connectionTypes = ['api_key', 'subscription'] as const
 const runtimeSettingFields = [
+  'concurrency_limit',
   'first_byte_timeout',
   'request_timeout',
   'stream_idle_timeout',
@@ -124,6 +128,7 @@ const runtimeSettingFields = [
   'blacklist_threshold',
   'header_rules',
   'affinity_enabled',
+  'codex_live_mode',
   'responses_websocket_enabled',
   'empty_response_retry',
 ] as const
@@ -139,9 +144,11 @@ export interface GroupRuntimeConfigDto {
   request_timeout?: number
   stream_idle_timeout?: number
   account_concurrency_limit?: number
+  concurrency_limit?: number
   blacklist_threshold?: number
   header_rules?: HeaderRulesDto
   affinity_enabled?: boolean
+  codex_live_mode?: CodexLiveMode
   responses_websocket_enabled?: boolean
   empty_response_retry?: boolean
   parameter_overrides?: ParameterOverrideRuleDto[]
@@ -152,9 +159,11 @@ export interface GroupEffectiveConfigDto {
   request_timeout: number
   stream_idle_timeout: number
   account_concurrency_limit: number
+  concurrency_limit: number
   blacklist_threshold: number
   header_rules: HeaderRulesDto
   affinity_enabled: boolean
+  codex_live_mode: CodexLiveMode
   responses_websocket_enabled: boolean
   empty_response_retry: boolean
 }
@@ -378,6 +387,9 @@ function projectRuntimeConfig(
       minimum: 0,
     })
   }
+  if (complete || Object.prototype.hasOwnProperty.call(record, 'concurrency_limit')) {
+    result.concurrency_limit = projectSafeInteger(record.concurrency_limit, { minimum: 0 })
+  }
   if (complete || Object.prototype.hasOwnProperty.call(record, 'blacklist_threshold')) {
     result.blacklist_threshold = projectSafeInteger(record.blacklist_threshold, { minimum: 0 })
   }
@@ -386,6 +398,9 @@ function projectRuntimeConfig(
   }
   if (complete || Object.prototype.hasOwnProperty.call(record, 'affinity_enabled')) {
     result.affinity_enabled = projectBoolean(record.affinity_enabled)
+  }
+  if (complete || Object.prototype.hasOwnProperty.call(record, 'codex_live_mode')) {
+    result.codex_live_mode = projectEnum(record.codex_live_mode, codexLiveModes)
   }
   if (complete || Object.prototype.hasOwnProperty.call(record, 'responses_websocket_enabled')) {
     result.responses_websocket_enabled = projectBoolean(record.responses_websocket_enabled)
@@ -546,6 +561,7 @@ function projectGroupCollectionItem(value: unknown): GroupCollectionItemDto {
     status,
     price_multiplier: projectPriceMultiplier(record.price_multiplier),
     model_count: modelCount,
+    concurrency: readConcurrency(record.concurrency),
     credential_counts: credentialCounts,
   }
 }

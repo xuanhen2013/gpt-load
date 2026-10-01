@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { ArrowRight, TriangleAlert } from '@lucide/vue'
+import { ArrowRight, Copy, TriangleAlert } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
 import type { HomeBase } from '@modern/api/home'
-import { AppBadge, AppButton, AppIcon } from '@modern/components/ui'
+import { AppBadge, AppButton, AppCopyValue, AppIcon, AppOverflowText } from '@modern/components/ui'
 import { formatCompactNumber } from '@modern/components/ui/format'
+import { useAuthSession } from '@modern/features/auth/auth-session'
+import { useMessages } from '@modern/app/messages'
 
 const props = defineProps<{ base: HomeBase; admin: boolean; attention: number }>()
 const { t, n, locale } = useI18n()
+const session = useAuthSession()
+const messages = useMessages()
 const compact = (value: number) => formatCompactNumber(value, locale.value)
 interface Fact {
   key: string
@@ -16,6 +20,21 @@ interface Fact {
   to?: RouteLocationRaw
 }
 const facts = computed<Fact[]>(() => [
+  ...((props.base.concurrency ?? props.base.currentKey?.concurrency)
+    ? [
+        {
+          key: 'concurrency',
+          value: (() => {
+            const value = (props.base.concurrency ?? props.base.currentKey!.concurrency)!
+            return (
+              n(value.current) +
+              ' / ' +
+              (value.limit === 0 ? t('concurrency.unlimited') : n(value.limit))
+            )
+          })(),
+        },
+      ]
+    : []),
   {
     key: 'groups',
     value: compact(props.base.groups),
@@ -38,9 +57,14 @@ const facts = computed<Fact[]>(() => [
     : []),
 ])
 const state = computed(() => {
+  if (!props.admin && props.base.currentKey?.cost_limit_status?.allowed === false)
+    return { key: 'home.stateKeyExhausted', tone: 'danger' as const }
   if (props.base.credentials === 0) return { key: 'home.statePending', tone: 'neutral' as const }
   if (props.base.available === 0) return { key: 'home.stateStalled', tone: 'danger' as const }
-  return { key: 'home.stateHealthy', tone: 'success' as const }
+  return {
+    key: props.admin ? 'home.stateHealthy' : 'home.stateKeyAvailable',
+    tone: 'success' as const,
+  }
 })
 const uptime = computed(() => {
   const minutes = Math.floor(Math.max(0, props.base.observedAt - props.base.startedAt) / 60000)
@@ -56,7 +80,7 @@ const uptime = computed(() => {
       <AppBadge :tone="state.tone" dot>{{ t(state.key) }}</AppBadge>
       <dl class="modern-home-status-facts">
         <div v-for="fact in facts" :key="fact.key">
-          <dt>{{ t('home.' + fact.key) }}</dt>
+          <dt>{{ t(fact.key === 'concurrency' ? 'concurrency.label' : 'home.' + fact.key) }}</dt>
           <dd>
             <RouterLink v-if="fact.to" :to="fact.to">{{ fact.value }}</RouterLink>
             <span v-else>{{ fact.value }}</span>
@@ -76,6 +100,21 @@ const uptime = computed(() => {
           <AppIcon :icon="ArrowRight" size="xs" />
         </RouterLink>
       </AppButton>
+    </div>
+    <div v-if="!admin && base.currentKey" class="modern-home-status-key">
+      <AppOverflowText class="modern-home-status-key-mask" :text="base.currentKey.masked_key" />
+      <AppCopyValue
+        :value="base.currentKey.masked_key"
+        :resolve-value="session.getAuthKey"
+        :label="t('accessKeys.copy')"
+        @copied="messages.show({ tone: 'success', text: t('ui.copy.success') })"
+      >
+        <template #trigger="{ copy, pending }">
+          <AppButton variant="primary" size="sm" :icon="Copy" :loading="pending" @click="copy()">{{
+            t('accessKeys.copy')
+          }}</AppButton>
+        </template>
+      </AppCopyValue>
     </div>
     <p class="modern-home-status-build">
       <span>{{ base.version }}</span>
@@ -141,6 +180,19 @@ const uptime = computed(() => {
   background: var(--modern-warning-soft);
   color: var(--modern-warning);
 }
+.modern-home-status-key {
+  display: flex;
+  align-items: center;
+  gap: var(--modern-space-3);
+  min-width: 0;
+  margin-inline-start: auto;
+}
+.modern-home-status-key-mask {
+  min-width: 0;
+  color: var(--modern-muted);
+  font-family: var(--modern-font-mono);
+  font-size: var(--modern-font-size-small);
+}
 .modern-home-status-build {
   display: flex;
   flex-wrap: wrap;
@@ -157,6 +209,11 @@ const uptime = computed(() => {
   font-family: var(--modern-font-mono);
 }
 @media (max-width: 760px) {
+  .modern-home-status-key {
+    width: 100%;
+    justify-content: space-between;
+    margin-inline-start: 0;
+  }
   .modern-home-status-facts {
     width: 100%;
     border-inline-start: 0;

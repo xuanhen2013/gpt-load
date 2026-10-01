@@ -1,3 +1,4 @@
+import type { CodexLiveMode } from '@shared/codex-live'
 import type { ProtocolValue } from './protocols'
 
 export type GroupProtocol = ProtocolValue
@@ -53,6 +54,7 @@ export interface GroupCollectionSummaryDto {
 }
 
 export interface GroupCollectionItemDto {
+  concurrency: import('@shared/concurrency').ConcurrencyView
   id: number
   name: string
   price_multiplier: string
@@ -115,9 +117,11 @@ export interface GroupRuntimeConfigDto {
   request_timeout?: number
   stream_idle_timeout?: number
   account_concurrency_limit?: number
+  concurrency_limit?: number
   blacklist_threshold?: number
   header_rules?: HeaderRulesDto
   affinity_enabled?: boolean
+  codex_live_mode?: CodexLiveMode
   responses_websocket_enabled?: boolean
   empty_response_retry?: boolean
   parameter_overrides?: ParameterOverrideRuleDto[]
@@ -128,9 +132,11 @@ export interface GroupEffectiveConfigDto {
   request_timeout: number
   stream_idle_timeout: number
   account_concurrency_limit: number
+  concurrency_limit: number
   blacklist_threshold: number
   header_rules: HeaderRulesDto
   affinity_enabled: boolean
+  codex_live_mode: CodexLiveMode
   responses_websocket_enabled: boolean
   empty_response_retry: boolean
 }
@@ -542,6 +548,8 @@ export interface HealthAccessKeyCostLimitDto {
 }
 
 export interface AccessKeyDto {
+  concurrency: import('@shared/concurrency').ConcurrencyView
+  concurrency_limit: number | null
   id: number
   name: string
   price_multiplier: string

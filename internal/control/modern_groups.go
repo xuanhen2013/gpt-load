@@ -14,6 +14,7 @@ import (
 
 // ModernGroupItem 只提供工作区需要的展示事实，不改变分组的配置或健康状态。
 type ModernGroupItem struct {
+	Concurrency            ConcurrencyView                 `json:"concurrency"`
 	ID                     uint                            `json:"id"`
 	Name                   string                          `json:"name"`
 	ChannelID              channel.ID                      `json:"channel_id"`
@@ -66,7 +67,8 @@ func (s *Service) ListModernGroups(ctx context.Context) (ModernGroupsResponse, e
 			endpoint = definition.DefaultBaseURL
 		}
 		result.Items = append(result.Items, ModernGroupItem{
-			ID: record.ID, Name: record.Name, ChannelID: record.ChannelID,
+			Concurrency: record.Concurrency,
+			ID:          record.ID, Name: record.Name, ChannelID: record.ChannelID,
 			ChannelName: definition.Name, ChannelMark: definition.Mark, ChannelIcon: definition.Icon,
 			ConnectionType: record.ConnectionType, Endpoint: endpoint,
 			Enabled: record.Enabled, Availability: modernGroupAvailability(record),
@@ -87,7 +89,7 @@ func modernGroupAvailability(record groupCollectionRecord) string {
 		return "paused"
 	case record.CredentialCounts.Total == 0:
 		return "no_credentials"
-	case record.ModelCount == 0:
+	case record.ModelCount == 0 && record.ChannelID != channel.Codex:
 		return "no_models"
 	case record.CredentialCounts.Available == 0:
 		return "unavailable"

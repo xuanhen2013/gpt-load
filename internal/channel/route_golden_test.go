@@ -12,7 +12,8 @@ import (
 
 // TestBuiltInRouteGolden freezes the explicit built-in route contract. It is
 // based on the pre-module behavior with the intentionally unreachable
-// OpenAI Responses model-list routes removed.
+// OpenAI Responses model-list routes removed and the fork's native Volcengine
+// Responses lifecycle routes retained.
 func TestBuiltInRouteGolden(t *testing.T) {
 	t.Parallel()
 
@@ -41,7 +42,7 @@ func TestBuiltInRouteGolden(t *testing.T) {
 	}
 
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(got, "\n"))))
-	const wantDigest = "915b3f6e158464fc6d615a228e0a8fdc4dbb4ea3fa927e324e5de41e191519d0"
+	const wantDigest = "bdcbc0e80baa03d159456c563bb04ceda88fb572a098e4922f5e88d27889009e"
 	if digest != wantDigest {
 		t.Fatalf("built-in routes changed: digest = %s, want %s\n%s", digest, wantDigest, strings.Join(got, "\n"))
 	}
@@ -62,8 +63,18 @@ func allGoldenOperations() []execution.Operation {
 		execution.OperationImagesGenerate,
 		execution.OperationImagesEdit,
 		execution.OperationEmbeddingsCreate,
+		execution.OperationLiveCall,
 		execution.OperationRerank,
 		execution.OperationDecisionsCreate,
+		execution.OperationMistralOCR,
+		execution.OperationMistralFIM,
+		execution.OperationMistralAudioTranscription,
+		execution.OperationMistralAudioSpeech,
+		execution.OperationMistralModeration,
+		execution.OperationMistralChatModeration,
+		execution.OperationMistralClassification,
+		execution.OperationMistralVoices,
+		execution.OperationMistralRealtimeTranscription,
 		execution.OperationListModels,
 		execution.OperationProbe,
 	}

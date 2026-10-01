@@ -24,11 +24,13 @@ import (
 	"gpt-load/internal/execution"
 	"gpt-load/internal/health"
 	"gpt-load/internal/httplifecycle"
+	"gpt-load/internal/platform/config"
 	"gpt-load/internal/platform/contentcoding"
 	"gpt-load/internal/platform/encryption"
 	platformheader "gpt-load/internal/platform/httpheader"
 	"gpt-load/internal/platform/utils"
 	"gpt-load/internal/pricing"
+	"gpt-load/internal/protocol"
 	"gpt-load/internal/ratelimit"
 	"gpt-load/internal/requestaudit"
 	"gpt-load/internal/requestredact"
@@ -122,6 +124,9 @@ type Handler struct {
 	responseBindings    *state.ResponseBindings
 	websocketLimits     websocketLimits
 	websocketBudget     websocketBudget
+	liveOpener          execution.LiveOpener
+	liveSessions        *liveSessions
+	liveConfig          config.CodexLiveConfig
 }
 
 func (handler *Handler) freezeAttemptPricing(
@@ -179,6 +184,7 @@ func NewHandler(
 		affinityCache:    affinity.NewCache(),
 		responseBindings: state.NewResponseBindings(),
 		websocketLimits:  defaultWebsocketLimits(),
+		liveSessions:     newLiveSessions(),
 		newRequestID:     newRequestID,
 		requestNow:       time.Now,
 		now:              time.Now,
@@ -425,13 +431,33 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 		return
 	}
 	if requestContext.selectedRoute.Kind == endpointUsage {
+		release, failure := handler.acquireRequestConcurrency(requestContext.accessKey.ID)
+		if failure != nil {
+			_ = handler.writeReason(ginContext, *failure)
+			return
+		}
+		defer release()
 		handler.handleUsage(ginContext, requestContext)
+		return
+	}
+	if requestContext.selectedRoute.Protocol == protocol.CodexLive {
+		handler.handleCodexLive(ginContext, requestContext)
+		return
+	}
+	if requestContext.selectedRoute.Kind == endpointMistralRealtime {
+		handler.handleMistralRealtime(ginContext, requestContext)
 		return
 	}
 	if websocketIntent(ginContext.Request) {
 		handler.handleWebsocket(ginContext, requestContext)
 		return
 	}
+	var releaseRequest func()
+	defer func() {
+		if releaseRequest != nil {
+			releaseRequest()
+		}
+	}()
 	requestStarted := requestContext.requestStarted
 	snapshot := requestContext.snapshot
 	accessKey := requestContext.accessKey
@@ -483,6 +509,15 @@ func (handler *Handler) Handle(ginContext *gin.Context) {
 			}
 			recorder.emit()
 		}()
+	}
+
+	if !concurrencyControlRequest(ginContext.Request, selectedRoute) {
+		var failure *reason
+		releaseRequest, failure = handler.acquireRequestConcurrency(accessKey.ID)
+		if failure != nil {
+			handler.completeReason(ginContext, recorder, *failure)
+			return
+		}
 	}
 
 	if quotaAdmission != nil && handler.accessQuota != nil {
@@ -887,6 +922,7 @@ func (handler *Handler) executeAttempts(
 			handler.completeReason(ginContext, recorder, reasonRedactionFailed)
 			return
 		}
+		defer handler.logUnrestoredRedactionTokens(redactionCipher, recorder.requestID)
 	}
 	type deferredAttempt struct {
 		result        UpstreamResult
@@ -910,6 +946,7 @@ func (handler *Handler) executeAttempts(
 	var refreshRetry *credentialRefreshRetry
 	authRefreshReplayUsed := false
 	type preparedRequest struct {
+		configuredParameters  []string
 		request               *dialect.ParsedRequest
 		observations          dialect.RequestMetadata
 		observationsAvailable bool
@@ -957,6 +994,7 @@ func (handler *Handler) executeAttempts(
 			cachedPrepared = &prepared
 			return prepared
 		}
+		prepared.configuredParameters = selection.Group.ParameterOverrides.ConfiguredFields(selectedDialect.Protocol(), originalMetadata.Operation, routeModel)
 		if int64(len(body)) > maxRequestBodyBytes {
 			prepared.err = errRequestTooLarge
 			cachedPrepared = &prepared
@@ -1245,10 +1283,28 @@ func (handler *Handler) executeAttempts(
 		// the limiter's release closure is idempotent.
 		defer releaseAccount()
 
-		if failure := handler.checkRequestAudit(ginContext.Request.Context(), snapshot, snapshot.AccessKeysByID[recorder.accessKeyID], prepared.request.Body, recorder, func() *reason { return handler.admitAutoQuota(snapshot, quotaAdmission) }); failure != nil {
-			handler.completeReason(ginContext, recorder, *failure)
+		// 取消已有响应不创建内容，不能启动新的审查调用或被审查组满额阻止。
+		if operation != execution.OperationResponsesCancel {
+			if failure := handler.checkRequestAudit(ginContext.Request.Context(), snapshot, snapshot.AccessKeysByID[recorder.accessKeyID], prepared.request.Body, recorder, func() *reason { return handler.admitAutoQuota(snapshot, quotaAdmission) }); failure != nil {
+				handler.completeReason(ginContext, recorder, *failure)
+				return
+			}
+		}
+		if ginContext.Request.Context().Err() != nil {
+			recorder.completeCanceled(ginContext.Request.Context(), 0, lastAttemptIndex)
 			return
 		}
+		releaseGroup := func() {}
+		if operation != execution.OperationResponsesCancel {
+			var failure *reason
+			releaseGroup, failure = handler.acquireGroupConcurrency(selection.GroupID)
+			if failure != nil {
+				handler.completeReason(ginContext, recorder, *failure)
+				return
+			}
+		}
+		// 异常退出也收尾；普通路径在本次执行结束后立即归还，幂等保护防止重复释放。
+		defer releaseGroup()
 		attemptSequence++
 		forwardAttempts++
 		if attemptSequence == 1 && (originalMetadata.PreviousResponseID != "" ||
@@ -1264,9 +1320,14 @@ func (handler *Handler) executeAttempts(
 		if recorder != nil && recorder.requestID != "" {
 			executionRequestID = recorder.requestID
 		}
+		restoreCipher := redactionCipher
+		if !redactionMayRestore(prepared.request, snapshot.RequestRedaction.Reversible()) {
+			restoreCipher = nil
+		}
 		input := ForwardInput{
-			Dialect: selectedDialect, ObserveUsage: attemptObservations.ObserveUsage,
-			RedactionCipher: redactionCipher,
+			ConfiguredParameters: prepared.configuredParameters,
+			Dialect:              selectedDialect, ObserveUsage: attemptObservations.ObserveUsage,
+			RedactionCipher: restoreCipher,
 			Group:           selection.Group, APIKey: normalizedCredential.apiKey,
 			CredentialSecrets: normalizedCredential.secrets, Request: prepared.request,
 			ExternalModel:            externalModel,
@@ -1319,6 +1380,7 @@ func (handler *Handler) executeAttempts(
 			result = handler.forwarder.Forward(ginContext.Request.Context(), input)
 		}
 		releaseAccount()
+		releaseGroup()
 		result = normalizeUpstreamResultContract(result)
 		if !stream && result.HasResponse() && !result.ProviderErrorBeforeCommit &&
 			result.DispatchState != execution.DispatchLocal &&

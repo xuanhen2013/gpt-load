@@ -155,7 +155,7 @@ func (s *codexWebsocketSession) ExecuteTurn(ctx context.Context, payload []byte,
 	if result.DispatchState == codex.WSMaybeSent {
 		state = execution.DispatchMaybeSent
 	}
-	return execution.WebsocketResult{DispatchState: state, Header: result.Headers, HeaderObservedAt: result.HeaderObservedAt, Error: codexWebsocketEvidence(ctx, err)}
+	return execution.WebsocketResult{AppliedReasoning: appliedReasoning(result.AppliedReasoningEffort, result.AppliedReasoningMode, result.AppliedReasoningBudgetTokens), DispatchState: state, Header: result.Headers, HeaderObservedAt: result.HeaderObservedAt, Error: codexWebsocketEvidence(ctx, err)}
 }
 
 func codexWebsocketEvidence(ctx context.Context, err error) *execution.ErrorEvidence {
@@ -187,8 +187,23 @@ func codexWebsocketEvidence(ctx context.Context, err error) *execution.ErrorEvid
 			}
 		}
 		if failure.DispatchState == codex.WSNotSent && e.StatusCode == 0 {
-			e.Kind = execution.ErrorKindInvalidRequest
-			e.OriginHint = execution.ErrorOriginInternal
+			switch failure.Code {
+			case "invalid_session_options", "invalid_proxy", "session_busy", "continuation_requires_session", "request_too_large", "invalid_request", "unsupported_request":
+				e.Kind = execution.ErrorKindInvalidRequest
+				e.OriginHint = execution.ErrorOriginInternal
+			}
+		}
+		if e.StatusCode == 0 {
+			switch failure.Code {
+			case "invalid_event", "event_too_large":
+				e.Kind = execution.ErrorKindProvider
+				e.Code = "upstream_protocol_error"
+			case "timeout":
+				e.Kind = execution.ErrorKindTimeout
+			case "canceled":
+				e.Kind = execution.ErrorKindCanceled
+				e.OriginHint = execution.ErrorOriginDownstream
+			}
 		}
 		if strings.EqualFold(failure.UpstreamCode, "model_at_capacity") || strings.EqualFold(failure.UpstreamCode, "model_is_at_capacity") {
 			e.Hint = execution.FailureHintCandidateUnavailable

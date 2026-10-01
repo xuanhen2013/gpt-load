@@ -24,6 +24,7 @@ export const zhCN = {
   noUsage: '暂无请求统计',
   full: {
     actions: '全量操作',
+    import: '从文件导入',
     enable: '启用全部',
     disable: '停用全部',
     restore: '恢复全部',
@@ -37,6 +38,13 @@ export const zhCN = {
       restore: '已恢复 {count} 个凭据',
       download: '已下载 {count} 个凭据',
     },
+  },
+  fileImport: {
+    description: '将文件中的 {count} 条凭据添加到当前分组，已有重复凭据会自动跳过。',
+    empty: '所选文件中没有凭据。',
+    too_large: '导入内容超过 32 MiB，请拆分后导入。',
+    too_many: '单次最多导入 5000 条凭据，请拆分后导入。',
+    read_failed: '无法读取文件，请选择 UTF-8 编码的 TXT、JSON 或 JSONL 文件。',
   },
   scheduling: '调度',
   modelsAndAliases: '模型与别名',
@@ -138,6 +146,7 @@ export const zhCN = {
   accountConcurrencyHelp: '留空继承分组设置；0 表示不限。',
   runtimeFields: {
     account_concurrency_limit: '账号并发上限',
+    concurrency_limit: '并发上限',
     first_byte_timeout: '首响应超时',
     request_timeout: '单次请求超时',
     stream_idle_timeout: '流空闲超时',
@@ -178,6 +187,7 @@ export const enUS: typeof zhCN = {
   noUsage: 'No request statistics',
   full: {
     actions: 'All credentials',
+    import: 'Import from files',
     enable: 'Enable all',
     disable: 'Disable all',
     restore: 'Restore all',
@@ -192,6 +202,14 @@ export const enUS: typeof zhCN = {
       restore: 'Restored {count} credentials',
       download: 'Downloaded {count} credentials',
     },
+  },
+  fileImport: {
+    description:
+      'Add {count} credentials from the files to this group. Existing duplicates will be skipped.',
+    empty: 'The selected files contain no credentials.',
+    too_large: 'The import exceeds 32 MiB. Split it into smaller files.',
+    too_many: 'Import up to 5000 credentials at a time. Split the files and retry.',
+    read_failed: 'Unable to read the files. Choose UTF-8 encoded TXT, JSON or JSONL files.',
   },
   scheduling: 'Routing',
   modelsAndAliases: 'Models and aliases',
@@ -296,6 +314,7 @@ export const enUS: typeof zhCN = {
   accountConcurrencyHelp: 'Leave empty to inherit the group setting; 0 means unlimited.',
   runtimeFields: {
     account_concurrency_limit: 'Account concurrency limit',
+    concurrency_limit: 'Concurrency limit',
     first_byte_timeout: 'First response timeout',
     request_timeout: 'Request timeout',
     stream_idle_timeout: 'Stream idle timeout',
@@ -332,6 +351,7 @@ export const jaJP: typeof zhCN = {
   noUsage: 'リクエスト統計はありません',
   full: {
     actions: '全件操作',
+    import: 'ファイルからインポート',
     enable: 'すべて有効化',
     disable: 'すべて無効化',
     restore: 'すべて復旧',
@@ -345,6 +365,15 @@ export const jaJP: typeof zhCN = {
       restore: '{count} 件を復旧しました',
       download: '{count} 件をダウンロードしました',
     },
+  },
+  fileImport: {
+    description:
+      'ファイル内の {count} 件の認証情報をこのグループに追加します。既存の重複はスキップします。',
+    empty: '選択したファイルに認証情報がありません。',
+    too_large: 'インポート内容が 32 MiB を超えています。ファイルを分割してください。',
+    too_many: '一度にインポートできる認証情報は 5000 件までです。ファイルを分割してください。',
+    read_failed:
+      'ファイルを読み込めません。UTF-8 の TXT、JSON または JSONL ファイルを選択してください。',
   },
   scheduling: 'ルーティング',
   modelsAndAliases: 'モデルとエイリアス',
@@ -450,6 +479,7 @@ export const jaJP: typeof zhCN = {
   accountConcurrencyHelp: '空欄でグループ設定を継承。0 は無制限。',
   runtimeFields: {
     account_concurrency_limit: 'アカウント同時実行上限',
+    concurrency_limit: '同時実行数の上限',
     first_byte_timeout: '初回応答タイムアウト',
     request_timeout: 'リクエストタイムアウト',
     stream_idle_timeout: 'ストリーム待機タイムアウト',

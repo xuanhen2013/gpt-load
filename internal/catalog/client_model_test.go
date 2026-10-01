@@ -14,6 +14,25 @@ func TestCodexModelCatalogSnapshotDigest(t *testing.T) {
 	}
 }
 
+func TestCodexClientModelUsesGPT61SolTemplate(t *testing.T) {
+	model, automatic, _, err := BuildCodexClientModel("gpt-6.1-sol", 0, ClientModelOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if automatic.DisplayName != "GPT-6.1-Sol" ||
+		!reflect.DeepEqual(automatic.SupportedReasoningLevels, []string{"low", "medium", "high", "xhigh", "max", "ultra"}) ||
+		!reflect.DeepEqual(automatic.InputModalities, []string{"text", "image"}) {
+		t.Fatalf("GPT-6.1 Sol profile = %#v", automatic)
+	}
+	if model["minimal_client_version"] != "0.153.0" || model["tool_mode"] != "code_mode_only" ||
+		model["multi_agent_version"] != "v2" || model["use_responses_lite"] != true ||
+		model["supports_reasoning_effort_updates"] != true || model["default_reasoning_level"] != "low" ||
+		model["context_window"] != json.Number("272000") || model["max_context_window"] != json.Number("872000") {
+		t.Fatal("GPT-6.1 Sol did not retain its native capabilities")
+	}
+	assertCodexInstructionFields(t, model)
+}
+
 func TestCodexClientModelUsesGPT6Templates(t *testing.T) {
 	for _, test := range []struct {
 		id     string
@@ -91,7 +110,7 @@ func TestCodexClientModelFallsBackToGPT55(t *testing.T) {
 }
 
 func TestCodexClientModelMakesConfiguredHiddenTemplateSelectable(t *testing.T) {
-	model, _, _, err := BuildCodexClientModel("gpt-reserve", 0, ClientModelOverrides{})
+	model, _, _, err := BuildCodexClientModel("codex-auto-review", 0, ClientModelOverrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,3 +167,16 @@ func assertCodexInstructionFields(t *testing.T, model map[string]any) {
 }
 
 func ptr(value string) *string { return &value }
+
+func TestCodexClientUpdateCapabilities(t *testing.T) {
+	for _, id := range []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"} {
+		model, _, _, err := BuildCodexClientModel(id, 0, ClientModelOverrides{})
+		if err != nil || model["supports_reasoning_effort_updates"] != true {
+			t.Errorf("%s capability = %v, %v", id, model["supports_reasoning_effort_updates"], err)
+		}
+	}
+	model, _, _, _ := BuildCodexClientModel("unknown-model", 0, ClientModelOverrides{})
+	if model["supports_reasoning_effort_updates"] == true {
+		t.Fatal("unknown model advertises updates")
+	}
+}

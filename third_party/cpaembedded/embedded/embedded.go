@@ -19,15 +19,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	codexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
-	internalexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	codexauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
+	internalexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 const (
@@ -75,6 +75,7 @@ func IsDefinitiveRefreshRejection(code string) bool {
 // Callers must encrypt the complete value before persistence.
 type CodexCredential struct {
 	Type         string `json:"type"`
+	PlanType     string `json:"plan_type,omitempty"`
 	IDToken      string `json:"id_token,omitempty"`
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -171,22 +172,26 @@ type QuotaSignalObservation struct {
 }
 
 type ExecuteResponse struct {
-	StatusCode              int
-	Payload                 []byte
-	Headers                 http.Header
-	AppliedReasoningEffort  string
-	UpstreamRequestPath     string
-	QuotaSignals            QuotaSignalObservation
-	OutboundIdentityHeaders string
+	StatusCode                   int
+	Payload                      []byte
+	Headers                      http.Header
+	AppliedReasoningEffort       string
+	AppliedReasoningMode         string
+	AppliedReasoningBudgetTokens *int64
+	OutboundIdentityHeaders      string
+	UpstreamRequestPath          string
+	QuotaSignals                 QuotaSignalObservation
 }
 
 type ExecuteStreamResponse struct {
-	Headers                 http.Header
-	Chunks                  <-chan ExecuteStreamChunk
-	AppliedReasoningEffort  string
-	UpstreamRequestPath     string
-	QuotaSignals            QuotaSignalObservation
-	OutboundIdentityHeaders string
+	Headers                      http.Header
+	Chunks                       <-chan ExecuteStreamChunk
+	AppliedReasoningEffort       string
+	AppliedReasoningMode         string
+	AppliedReasoningBudgetTokens *int64
+	OutboundIdentityHeaders      string
+	UpstreamRequestPath          string
+	QuotaSignals                 QuotaSignalObservation
 }
 
 type ExecuteStreamChunk struct {
@@ -266,6 +271,9 @@ func RefreshCodexCredentialOnce(ctx context.Context, current CodexCredential, op
 	if refreshed.RefreshToken == "" {
 		refreshed.RefreshToken = current.RefreshToken
 	}
+	if refreshed.PlanType == "" {
+		refreshed.PlanType = current.PlanType
+	}
 	if refreshed.IDToken == "" {
 		refreshed.IDToken = current.IDToken
 	}
@@ -314,6 +322,8 @@ func ParseCodexCredentialJSON(raw []byte) (CodexCredential, error) {
 	credential.IDToken = strings.TrimSpace(credential.IDToken)
 	credential.AccountID = strings.TrimSpace(credential.AccountID)
 	credential.Email = strings.TrimSpace(credential.Email)
+	// 读取旧凭据时不能补入令牌派生字段，否则持久化内容指纹会改变。
+	credential.PlanType = safeCodexPlan(credential.PlanType)
 	credential.Expire = strings.TrimSpace(credential.Expire)
 	credential.LastRefresh = strings.TrimSpace(credential.LastRefresh)
 	if err := validateCredential(credential); err != nil {
@@ -443,19 +453,23 @@ func (e *CodexHTTPExecutor) ExecuteCanonical(ctx context.Context, credentialID s
 	}, codexExecutionOptions(request, format, false))
 	if err != nil {
 		return ExecuteResponse{
-			Headers:                 observation.responseHeaders(),
-			AppliedReasoningEffort:  observation.reasoningEffort(),
-			UpstreamRequestPath:     observation.upstreamRequestPath(),
-			QuotaSignals:            observation.quotaSignalObservation(),
-			OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
+			Headers:                      observation.responseHeaders(),
+			AppliedReasoningEffort:       observation.reasoningEffort(),
+			AppliedReasoningMode:         observation.reasoningMode(),
+			AppliedReasoningBudgetTokens: observation.reasoningBudgetTokens(),
+			OutboundIdentityHeaders:      observation.outboundIdentityHeaders(),
+			UpstreamRequestPath:          observation.upstreamRequestPath(),
+			QuotaSignals:                 observation.quotaSignalObservation(),
 		}, err
 	}
 	return ExecuteResponse{
 		Payload: append([]byte(nil), response.Payload...), Headers: response.Headers.Clone(),
-		AppliedReasoningEffort:  observation.reasoningEffort(),
-		UpstreamRequestPath:     observation.upstreamRequestPath(),
-		QuotaSignals:            observation.quotaSignalObservation(),
-		OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
+		AppliedReasoningEffort:       observation.reasoningEffort(),
+		AppliedReasoningMode:         observation.reasoningMode(),
+		AppliedReasoningBudgetTokens: observation.reasoningBudgetTokens(),
+		OutboundIdentityHeaders:      observation.outboundIdentityHeaders(),
+		UpstreamRequestPath:          observation.upstreamRequestPath(),
+		QuotaSignals:                 observation.quotaSignalObservation(),
 	}, nil
 }
 
@@ -478,9 +492,11 @@ func (e *CodexHTTPExecutor) CountTokensCanonical(ctx context.Context, credential
 	}, codexExecutionOptions(request, format, false))
 	if err != nil {
 		return ExecuteResponse{
-			AppliedReasoningEffort:  observation.reasoningEffort(),
-			UpstreamRequestPath:     observation.upstreamRequestPath(),
-			OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
+			AppliedReasoningEffort:       observation.reasoningEffort(),
+			AppliedReasoningMode:         observation.reasoningMode(),
+			AppliedReasoningBudgetTokens: observation.reasoningBudgetTokens(),
+			OutboundIdentityHeaders:      observation.outboundIdentityHeaders(),
+			UpstreamRequestPath:          observation.upstreamRequestPath(),
 		}, err
 	}
 	payload := append([]byte(nil), response.Payload...)
@@ -488,17 +504,21 @@ func (e *CodexHTTPExecutor) CountTokensCanonical(ctx context.Context, credential
 		payload, err = normalizeCodexResponsesTokenCount(payload)
 		if err != nil {
 			return ExecuteResponse{
-				AppliedReasoningEffort:  observation.reasoningEffort(),
-				UpstreamRequestPath:     observation.upstreamRequestPath(),
-				OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
+				AppliedReasoningEffort:       observation.reasoningEffort(),
+				AppliedReasoningMode:         observation.reasoningMode(),
+				AppliedReasoningBudgetTokens: observation.reasoningBudgetTokens(),
+				OutboundIdentityHeaders:      observation.outboundIdentityHeaders(),
+				UpstreamRequestPath:          observation.upstreamRequestPath(),
 			}, err
 		}
 	}
 	return ExecuteResponse{
 		Payload: payload, Headers: response.Headers.Clone(),
-		AppliedReasoningEffort:  observation.reasoningEffort(),
-		UpstreamRequestPath:     observation.upstreamRequestPath(),
-		OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
+		AppliedReasoningEffort:       observation.reasoningEffort(),
+		AppliedReasoningMode:         observation.reasoningMode(),
+		AppliedReasoningBudgetTokens: observation.reasoningBudgetTokens(),
+		OutboundIdentityHeaders:      observation.outboundIdentityHeaders(),
+		UpstreamRequestPath:          observation.upstreamRequestPath(),
 	}, nil
 }
 
@@ -545,11 +565,13 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 	}, codexExecutionOptions(request, format, true))
 	if err != nil {
 		return &ExecuteStreamResponse{
-			Headers:                 observation.responseHeaders(),
-			AppliedReasoningEffort:  observation.reasoningEffort(),
-			UpstreamRequestPath:     observation.upstreamRequestPath(),
-			QuotaSignals:            observation.quotaSignalObservation(),
-			OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
+			Headers:                      observation.responseHeaders(),
+			AppliedReasoningEffort:       observation.reasoningEffort(),
+			AppliedReasoningMode:         observation.reasoningMode(),
+			AppliedReasoningBudgetTokens: observation.reasoningBudgetTokens(),
+			OutboundIdentityHeaders:      observation.outboundIdentityHeaders(),
+			UpstreamRequestPath:          observation.upstreamRequestPath(),
+			QuotaSignals:                 observation.quotaSignalObservation(),
 		}, err
 	}
 	chunks := make(chan ExecuteStreamChunk)
@@ -565,10 +587,12 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 	}()
 	return &ExecuteStreamResponse{
 		Headers: response.Headers.Clone(), Chunks: chunks,
-		AppliedReasoningEffort:  observation.reasoningEffort(),
-		UpstreamRequestPath:     observation.upstreamRequestPath(),
-		QuotaSignals:            observation.quotaSignalObservation(),
-		OutboundIdentityHeaders: observation.outboundIdentityHeaders(),
+		AppliedReasoningEffort:       observation.reasoningEffort(),
+		AppliedReasoningMode:         observation.reasoningMode(),
+		AppliedReasoningBudgetTokens: observation.reasoningBudgetTokens(),
+		OutboundIdentityHeaders:      observation.outboundIdentityHeaders(),
+		UpstreamRequestPath:          observation.upstreamRequestPath(),
+		QuotaSignals:                 observation.quotaSignalObservation(),
 	}, nil
 }
 
@@ -985,6 +1009,8 @@ type executionObservation struct {
 	provider            string
 	mu                  sync.RWMutex
 	effort              string
+	mode                string
+	budgetTokens        *int64
 	observedRequestPath string
 	outboundHeaders     string
 	quota               cliproxyauth.QuotaState
@@ -1002,8 +1028,9 @@ func newProviderExecutionObservation(request ExecuteRequest, provider string) *e
 	if len(body) == 0 {
 		body = request.Payload
 	}
+	mode, budget := extractReasoningDetails(body, request.Format)
 	return &executionObservation{
-		capture:  thinking.ExtractReasoningEffort(body, request.Format, request.Model) != "",
+		capture:  thinking.ExtractReasoningEffort(body, request.Format, request.Model) != "" || mode != "" || budget != nil,
 		provider: provider,
 	}
 }
@@ -1035,12 +1062,15 @@ func (o *executionObservation) observe(request *http.Request) {
 		return
 	}
 	effort := thinking.ExtractTranslatedReasoningEffort(body, o.provider)
+	mode, budget := extractReasoningDetails(body, o.provider)
 	clear(body)
-	if effort == "" {
+	if effort == "" && mode == "" && budget == nil {
 		return
 	}
 	o.mu.Lock()
 	o.effort = effort
+	o.mode = mode
+	o.budgetTokens = budget
 	o.mu.Unlock()
 }
 
@@ -1199,6 +1229,7 @@ func exchangeToken(ctx context.Context, values url.Values, options Options) (Cod
 			credential.Email = email
 		}
 	}
+	credential.PlanType = CodexCredentialPlan(credential)
 	if strings.TrimSpace(credential.AccessToken) == "" {
 		return CodexCredential{}, fmt.Errorf("token response has no access token")
 	}

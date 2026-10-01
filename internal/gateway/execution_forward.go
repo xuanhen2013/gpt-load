@@ -98,7 +98,7 @@ func (forwarder *ExecutionForwarder) Forward(
 	result := upstreamFromExecutionResult(ctx, input, executionResult)
 	result = forwarder.prepareBufferedResult(input, result)
 	if (input.ClientProtocol == protocol.OpenAIImages ||
-		input.ClientProtocol == protocol.OpenAIEmbeddings || input.ClientProtocol == protocol.Rerank) && input.ObserveUsage &&
+		embeddingsProtocol(input.ClientProtocol) || input.ClientProtocol == protocol.Rerank) && input.ObserveUsage &&
 		result.HasResponse() && result.StatusCode >= http.StatusOK &&
 		result.StatusCode < http.StatusMultipleChoices &&
 		executionResult.Usage == nil && result.Usage.State == usage.StateMissing && forwarder.usageCapture != nil {
@@ -107,7 +107,7 @@ func (forwarder *ExecutionForwarder) Forward(
 			result.ClassificationBody,
 		)
 	}
-	if input.ClientProtocol == protocol.OpenAIEmbeddings && result.Err == nil &&
+	if embeddingsProtocol(input.ClientProtocol) && result.Err == nil &&
 		result.StatusCode >= http.StatusOK && result.StatusCode < http.StatusMultipleChoices {
 		result.ClassificationBody = nil
 	}
@@ -225,6 +225,7 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 	if input.RedactionCipher != nil && redactionBusinessProtocol(input.ClientProtocol) {
 		structured := input.Request != nil && requestDeclaresJSONOutput(input.ClientProtocol, input.Request.Body)
 		redactionRestore = newRedactionRestoreSSE(input.ClientProtocol, credentialSafeRestore(input.RedactionCipher.RestoreText, restorationCredentialSecrets(input)), structured)
+		redactionRestore.signer = newRedactionSigner(input.RedactionCipher)
 	}
 
 	var (
@@ -969,6 +970,7 @@ func newExecutionAttemptSpec(input ForwardInput) (execution.AttemptSpec, error) 
 		RawQuery:                 input.Request.RawQuery,
 		Header:                   headers,
 		ConfiguredHeaders:        input.Group.HeaderRules.ConfiguredNames(),
+		ConfiguredParameters:     input.ConfiguredParameters,
 		Body:                     input.Request.Body,
 		IncludeUsage:             input.ObserveUsage,
 		ForceCredentialRefresh:   input.ForceCredentialRefresh,
@@ -1011,7 +1013,7 @@ func upstreamFromExecutionResult(
 	upstream.UpstreamProtocol = result.UpstreamProtocol
 	upstream.OutboundIdentityHeaders = result.OutboundIdentityHeaders
 	if input.ClientProtocol == protocol.OpenAIImages ||
-		input.ClientProtocol == protocol.OpenAIEmbeddings {
+		embeddingsProtocol(input.ClientProtocol) {
 		// AttemptResult owns Body after the executor returns. Buffered opaque
 		// representations consume it synchronously, so move that ownership across
 		// the internal boundary instead of cloning a large payload twice.

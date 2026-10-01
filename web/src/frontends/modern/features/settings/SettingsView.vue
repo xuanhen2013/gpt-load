@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codexLiveModes } from '@shared/codex-live'
 import {
   Cable,
   Database,
@@ -32,6 +33,7 @@ import {
   AppIconButton,
   AppPanel,
   AppSegmentedControl,
+  AppSelect,
   AppSwitch,
   AppTextArea,
   AppTextField,
@@ -52,6 +54,9 @@ import SettingsSystemInfo from './SettingsSystemInfo.vue'
 import { useSettingsEditor } from './use-settings-editor'
 
 const { t, n } = useI18n()
+const liveOptions = computed(() =>
+  codexLiveModes.map((value) => ({ value, label: t('settingsForm.liveModes.' + value) })),
+)
 const redactionInvalid = ref(false)
 const client = useApiClient()
 const {
@@ -94,7 +99,11 @@ type SectionID = (typeof sectionIDs)[number]
 const sectionFields: Record<SectionID, readonly SettingKey[]> = {
   routing: ['route_strategy', 'affinity_enabled', 'affinity_ttl', 'affinity_capacity'],
   connection: [
+    'global_concurrency_limit',
+    'default_access_key_concurrency_limit',
+    'default_group_concurrency_limit',
     'proxy_config',
+    'codex_live_mode',
     'responses_websocket_enabled',
     'first_byte_timeout',
     'request_timeout',
@@ -124,6 +133,11 @@ const sectionIcons = {
   experimental: FlaskConical,
   system: Server,
 }
+const concurrencyNumbers: readonly SettingNumber[] = [
+  'global_concurrency_limit',
+  'default_access_key_concurrency_limit',
+  'default_group_concurrency_limit',
+]
 const timeouts: readonly SettingNumber[] = [
   'first_byte_timeout',
   'request_timeout',
@@ -500,6 +514,21 @@ onScopeDispose(() => {
             </template>
             <template v-else-if="id === 'connection'">
               <SettingItem
+                v-if="matches('codex_live_mode')"
+                v-bind="settingItem('codex_live_mode')"
+                class="modern-settings-block"
+                @reset="restore('codex_live_mode')"
+                @undo="undoRestore('codex_live_mode')"
+              >
+                <AppSelect
+                  v-model="draft.codex_live_mode"
+                  :label="t('settingsForm.fields.codex_live_mode')"
+                  :options="liveOptions"
+                  :disabled="disabled('codex_live_mode')"
+                  size="sm"
+                />
+              </SettingItem>
+              <SettingItem
                 v-if="matches('responses_websocket_enabled')"
                 v-bind="settingItem('responses_websocket_enabled')"
                 class="modern-settings-block"
@@ -595,6 +624,24 @@ onScopeDispose(() => {
                   </div>
                 </template>
               </SettingItem>
+              <div
+                v-if="concurrencyNumbers.some(matches)"
+                class="modern-settings-block modern-settings-group"
+              >
+                <h3 class="modern-settings-group-title">{{ t('concurrency.label') }}</h3>
+                <div class="modern-settings-number-grid">
+                  <SettingsNumberField
+                    v-for="key in concurrencyNumbers.filter(matches)"
+                    :key="key"
+                    v-model="draft[key]"
+                    :setting="key"
+                    v-bind="settingState(key)"
+                    :error="fieldErrors[key]"
+                    @reset="restore(key)"
+                    @undo="undoRestore(key)"
+                  />
+                </div>
+              </div>
               <div
                 v-if="timeouts.some(matches)"
                 class="modern-settings-block modern-settings-group"

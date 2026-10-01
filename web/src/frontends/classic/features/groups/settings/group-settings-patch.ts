@@ -12,7 +12,8 @@ import type {
 import { normalizePriceMultiplier } from '@/lib/price-multiplier'
 
 export type GroupTimeoutKey = 'first_byte_timeout' | 'request_timeout' | 'stream_idle_timeout'
-export type GroupPolicyCountKey = 'blacklist_threshold' | 'account_concurrency_limit'
+export type GroupPolicyCountKey =
+  'blacklist_threshold' | 'account_concurrency_limit' | 'concurrency_limit'
 
 export interface GroupSettingsDraft {
   channel_id: string
@@ -35,6 +36,7 @@ export const groupTimeoutKeys: readonly GroupTimeoutKey[] = [
 export const groupPolicyCountKeys: readonly GroupPolicyCountKey[] = [
   'blacklist_threshold',
   'account_concurrency_limit',
+  'concurrency_limit',
 ]
 
 function cloneHeaders(value: HeaderRulesDto): HeaderRulesDto {
@@ -77,6 +79,7 @@ function cloneOverrides(value: GroupRuntimeConfigDto): GroupRuntimeConfigDto {
   for (const key of groupTimeoutKeys) if (value[key] !== undefined) next[key] = value[key]
   for (const key of groupPolicyCountKeys) if (value[key] !== undefined) next[key] = value[key]
   if (value.header_rules) next.header_rules = cloneHeaders(value.header_rules)
+  if (value.codex_live_mode !== undefined) next.codex_live_mode = value.codex_live_mode
   if (value.affinity_enabled !== undefined) next.affinity_enabled = value.affinity_enabled
   if (value.responses_websocket_enabled !== undefined)
     next.responses_websocket_enabled = value.responses_websocket_enabled

@@ -75,7 +75,7 @@ Codex 执行器的真实流式/非流式调用入口也通过本地代理测试�
 
 ```bash
 # 仓库根目录：应用及按应用依赖版本解析的嵌入模块
-go test -race -count=1 -timeout=15m . ./internal/... github.com/router-for-me/CLIProxyAPI/v7/gptload-embedded/embedded
+go test -race -count=1 -timeout=15m . ./internal/... github.com/router-for-me/CLIProxyAPI/v8/gptload-embedded/embedded
 
 # 嵌入模块独立依赖图
 cd third_party/cpaembedded
