@@ -18,6 +18,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { useApiClient } from '@shared/http/client-context'
 import { ApiError } from '@shared/http/errors'
+import { useCredentialTestBatch, type CredentialTestOptions } from '@shared/credential-test-batch'
 import {
   APIKeyFileImportError,
   readAPIKeyCredentialFiles,
@@ -155,6 +156,17 @@ const credentialTestProtocol = ref<AccessProtocol>()
 const credentialTestProtocols = ref<AccessProtocol[]>([])
 const credentialTestSettingsPending = ref(false)
 const credentialTestTarget = ref<CredentialItemDto>()
+const credentialBatchTargets = ref<number[]>([])
+const {
+  report: testBatch,
+  pending: testBatchPending,
+  itemsByID: testBatchItems,
+  counts: testBatchCounts,
+  retryIDs: testBatchRetryIDs,
+  run: runTestBatch,
+  stop: stopTestBatch,
+  reset: resetTestBatch,
+} = useCredentialTestBatch()
 const credentialTestResult = ref<CredentialTestResultDto>()
 const credentialTestRequestFailed = ref(false)
 const credentialTestRestoreBlocked = ref(false)
@@ -213,8 +225,9 @@ const allVisibleSelected = computed(() => {
     items.length > 0 && items.every(({ credential_id }) => selectedIds.value.has(credential_id))
   )
 })
-const batchBusy = computed(() =>
-  [...pendingOperations.value].some((key) => key.startsWith('batch:')),
+const batchBusy = computed(
+  () =>
+    testBatchPending.value || [...pendingOperations.value].some((key) => key.startsWith('batch:')),
 )
 const singleBusy = computed(() =>
   [...pendingOperations.value].some((key) => !key.startsWith('batch:')),
@@ -299,6 +312,7 @@ const credentialTestDialogResult = computed(() => {
     protocol: result.protocol,
     latency_ms: result.latency_ms,
     reason: result.reason,
+    error_detail: result.error_detail,
     can_restore: result.can_restore,
     tested_at_ms: result.tested_at_ms,
   }
@@ -371,6 +385,7 @@ watch(
   () => {
     resetFileImport()
     resetCredentialTestState()
+    resetTestBatch()
     connectionWorkspaceOpen.value = false
     fullActionsOpen.value = false
     fullActionTarget.value = undefined
@@ -603,6 +618,9 @@ function withPreservedDetail(
     ...item,
     ...(source.last_used_at_ms === undefined ? {} : { last_used_at_ms: source.last_used_at_ms }),
     ...(source.daily_usage === undefined ? {} : { daily_usage: source.daily_usage }),
+    ...(item.last_failure_summary === undefined && source.last_failure_summary !== undefined
+      ? { last_failure_summary: source.last_failure_summary }
+      : {}),
   }
   const sourceObservation = source.observation
   const targetObservation = item.observation
@@ -1439,6 +1457,7 @@ function resetCredentialTestState(): void {
     setPending(credentialID, 'test-restore', false)
   }
   credentialTestTarget.value = undefined
+  credentialBatchTargets.value = []
   credentialTestModel.value = undefined
   credentialTestModels.value = []
   credentialTestProtocol.value = undefined
@@ -1459,6 +1478,21 @@ async function openCredentialTest(item: CredentialItemDto): Promise<void> {
   if (props.connectionType !== 'api_key' || batchBusy.value || pending(item.credential_id)) return
   resetCredentialTestState()
   credentialTestTarget.value = item
+  await loadCredentialTestSettings()
+}
+
+async function openBatchCredentialTest(): Promise<void> {
+  if (props.connectionType !== 'api_key' || bulkActionsBusy.value) return
+  const ids = (collection.value?.items ?? [])
+    .filter((item) => selectedIds.value.has(item.credential_id))
+    .map((item) => item.credential_id)
+  if (!ids.length) return
+  resetCredentialTestState()
+  credentialBatchTargets.value = ids
+  await loadCredentialTestSettings()
+}
+
+async function loadCredentialTestSettings(): Promise<void> {
   const owner = credentialTestOwner
   const groupID = props.groupId
   const controller = new AbortController()
@@ -1478,7 +1512,7 @@ async function openCredentialTest(item: CredentialItemDto): Promise<void> {
     ]
     credentialTestModel.value = settings.validation_model ?? credentialTestModels.value[0]
     credentialTestProtocols.value = settings.validation_protocols
-    credentialTestProtocol.value = settings.validation_protocol ?? undefined
+    credentialTestProtocol.value = settings.validation_protocol ?? settings.validation_protocols[0]
   } catch {
     if (owner === credentialTestOwner && groupID === props.groupId)
       credentialTestRequestFailed.value = true
@@ -1513,7 +1547,12 @@ async function runCredentialTest(): Promise<void> {
   const item = credentialTestTarget.value
   const protocol = credentialTestProtocol.value
   const model = credentialTestModel.value?.trim()
-  if (!item || !protocol || !model || credentialTestSettingsPending.value) return
+  if (!protocol || !model || credentialTestSettingsPending.value) return
+  if (credentialBatchTargets.value.length) {
+    await startBatchTest({ protocol, model }, credentialBatchTargets.value)
+    return
+  }
+  if (!item) return
   if (props.connectionType !== 'api_key' || batchBusy.value || pending(item.credential_id)) return
 
   credentialTestController?.abort()
@@ -1547,6 +1586,37 @@ async function runCredentialTest(): Promise<void> {
       setPending(item.credential_id, 'test', false)
     }
   }
+}
+
+async function startBatchTest(
+  options: CredentialTestOptions,
+  ids: number[],
+  retry = false,
+): Promise<void> {
+  if (bulkActionsBusy.value || props.connectionType !== 'api_key' || !ids.length) return
+  const groupID = props.groupId
+  resetCredentialTestState()
+  await runTestBatch(
+    ids,
+    options,
+    async (id, selected, signal) => {
+      const result = await testCredentialConnection(
+        client,
+        groupID,
+        id,
+        selected.protocol as AccessProtocol,
+        selected.model,
+        signal,
+      )
+      return {
+        outcome: result.outcome,
+        latency: result.latency_ms,
+        reason: result.reason,
+        errorDetail: result.error_detail,
+      }
+    },
+    retry,
+  )
 }
 
 async function confirmTestedCredentialRestore(): Promise<void> {
@@ -1606,6 +1676,19 @@ async function confirmTestedCredentialRestore(): Promise<void> {
     })
   }
   resetCredentialTestState()
+}
+
+async function saveCredentialName(item: CredentialItemDto, name: string): Promise<string> {
+  if (batchBusy.value || pending(item.credential_id)) throw new Error('CREDENTIAL_NAME_UNAVAILABLE')
+  feedback.value = ''
+  setPending(item.credential_id, 'name', true)
+  try {
+    const result = await updateCredential(client, props.groupId, item.credential_id, { name })
+    await reconcileItem(result, false)
+    return result.name
+  } finally {
+    setPending(item.credential_id, 'name', false)
+  }
 }
 
 async function saveCredentialProxy(item: CredentialItemDto, value: ProxyMutation): Promise<void> {
@@ -1930,14 +2013,50 @@ async function runBatch(
             selectedSubscriptionCredentialsReady
           "
           :can-download="connectionType === 'subscription'"
+          :can-test="connectionType === 'api_key'"
           @toggle-select="setAllVisible(!allVisibleSelected)"
           @enable="runBatch('enable')"
           @disable="runBatch('disable')"
           @sync="syncSelectedObservations"
           @download="downloadSelectedCredentials"
+          @test="openBatchCredentialTest"
           @remove="deleteTarget = { ids: [...selectedIds] }"
         />
       </div>
+      <InlineFeedback
+        v-if="testBatch"
+        :tone="
+          testBatchPending
+            ? 'info'
+            : testBatchCounts.passed === testBatchCounts.total
+              ? 'success'
+              : 'warning'
+        "
+        appearance="ledger"
+      >
+        {{ testBatch.options.protocol }} · {{ testBatch.options.model }}<br />
+        {{ t('credentialBatchTest.progress', testBatchCounts) }}
+        <template v-if="testBatchCounts.cancelled">
+          · {{ t('credentialBatchTest.cancelled', { count: testBatchCounts.cancelled }) }}</template
+        >
+        <template #action>
+          <AppButton
+            v-if="testBatchPending"
+            variant="secondary"
+            size="compact"
+            @click="stopTestBatch"
+            >{{ t('credentialBatchTest.stop') }}</AppButton
+          >
+          <AppButton
+            v-else-if="testBatchRetryIDs.length"
+            variant="secondary"
+            size="compact"
+            :disabled="bulkActionsBusy"
+            @click="startBatchTest(testBatch.options, testBatchRetryIDs, true)"
+            >{{ t('credentialBatchTest.retry') }}</AppButton
+          >
+        </template>
+      </InlineFeedback>
       <SkeletonSurface
         v-if="collectionTransition"
         variant="collection"
@@ -2013,6 +2132,7 @@ async function runBatch(
               :channel-mark="channelDescriptor?.mark"
               :capabilities="channelCapabilities"
               :save-proxy="(value) => saveCredentialProxy(item, value)"
+              :save-name="(value) => saveCredentialName(item, value)"
               @update:selected="setSelected(item.credential_id, $event)"
               @toggle="mutateItem($event, 'toggle')"
               @restore="mutateItem($event, 'restore')"
@@ -2026,7 +2146,7 @@ async function runBatch(
               @remove="
                 deleteTarget = {
                   ids: [$event.credential_id],
-                  mask: $event.account.email ?? $event.mask,
+                  mask: $event.label,
                 }
               "
             />
@@ -2056,10 +2176,12 @@ async function runBatch(
             "
             :selected="selectedIds.has(item.credential_id)"
             :busy="rowBusy(item.credential_id)"
+            :test-state="testBatchItems.get(item.credential_id)"
             :expanded="credentialExpanded(item.credential_id)"
             :weight-editor-open="routeState.weightCredentialID === item.credential_id"
             :resolve-copy-value="resolveCopyValue"
             :save-proxy="(value) => saveCredentialProxy(item, value)"
+            :save-name="(value) => saveCredentialName(item, value)"
             :proxy-supported="channelCapabilities.outbound_proxy"
             @update:selected="setSelected(item.credential_id, $event)"
             @update:expanded="setExpanded(item.credential_id, $event)"
@@ -2070,7 +2192,7 @@ async function runBatch(
             @test="openCredentialTest"
             @toggle="mutateItem($event, 'toggle')"
             @restore="mutateItem($event, 'restore')"
-            @remove="deleteTarget = { ids: [$event.credential_id], mask: $event.mask }"
+            @remove="deleteTarget = { ids: [$event.credential_id], mask: $event.label }"
           />
         </LedgerRecordList>
         <PaginationBar
@@ -2088,8 +2210,9 @@ async function runBatch(
       </template>
     </template>
     <CredentialTestDialog
-      :open="credentialTestTarget !== undefined"
-      :mask="credentialTestTarget?.mask ?? ''"
+      :open="credentialTestTarget !== undefined || credentialBatchTargets.length > 0"
+      :batch-count="credentialBatchTargets.length"
+      :mask="credentialTestTarget?.label ?? ''"
       :model="credentialTestModel"
       :models="credentialTestModels"
       :protocol="credentialTestProtocol"

@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { useMobileLayout } from '@modern/app/use-mobile-layout'
+import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft, ChevronRight } from '@lucide/vue'
+import ProxySelect from '../proxies/ProxySelect.vue'
 import { codexLiveModes } from '@shared/codex-live'
 import {
   Cable,
@@ -28,12 +32,10 @@ import {
   AppButton,
   AppCollectionState,
   AppConfirmDialog,
-  AppCopyValue,
   AppIcon,
   AppIconButton,
   AppPanel,
   AppSegmentedControl,
-  AppSelect,
   AppSwitch,
   AppTextArea,
   AppTextField,
@@ -51,13 +53,24 @@ import SettingItem from './SettingItem.vue'
 import SettingsHeadersEditor from './SettingsHeadersEditor.vue'
 import SettingsNumberField from './SettingsNumberField.vue'
 import SettingsSystemInfo from './SettingsSystemInfo.vue'
+import ErrorRulesEditor from '../config/ErrorRulesEditor.vue'
+import type { HeaderSetting } from './settings-draft'
 import { useSettingsEditor } from './use-settings-editor'
 
 const { t, n } = useI18n()
+const isMobile = useMobileLayout()
+const route = useRoute()
+const router = useRouter()
 const liveOptions = computed(() =>
   codexLiveModes.map((value) => ({ value, label: t('settingsForm.liveModes.' + value) })),
 )
 const redactionInvalid = ref(false)
+const errorRulesPending = ref(false)
+const errorRulesEditor = ref<InstanceType<typeof ErrorRulesEditor>>()
+const redactionEditor = ref<InstanceType<typeof RequestRedactionEditor>>()
+const autoModelEditor = ref<InstanceType<typeof AutoModelEditor>>()
+const auditEditor = ref<InstanceType<typeof RequestAuditEditor>>()
+const headerEditors = new Map<HeaderSetting, InstanceType<typeof SettingsHeadersEditor>>()
 const client = useApiClient()
 const {
   query,
@@ -74,7 +87,7 @@ const {
   undoRestore,
   discard,
   save,
-} = useSettingsEditor()
+} = useSettingsEditor(() => (errorRulesPending.value ? ['error_rules'] : []))
 const redactionBlocksSave = computed(
   () =>
     redactionInvalid.value &&
@@ -97,7 +110,13 @@ const sectionIDs = [
 ] as const
 type SectionID = (typeof sectionIDs)[number]
 const sectionFields: Record<SectionID, readonly SettingKey[]> = {
-  routing: ['route_strategy', 'affinity_enabled', 'affinity_ttl', 'affinity_capacity'],
+  routing: [
+    'route_strategy',
+    'affinity_enabled',
+    'affinity_ttl',
+    'affinity_capacity',
+    'error_rules',
+  ],
   connection: [
     'global_concurrency_limit',
     'default_access_key_concurrency_limit',
@@ -169,6 +188,14 @@ const state = useURLState(
     ...(value.section !== 'routing' ? { section: value.section } : {}),
   }),
 )
+const mobileSection = computed(() =>
+  typeof route.query.section === 'string' ? state.value.section : undefined,
+)
+function backToCategories(): void {
+  const query = { ...route.query }
+  delete query.section
+  void router.replace({ query })
+}
 const active = ref<SectionID>(state.value.section)
 const scroller = ref<HTMLElement>()
 const guard = ref<InstanceType<typeof AppDraftGuard>>()
@@ -181,8 +208,10 @@ function matches(key: SettingKey): boolean {
   const section = sectionIDs.find((id) => sectionFields[id].includes(key))!
   const text = [
     key,
-    t('settingsForm.fields.' + key),
-    t('settingsForm.hints.' + key),
+    key === 'error_rules' ? t('errorRules.title') : t('settingsForm.fields.' + key),
+    key === 'error_rules'
+      ? [t('errorRules.statuses'), t('errorRules.keywords')].join(' ')
+      : t('settingsForm.hints.' + key),
     sectionText(section),
     key === 'cors'
       ? Object.keys(base.value?.values.cors ?? {})
@@ -216,12 +245,25 @@ const visibleSections = computed(() =>
 const strategyOptions = computed(() =>
   routeStrategies.map((value) => ({ value, label: t('settingsForm.strategies.' + value) })),
 )
-const proxyOptions = computed(() =>
-  ['inherit', 'direct', 'custom'].map((value) => ({
-    value,
-    label: t('settingsForm.proxy.' + value),
-  })),
-)
+const proxyOptions = computed(() => [
+  { value: 'inherit', label: t('groupCreate.proxyInherit') },
+  { value: 'direct', label: t('groupCreate.proxyDirect') },
+  { value: 'custom', label: t('settingsForm.proxy.custom') },
+])
+const proxyHint = computed(() => {
+  const proxy = base.value?.values.proxy_config
+  const effective =
+    proxy?.display_url ||
+    t(
+      proxy?.effective_mode === 'environment'
+        ? 'settingsForm.proxy.environment'
+        : 'settingsForm.proxy.directValue',
+    )
+  return [
+    t('settingsForm.hints.proxy_config'),
+    `${t('settingsForm.proxy.effective')}: ${effective}`,
+  ].join('\n')
+})
 function settingState(key: SettingKey) {
   return {
     overridden: owned(key),
@@ -234,8 +276,8 @@ function settingState(key: SettingKey) {
 function settingItem(key: SettingKey) {
   return {
     ...settingState(key),
-    label: t('settingsForm.fields.' + key),
-    hint: t('settingsForm.hints.' + key),
+    label: key === 'error_rules' ? t('errorRules.title') : t('settingsForm.fields.' + key),
+    hint: key === 'error_rules' ? t('errorRules.order') : t('settingsForm.hints.' + key),
     controlId: 'settings-' + key,
   }
 }
@@ -260,6 +302,7 @@ function clearSearch(): void {
   state.value = { ...state.value, q: '' }
 }
 function scrollToSection(id: SectionID): void {
+  if (isMobile.value) return
   const body = scroller.value
   const target = body?.querySelector<HTMLElement>('#settings-section-' + id)
   if (!body || !target) return
@@ -274,6 +317,10 @@ function scrollToSection(id: SectionID): void {
   })
 }
 function selectSection(id: SectionID): void {
+  if (isMobile.value) {
+    void router.replace({ query: { ...route.query, section: id } })
+    return
+  }
   if (state.value.section === id) {
     scrollToSection(id)
     return
@@ -281,6 +328,7 @@ function selectSection(id: SectionID): void {
   state.value = { ...state.value, section: id }
 }
 function updateActive(): void {
+  if (isMobile.value) return
   if (scrollFrame !== undefined) return
   scrollFrame = requestAnimationFrame(() => {
     scrollFrame = undefined
@@ -329,15 +377,56 @@ watch(
   },
   { immediate: true },
 )
+async function revealMobileError(section: SectionID): Promise<void> {
+  await router.replace({ query: { ...route.query, q: undefined, section } })
+  await nextTick()
+  const input = scroller.value?.querySelector<HTMLElement>(
+    `#settings-section-${section} [aria-invalid="true"]`,
+  )
+  input?.scrollIntoView({ block: 'center' })
+  input?.focus({ preventScroll: true })
+}
 async function submit(): Promise<void> {
-  if (redactionBlocksSave.value) return
+  if (saving.value) return
+  if (redactionBlocksSave.value) {
+    if (isMobile.value) await revealMobileError('redaction')
+    return
+  }
+  if (errorRulesEditor.value && !(await errorRulesEditor.value.prepareSave())) {
+    if (isMobile.value) await revealMobileError('routing')
+    return
+  }
   const result = await save()
   if (result !== 'invalid') return
+  if (isMobile.value) {
+    const section = sectionIDs.find((id) =>
+      sectionFields[id].some((key) => key in fieldErrors.value),
+    )
+    await revealMobileError(section ?? mobileSection.value ?? 'routing')
+    return
+  }
   clearSearch()
   await nextTick()
   const input = scroller.value?.querySelector<HTMLElement>('[aria-invalid="true"]')
   input?.scrollIntoView({ block: 'center' })
   input?.focus({ preventScroll: true })
+}
+function errorRulesRef(editor: unknown): void {
+  errorRulesEditor.value = (editor as InstanceType<typeof ErrorRulesEditor> | null) ?? undefined
+}
+function redactionRef(editor: unknown): void {
+  redactionEditor.value =
+    (editor as InstanceType<typeof RequestRedactionEditor> | null) ?? undefined
+}
+function autoModelRef(editor: unknown): void {
+  autoModelEditor.value = (editor as InstanceType<typeof AutoModelEditor> | null) ?? undefined
+}
+function auditRef(editor: unknown): void {
+  auditEditor.value = (editor as InstanceType<typeof RequestAuditEditor> | null) ?? undefined
+}
+function headerEditorRef(key: HeaderSetting, editor: unknown): void {
+  if (editor) headerEditors.set(key, editor as InstanceType<typeof SettingsHeadersEditor>)
+  else headerEditors.delete(key)
 }
 function confirmDiscard(): void {
   discardOpen.value = false
@@ -366,7 +455,12 @@ onScopeDispose(() => {
 
 <template>
   <div class="modern-settings-workspace">
-    <form class="modern-settings-search" role="search" @submit.prevent>
+    <form
+      v-if="!isMobile || !mobileSection"
+      class="modern-settings-search"
+      role="search"
+      @submit.prevent
+    >
       <AppTextField
         v-model="state.q"
         :label="t('settingsForm.search')"
@@ -394,19 +488,26 @@ onScopeDispose(() => {
       <AppButton v-if="query.isError.value" @click="refresh">{{ t('ui.retry') }}</AppButton>
     </AppCollectionState>
     <div v-else-if="draft" class="modern-settings-layout">
-      <nav class="modern-settings-navigation" :aria-label="t('settingsForm.categories')">
+      <nav
+        v-show="!isMobile || !mobileSection"
+        class="modern-settings-navigation"
+        :aria-label="t('settingsForm.categories')"
+      >
         <p class="modern-settings-nav-caption">{{ t('settingsForm.categories') }}</p>
         <div class="modern-settings-nav-items">
           <AppButton
             v-for="id in visibleSections"
             :key="id"
-            :variant="active === id ? 'brand' : 'ghost'"
+            :variant="!isMobile && active === id ? 'brand' : 'ghost'"
             :aria-current="active === id ? 'location' : undefined"
             :icon="sectionIcons[id]"
             class="modern-settings-nav-item"
             @click="selectSection(id)"
           >
-            <span class="modern-settings-nav-label">{{ t('settingsForm.sections.' + id) }}</span>
+            <span class="modern-settings-nav-label"
+              ><span>{{ t('settingsForm.sections.' + id) }}</span
+              ><small v-if="isMobile">{{ t('settingsForm.sectionHelp.' + id) }}</small></span
+            ><AppIcon v-if="isMobile" :icon="ChevronRight" size="sm" />
             <AppBadge
               v-if="sectionFields[id].some((key) => changed.includes(key))"
               size="xs"
@@ -417,6 +518,7 @@ onScopeDispose(() => {
         </div>
       </nav>
       <form
+        v-show="!isMobile || mobileSection || !visibleSections.length"
         id="modern-settings-form"
         ref="scroller"
         class="modern-settings-body"
@@ -424,6 +526,18 @@ onScopeDispose(() => {
         @submit.prevent="submit"
         @scroll.passive="updateActive"
       >
+        <AppButton
+          v-if="isMobile && mobileSection"
+          class="modern-settings-back"
+          variant="ghost"
+          :icon="ArrowLeft"
+          :aria-label="t('settingsForm.categories')"
+          @click="backToCategories"
+          ><span>{{ t('settingsForm.categories') }}</span
+          ><span class="modern-settings-back-current">{{
+            t('settingsForm.sections.' + mobileSection)
+          }}</span></AppButton
+        >
         <AppCollectionState
           v-if="!visibleSections.length"
           :icon="Search"
@@ -433,10 +547,10 @@ onScopeDispose(() => {
         </AppCollectionState>
         <AppPanel
           v-for="id in visibleSections"
+          v-show="!isMobile || mobileSection === id"
           :id="'settings-section-' + id"
           :key="id"
           :title="t('settingsForm.sections.' + id)"
-          :description="t('settingsForm.sectionHelp.' + id)"
           compact
           class="modern-settings-section"
         >
@@ -444,14 +558,18 @@ onScopeDispose(() => {
             <template v-if="id === 'redaction'">
               <SettingItem
                 v-bind="settingItem('request_redaction')"
-                :label="t('requestRedaction.quickAdd')"
-                :hint="undefined"
+                :label="t('requestRedaction.rules')"
+                :hint="t('requestRedaction.help')"
+                :add-label="t('requestRedaction.add')"
+                :add-disabled="!redactionEditor?.canAdd"
                 stacked
                 class="modern-settings-wide"
                 @reset="restore('request_redaction')"
                 @undo="undoRestore('request_redaction')"
+                @add="redactionEditor?.add()"
               >
                 <RequestRedactionEditor
+                  :ref="redactionRef"
                   v-model="draft.request_redaction"
                   :disabled="disabled('request_redaction')"
                   @invalid="redactionInvalid = $event"
@@ -487,16 +605,18 @@ onScopeDispose(() => {
                 <SettingItem
                   v-if="matches('affinity_enabled')"
                   v-bind="settingItem('affinity_enabled')"
-                  :description="t('settingsForm.hints.affinity_enabled')"
                   @reset="restore('affinity_enabled')"
                   @undo="undoRestore('affinity_enabled')"
                 >
-                  <AppSwitch
-                    id="settings-affinity_enabled"
-                    v-model="draft.affinity_enabled"
-                    :label="t('settingsForm.fields.affinity_enabled')"
-                    :disabled="disabled('affinity_enabled')"
-                  />
+                  <template #actions>
+                    <AppSwitch
+                      id="settings-affinity_enabled"
+                      v-model="draft.affinity_enabled"
+                      :label="t('settingsForm.fields.affinity_enabled')"
+                      size="sm"
+                      :disabled="disabled('affinity_enabled')"
+                    />
+                  </template>
                 </SettingItem>
                 <div v-if="affinityNumbers.some(matches)" class="modern-settings-number-grid">
                   <SettingsNumberField
@@ -511,6 +631,25 @@ onScopeDispose(() => {
                   />
                 </div>
               </div>
+              <SettingItem
+                v-if="matches('error_rules')"
+                v-bind="settingItem('error_rules')"
+                :add-label="t('errorRules.add')"
+                :add-disabled="!errorRulesEditor?.canAdd"
+                class="modern-settings-block"
+                stacked
+                @reset="restore('error_rules')"
+                @undo="undoRestore('error_rules')"
+                @add="errorRulesEditor?.add()"
+              >
+                <ErrorRulesEditor
+                  :ref="errorRulesRef"
+                  v-model="draft.error_rules"
+                  :disabled="disabled('error_rules') || resets.has('error_rules')"
+                  :readonly="locked('error_rules')"
+                  @update:pending="errorRulesPending = $event"
+                />
+              </SettingItem>
             </template>
             <template v-else-if="id === 'connection'">
               <SettingItem
@@ -520,13 +659,21 @@ onScopeDispose(() => {
                 @reset="restore('codex_live_mode')"
                 @undo="undoRestore('codex_live_mode')"
               >
-                <AppSelect
-                  v-model="draft.codex_live_mode"
-                  :label="t('settingsForm.fields.codex_live_mode')"
-                  :options="liveOptions"
-                  :disabled="disabled('codex_live_mode')"
-                  size="sm"
-                />
+                <template #actions>
+                  <AppSegmentedControl
+                    id="settings-codex_live_mode"
+                    :model-value="draft.codex_live_mode"
+                    :label="t('settingsForm.fields.codex_live_mode')"
+                    :options="liveOptions"
+                    appearance="field"
+                    size="xs"
+                    :disabled="disabled('codex_live_mode')"
+                    @update:model-value="
+                      draft.codex_live_mode =
+                        $event === 'direct' || $event === 'relay' ? $event : 'off'
+                    "
+                  />
+                </template>
               </SettingItem>
               <SettingItem
                 v-if="matches('responses_websocket_enabled')"
@@ -573,55 +720,38 @@ onScopeDispose(() => {
               <SettingItem
                 v-if="matches('proxy_config')"
                 v-bind="settingItem('proxy_config')"
-                :description="t('settingsForm.hints.proxy_config')"
-                wrap-control
+                :hint="proxyHint"
                 class="modern-settings-block"
                 @reset="restore('proxy_config')"
                 @undo="undoRestore('proxy_config')"
               >
-                <AppSegmentedControl
-                  id="settings-proxy_config"
-                  :model-value="draft.proxy_config.mode"
-                  :label="t('settingsForm.fields.proxy_config')"
-                  :options="proxyOptions"
-                  appearance="field"
-                  :disabled="disabled('proxy_config')"
-                  @update:model-value="
-                    draft.proxy_config.mode =
-                      $event === 'custom' || $event === 'direct' ? $event : 'inherit'
-                  "
-                />
-                <template #details>
-                  <div class="modern-settings-proxy">
-                    <AppTextField
-                      v-if="draft.proxy_config.mode === 'custom'"
-                      v-model="draft.proxy_config.url"
-                      :label="t('settingsForm.proxy.url')"
-                      :disabled="disabled('proxy_config')"
-                      :error="fieldErrors.proxy_config"
-                      :placeholder="
-                        base.values.proxy_config.configured_mode === 'custom'
-                          ? t('settingsForm.proxy.existing')
-                          : t('settingsForm.proxy.placeholder')
-                      "
-                      autocomplete="off"
-                      spellcheck="false"
-                    />
-                    <p class="modern-settings-proxy-effective">
-                      <span>{{ t('settingsForm.proxy.effective') }}</span>
-                      <AppCopyValue
-                        v-if="base.values.proxy_config.display_url"
-                        :value="base.values.proxy_config.display_url"
-                      />
-                      <span v-else>{{
-                        t(
-                          base.values.proxy_config.effective_mode === 'environment'
-                            ? 'settingsForm.proxy.environment'
-                            : 'settingsForm.proxy.directValue',
-                        )
-                      }}</span>
-                    </p>
-                  </div>
+                <template #actions>
+                  <AppSegmentedControl
+                    id="settings-proxy_config"
+                    :model-value="draft.proxy_config.mode"
+                    :label="t('settingsForm.fields.proxy_config')"
+                    :options="proxyOptions"
+                    appearance="field"
+                    size="xs"
+                    :disabled="disabled('proxy_config')"
+                    @update:model-value="
+                      draft.proxy_config.mode =
+                        $event === 'custom' || $event === 'direct' ? $event : 'inherit'
+                    "
+                  />
+                </template>
+                <template v-if="draft.proxy_config.mode === 'custom'" #details>
+                  <ProxySelect
+                    v-model="draft.proxy_config.id"
+                    label-hidden
+                    size="sm"
+                    :saved-id="base.values.proxy_config.proxy_id"
+                    :saved-name="base.values.proxy_config.proxy_name"
+                    :saved-address="base.values.proxy_config.display_url"
+                    :reference-state="base.values.proxy_config.reference_state"
+                    :disabled="disabled('proxy_config')"
+                    :error="fieldErrors.proxy_config"
+                  />
                 </template>
               </SettingItem>
               <div
@@ -683,24 +813,26 @@ onScopeDispose(() => {
               <SettingItem
                 v-if="matches('cors')"
                 v-bind="settingItem('cors')"
-                :description="t('settingsForm.hints.cors')"
                 class="modern-settings-block"
                 @reset="restore('cors')"
                 @undo="undoRestore('cors')"
               >
-                <AppSwitch
-                  id="settings-cors"
-                  v-model="draft.cors.enabled"
-                  :label="t('settingsForm.cors.enabled')"
-                  :disabled="disabled('cors')"
-                />
-                <template #details>
+                <template #actions>
+                  <AppSwitch
+                    id="settings-cors"
+                    v-model="draft.cors.enabled"
+                    :label="t('settingsForm.cors.enabled')"
+                    size="sm"
+                    :disabled="disabled('cors')"
+                  />
+                </template>
+                <template v-if="draft.cors.enabled" #details>
                   <div class="modern-settings-cors">
                     <AppTextArea
                       v-model="draft.cors.allowed_origins"
                       :label="t('settingsForm.cors.allowed_origins')"
                       :placeholder="t('settingsForm.cors.originsPlaceholder')"
-                      :description="t('settingsForm.cors.listHint')"
+                      :hint="t('settingsForm.cors.listHint')"
                       :rows="2"
                       :error="fieldErrors['cors.allowed_origins']"
                       :disabled="disabled('cors')"
@@ -754,13 +886,15 @@ onScopeDispose(() => {
                 <SettingItem
                   v-if="matches(key)"
                   v-bind="settingItem(key)"
-                  :description="t('settingsForm.hints.' + key)"
+                  :add-label="t('settingsForm.headers.add')"
                   stacked
                   class="modern-settings-block"
                   @reset="restore(key)"
                   @undo="undoRestore(key)"
+                  @add="headerEditors.get(key)?.addRule()"
                 >
                   <SettingsHeadersEditor
+                    :ref="(editor) => headerEditorRef(key, editor)"
                     v-model="draft[key]"
                     :setting="key"
                     :errors="fieldErrors"
@@ -786,7 +920,6 @@ onScopeDispose(() => {
               <SettingItem
                 v-if="matches('models_dev_auto_sync_enabled')"
                 v-bind="settingItem('models_dev_auto_sync_enabled')"
-                :description="t('settingsForm.hints.models_dev_auto_sync_enabled')"
                 class="modern-settings-block"
                 @reset="restore('models_dev_auto_sync_enabled')"
                 @undo="undoRestore('models_dev_auto_sync_enabled')"
@@ -808,34 +941,43 @@ onScopeDispose(() => {
               <SettingItem
                 v-bind="settingItem('jev')"
                 :hint="t('jev.help')"
+                stacked
                 class="modern-settings-block"
                 @reset="restore('jev')"
                 @undo="undoRestore('jev')"
               >
-                <template #details
-                  ><JevSettingsEditor
+                <template #details>
+                  <JevSettingsEditor
                     v-model="draft.jev"
                     :routes="base?.decisionRoutes ?? []"
                     :disabled="disabled('jev')"
                     :error="fieldErrors.jev"
-                /></template>
+                  />
+                </template>
               </SettingItem>
               <SettingItem
                 v-bind="settingItem('auto_model')"
                 :hint="t('autoModel.experimental')"
+                :add-label="t('autoModel.addTemplate')"
+                :add-disabled="!draft.auto_model.enabled || !autoModelEditor?.canAdd"
                 class="modern-settings-block"
                 @reset="restore('auto_model')"
                 @undo="undoRestore('auto_model')"
+                @add="autoModelEditor?.addEntry()"
               >
-                <AppSwitch
-                  id="settings-auto_model"
-                  :model-value="draft.auto_model.enabled"
-                  :label="t('autoModel.enabled')"
-                  :disabled="disabled('auto_model')"
-                  @update:model-value="setAutoModelEnabled"
-                />
+                <template #actions>
+                  <AppSwitch
+                    id="settings-auto_model"
+                    :model-value="draft.auto_model.enabled"
+                    :label="t('autoModel.enabled')"
+                    size="sm"
+                    :disabled="disabled('auto_model')"
+                    @update:model-value="setAutoModelEnabled"
+                  />
+                </template>
                 <template v-if="draft.auto_model.enabled" #details>
                   <AutoModelEditor
+                    :ref="autoModelRef"
                     v-model="draft.auto_model"
                     :template="base?.autoModelTemplate"
                     :decision-models="base?.decisionModels ?? []"
@@ -846,26 +988,34 @@ onScopeDispose(() => {
               </SettingItem>
               <SettingItem
                 v-bind="settingItem('request_audit')"
-                :hint="t('requestAudit.help')"
+                :hint="[t('requestAudit.help'), t('requestAudit.rulesHelp')].join('\n')"
+                :add-label="t('requestAudit.addRule')"
+                :add-disabled="!draft.request_audit.enabled || !auditEditor?.canAdd"
                 class="modern-settings-block"
                 @reset="restore('request_audit')"
                 @undo="undoRestore('request_audit')"
+                @add="auditEditor?.addRule()"
               >
-                <AppSwitch
-                  id="settings-request_audit"
-                  :model-value="draft.request_audit.enabled"
-                  :label="t('requestAudit.enabled')"
-                  :disabled="disabled('request_audit')"
-                  @update:model-value="setAuditEnabled"
-                />
-                <template v-if="draft.request_audit.enabled" #details
-                  ><RequestAuditEditor
+                <template #actions>
+                  <AppSwitch
+                    id="settings-request_audit"
+                    :model-value="draft.request_audit.enabled"
+                    :label="t('requestAudit.enabled')"
+                    size="sm"
+                    :disabled="disabled('request_audit')"
+                    @update:model-value="setAuditEnabled"
+                  />
+                </template>
+                <template v-if="draft.request_audit.enabled" #details>
+                  <RequestAuditEditor
+                    :ref="auditRef"
                     v-model="draft.request_audit"
                     :access-keys="base?.auditAccessKeys ?? []"
                     :preset="base?.requestAuditPreset"
                     :disabled="disabled('request_audit')"
                     :error="fieldErrors.request_audit"
-                /></template>
+                  />
+                </template>
               </SettingItem>
             </template>
             <SettingsSystemInfo
@@ -895,7 +1045,7 @@ onScopeDispose(() => {
           variant="primary"
           :icon="Save"
           :loading="saving"
-          :disabled="redactionBlocksSave"
+          :disabled="redactionBlocksSave && !isMobile"
           >{{ t('settingsForm.save') }}</AppButton
         >
       </div>
@@ -921,9 +1071,10 @@ onScopeDispose(() => {
   min-width: 0;
   min-height: 0;
 }
+/* 设置页没有结果切换栏，搜索栏直接接内容，底部沿用状态栏到内容的间距。 */
 .modern-settings-search {
   flex: none;
-  padding: var(--modern-space-5) 0 var(--modern-space-4);
+  padding: var(--modern-page-toolbar-top) 0 var(--modern-page-statusbar-bottom);
 }
 .modern-settings-layout {
   display: grid;
@@ -948,6 +1099,9 @@ onScopeDispose(() => {
 .modern-settings-nav-items {
   display: grid;
   gap: var(--modern-space-1);
+}
+.modern-settings-mobile-nav {
+  display: none;
 }
 .modern-settings-nav-item {
   width: 100%;
@@ -996,26 +1150,6 @@ onScopeDispose(() => {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
   gap: var(--modern-space-2) var(--modern-space-5);
   min-width: 0;
-}
-.modern-settings-proxy {
-  display: grid;
-  gap: var(--modern-space-3);
-  min-width: 0;
-}
-.modern-settings-proxy-effective {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  min-width: 0;
-  gap: var(--modern-space-2);
-  border-radius: var(--modern-radius-small);
-  background: var(--modern-subtle);
-  padding: var(--modern-space-2) var(--modern-space-3);
-  color: var(--modern-muted);
-  font-size: var(--modern-font-size-small);
-}
-.modern-settings-proxy-effective > :first-child {
-  flex: none;
 }
 .modern-settings-cors {
   display: grid;
@@ -1086,8 +1220,10 @@ onScopeDispose(() => {
     display: none;
   }
   .modern-settings-nav-items {
-    display: flex;
-    width: max-content;
+    display: none;
+  }
+  .modern-settings-mobile-nav {
+    display: grid;
   }
   .modern-settings-nav-item {
     width: auto;
@@ -1098,6 +1234,60 @@ onScopeDispose(() => {
   }
   .modern-settings-body {
     flex: 1;
+  }
+}
+@media (max-width: 760px) {
+  .modern-settings-navigation {
+    padding: 0;
+    border: 0;
+  }
+  .modern-settings-nav-items {
+    display: grid;
+  }
+  .modern-settings-nav-caption {
+    display: none;
+  }
+  .modern-settings-nav-item {
+    width: 100%;
+    height: auto;
+    min-height: 76px;
+    border-radius: 0;
+    border-bottom: var(--modern-line-width) solid var(--modern-border);
+    padding: var(--modern-space-3) 0;
+    gap: var(--modern-space-3);
+  }
+  .modern-settings-nav-label {
+    display: grid;
+    gap: var(--modern-space-1);
+    text-align: left;
+    white-space: normal;
+  }
+  .modern-settings-nav-label small {
+    font-size: var(--modern-font-size-small);
+    font-weight: var(--modern-weight-regular);
+    color: var(--modern-muted);
+  }
+  .modern-settings-back {
+    position: sticky;
+    top: 0;
+    z-index: var(--modern-layer-header);
+    flex: none;
+    width: 100%;
+    justify-content: flex-start;
+    background: var(--modern-surface);
+    border-bottom: var(--modern-line-width) solid var(--modern-border);
+    border-radius: 0;
+  }
+  .modern-settings-back-current {
+    margin-inline-start: auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: var(--modern-font-size-small);
+    color: var(--modern-muted);
+  }
+  .modern-settings-body {
+    padding-top: var(--modern-space-3);
   }
 }
 </style>

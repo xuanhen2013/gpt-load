@@ -29,6 +29,16 @@ API キー、サブスクリプションアカウント、トラフィック制�
 <details open>
 <summary>スポンサー詳細（折りたたみ可能）</summary>
 
+<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=gptload" target="_blank" rel="sponsored noopener noreferrer"><img src="./screenshot/modelflare-banner-ja.png" alt="Modelflare"></a>
+
+本プロジェクトをご支援いただいている Modelflare に感謝します！Modelflare：フルスペック、安定、水増しなし。世界の SOTA モデルを、より低いコストで。米国拠点の Havenbyte LLC が運営する Modelflare は、一般的な互換プロトコルを通じて GPT、Claude、Gemini、Grok などの主要モデルに対応し、さらに 40 以上の画像・動画モデルも利用できます。
+
+注目は**キャッシュ補償**です。対象の OpenAI グループ（価格優先・安定・プレミアム）は、1 日のキャッシュヒット率をそれぞれ 65%、75%、85% で保証します。対象リクエストがこの水準に達しない場合、Modelflare が差額を返金し、精算後に利用状況ダッシュボードで確認できます。
+
+**特別オファー**：US&#36;20 を 1 回チャージすると、価格倍率 0.015 倍の GPT 割引グループが解放されます。US&#36;50 を 1 回チャージすると、価格倍率 0.03 倍の Claude 割引グループが解放されます。<a href="https://modelflare.dev/sign-up?utm_source=github&amp;utm_campaign=gptload" target="_blank" rel="sponsored noopener noreferrer">こちらの専用リンク</a>から登録して始めましょう。
+
+---
+
 <table>
 <tbody>
 <tr>
@@ -38,10 +48,6 @@ API キー、サブスクリプションアカウント、トラフィック制�
 <tr>
 <td width="180"><a href="https://www.packyapi.ai/register?aff=ahiS" target="_blank" rel="sponsored noopener noreferrer"><picture><source media="(prefers-color-scheme: dark)" srcset="./screenshot/packycode-dark.png"><source media="(prefers-color-scheme: light)" srcset="./screenshot/packycode-light.png"><img src="./screenshot/packycode-light.png" alt="PackyCode" width="150"></picture></a></td>
 <td><strong>PackyCode</strong><br>PackyCode は、安定性と効率性を重視した AI API 中継サービスです。ひとつの API エンドポイントと API キーで主要な大規模モデルに接続できます。統一ドメイン、統一キー、スマートな障害切り替えに対応し、可用性は 97% としています。人民元で 1:1 チャージでき、為替差損や追加手数料の心配はありません。新規ユーザーは初回チャージ割引と $1 の無料体験クレジットを受け取れ、複数グループでは最大 80% の割引、Codex／Claude Code 専用の高速ルートも利用できます。<a href="https://www.packyapi.ai/register?aff=ahiS" target="_blank" rel="sponsored noopener noreferrer">リンクから登録して、すぐに利用を開始できます。</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://fluxionai.space/register?source=github&amp;campaign=gptload&amp;promo=GPTLOAD" target="_blank" rel="sponsored noopener noreferrer"><img src="./screenshot/fluxionai-horizontal.png" alt="Fluxion AI" width="150"></a></td>
-<td><strong>一つの入口で、世界の主要AIモデルに接続・管理</strong><br>Fluxion AIは、個人開発者、技術チーム、企業向けに、統一APIで世界の主要AIモデルへの接続と管理を提供します。複数経路の動的なスケジューリングで可用性を高め、モデルの性能、応答時間、料金を透明に確認できます。モデルや経路によっては、API利用料を公式価格または基準価格より40%〜98%抑えられます。今すぐアクセスして登録すると、$7分のAPIクレジットを受け取れます。（<a href="https://fluxionai.space/register?source=github&amp;campaign=gptload&amp;promo=GPTLOAD" target="_blank" rel="sponsored noopener noreferrer">専用リンク</a>）</td>
 </tr>
 <tr>
 <td width="180"><a href="https://www.axisnow.io/zh"><img src="./screenshot/axisnow.jpg" alt="AxisNow" width="150"></a></td>
@@ -66,6 +72,12 @@ API キー、サブスクリプションアカウント、トラフィック制�
 - **API キーとサブスクリプションを統一管理** — Codex、Claude、Antigravity、Grok と API キーチャネルで、認証情報管理・スケジューリング・健全性管理を共通化します。
 - **スケジューリングと障害分離を内蔵** — 複数認証情報のスケジューリング、設定可能なウェイト、リトライ、クールダウン、ブラックリスト、セッションアフィニティにより、過負荷や失効の影響を抑えます。
 - **可観測で導入しやすく、データを自己管理** — 健全性、ルート、ログ、使用量、コスト概算を確認でき、SQLite、MySQL、PostgreSQL とローカル認証情報暗号化を単一バイナリで利用できます。
+
+## オンラインデモ
+
+[https://demo.gpt-load.com](https://demo.gpt-load.com)
+
+ログインキー：`gpt-load-demo`
 
 ## クイックスタート
 
@@ -138,7 +150,8 @@ SSH やリモートブラウザ経由で操作する場合、ブラウザの `lo
 | OpenAI Images           | `POST /v1/images/...`                                              |
 | OpenAI Embeddings       | `POST /v1/embeddings`                                              |
 | Rerank                  | `POST /v1/rerank`                                                  |
-| Mistral ネイティブ      | `/v1/ocr`、`/v1/audio/...` |
+| Audio Speech            | `POST /v1/audio/speech`                                            |
+| Mistral ネイティブ      | `/v1/ocr`、`/v1/audio/transcriptions` |
 | Anthropic Messages      | `POST /v1/messages`                                                |
 | Gemini                  | `/v1beta/models/...`                                               |
 | Gemini Embeddings       | `POST /v1beta/models/{model}:embedContent` / `:batchEmbedContents` |
@@ -221,6 +234,8 @@ Windows の一般ユーザーは代わりに `gpt-load-windows-setup.exe` を利
 | `DATABASE_MAX_IDLE_CONNECTIONS` | `5` | MySQL と PostgreSQL の最大アイドル接続数。正の整数かつ `DATABASE_MAX_OPEN_CONNECTIONS` 以下である必要があります。SQLite は常に単一接続を使用します。 |
 | `AUTH_KEY` | 空、`${DATA_DIR}/auth.key` を読み込むか生成 | 管理画面と `/api` 管理 API の Bearer キー。データプレーンの AccessKey とは異なります。 |
 | `ENCRYPTION_KEY` | 空、`${DATA_DIR}/encryption.key` を読み込むか生成 | チャネル認証情報を暗号化します。変更または紛失すると既存の認証情報を復号できないため、データベースと一緒にバックアップしてください。 |
+| `CLIENT_IP_HEADER` | 空、接続元 IP を使用 | `X-Forwarded-For` や `CF-Connecting-IP` などのクライアント IP ヘッダー。欠落・無効時は接続元 IP に戻ります。ログや AccessKey の IP 制限などで共用し、IPv4/IPv6 に対応。変更後は再起動が必要です。 |
+| `TRUSTED_PROXIES` | 空 | 任意のプロキシ IP または CIDR（カンマ区切り）。`CLIENT_IP_HEADER` 指定時のみ有効。空の場合は選択したヘッダーを直接信頼するため、デプロイ環境で信頼性を確保してください。指定時は接続元が一致した場合のみヘッダーを使用し、不一致なら接続元 IP を使用します。`X-Forwarded-For` は右から最初の非信頼 IP を採用（すべて信頼済みなら左端）、リスト未指定時は左端を採用。他のヘッダーは単一 IP のみ受け付けます。変更後は再起動が必要です。 |
 | `HTTP_PROXY` | 空 | HTTP アップストリームリクエストの環境プロキシ。 |
 | `HTTPS_PROXY` | 空 | HTTPS アップストリームリクエストの環境プロキシ。 |
 | `NO_PROXY` | 空 | 環境プロキシをバイパスするホスト、ドメイン、IP のカンマ区切りリスト。 |

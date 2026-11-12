@@ -174,6 +174,7 @@ func (handler *Handler) createCodexLive(c *gin.Context, request *dataPlaneReques
 		c.Header(requestIDHeader, id)
 	}
 	recorder := newRequestRecorder(handler.requestLogSink, id, request.requestStarted, request.accessKey.ID, protocol.CodexLive, handler.requestNow)
+	recorder.clientIP = requestPeerIP(c.Request)
 	recorder.setOperation(execution.OperationLiveCall)
 	stored := false
 	defer func() {
@@ -363,6 +364,7 @@ func (handler *Handler) createCodexLive(c *gin.Context, request *dataPlaneReques
 				ResponseStarted: dispatch == execution.DispatchMaybeSent && evidence.StatusCode != 0, UpstreamProtocol: protocol.CodexLive}
 			decisionAt := handler.now()
 			decision := judgeUpstreamResult(result, decisionAt, health.DecisionContext{
+				ErrorRules:               selection.Group.ErrorRules,
 				DefaultRateLimitCooldown: subscriptionruntime.DefaultRefreshFailureCooldown,
 				CredentialRefreshable:    true, Method: http.MethodPost, Operation: execution.OperationLiveCall,
 			})
@@ -385,6 +387,7 @@ func (handler *Handler) createCodexLive(c *gin.Context, request *dataPlaneReques
 			if decision.Effect == health.EffectSkipGroup {
 				iterator.SkipGroup(selection.GroupID)
 			}
+			iterator.AdvancePriority(selection)
 			if decision.Retry == health.RetryRefreshCredential && !refreshUsed {
 				refreshUsed = true
 				refreshSelection = &selection
@@ -429,7 +432,7 @@ func (handler *Handler) createCodexLive(c *gin.Context, request *dataPlaneReques
 			return
 		}
 		call := &liveCallSession{id: upstream.CallID, requestID: id, keyID: request.accessKey.ID, keyHash: keyHash, groupID: selection.GroupID,
-			clientModel: model, model: *selection.UpstreamModelID, peerAddr: c.Request.RemoteAddr,
+			clientModel: model, model: *selection.UpstreamModelID, clientIP: requestPeerIP(c.Request),
 			ref: ref, upstream: upstream.Session, media: media, recorder: recorder, logger: handler.logger, releaseConcurrency: releaseConcurrency}
 		call.authorized = func() bool { return handler.liveCallAuthorized(call.keyID, call) }
 		if !handler.liveSessions.put(call) {
@@ -508,8 +511,7 @@ func (handler *Handler) liveCallAuthorized(keyID uint, call *liveCallSession) bo
 		return false
 	}
 	if len(key.AllowedPeerCIDRs) > 0 {
-		peer, err := utils.NormalizePeerIP(call.peerAddr)
-		if err != nil || !utils.AllowedCIDRsContain(key.AllowedPeerCIDRs, peer) {
+		if !utils.AllowedCIDRsContain(key.AllowedPeerCIDRs, call.clientIP) {
 			return false
 		}
 	}

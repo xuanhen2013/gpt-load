@@ -1,4 +1,6 @@
+import { credentialTestMessages } from '@shared/credential-test-messages'
 export default {
+  credentialBatchTest: credentialTestMessages['en-US'],
   groups: {
     title: 'Groups',
     collection: {
@@ -211,11 +213,6 @@ export default {
         headers: 'Upstream request header rules',
         danger: 'Danger zone',
       },
-      routing: {
-        description: 'Adjust the relative weight used for request allocation.',
-        weightHelp:
-          'Default: 50. Range: 1–100. Multiplied by credential weight to determine allocation shares.',
-      },
       headers: {
         description:
           'Header rules applied to outgoing upstream requests — set, override, or remove; overriding fully replaces the global rules instead of merging with them.',
@@ -324,7 +321,9 @@ export default {
         validationModelPlaceholder: 'Search or enter a model ID',
         validationModelHelp:
           'Leave empty to use the first model in this Group; enter the upstream model ID, not an alias.',
-        weight: 'Group weight',
+        priority: 'Priority',
+        priorityError: 'Enter an integer from -2147483648 to 2147483647',
+        weight: 'Weight',
         auto: 'Auto',
         manual: 'Manual',
         weightError: 'Enter a whole number from 1 to 100',
@@ -402,6 +401,12 @@ export default {
       settings: 'Settings',
     },
     credentials: {
+      name: 'Name',
+      namePlaceholder: 'Optional credential alias',
+      nameSaveFailed: 'Could not save the name. Try again.',
+      showAccount: 'Show full account',
+      hideAccount: 'Hide full account',
+
       modelCooldown: {
         label: 'Model cooldown',
         count: 'Model cooldown · {count}',
@@ -597,6 +602,8 @@ export default {
         moreActions: 'More actions',
         autoRenews: 'renews when used',
         resetCredits: 'Reset credits',
+        creditBalance: 'Credits',
+        creditUnlimited: 'Unlimited',
         resetCreditsCount: '{count} available',
         resetCreditsTooltipTitle: 'Reset credit details',
         resetCreditsTooltipItem: 'Credit {index}: {expires}',
@@ -614,6 +621,13 @@ export default {
         consumeResetCreditSucceeded: 'Quota was reset and quota information was updated.',
         consumeResetCreditPending:
           'Quota was reset, but quota information could not be refreshed. Try again manually.',
+        periodEnd: 'Subscription period ends',
+        renewalEnabled: 'Auto-renew',
+        renewalDisabled: 'Auto-renew off',
+        renewalUnknown: 'Renewal unknown',
+        billingUnavailable: 'Subscription information not provided',
+        billingFailed: 'Subscription information unavailable',
+        billingStale: 'Subscription sync failed; showing previous values',
         tokenExpiresAt: 'Credential expires',
         lastTokenRefresh: 'Last credential refresh',
         initialSyncTitle: 'Quota information not loaded',

@@ -62,7 +62,7 @@ func (testObservation) Observe(context.Context, Credential, Target) (Observation
 type testResetCredit struct{ id spec.ActionID }
 
 func (value testResetCredit) ID() spec.ActionID { return value.id }
-func (testResetCredit) Consume(context.Context, Credential, Target, string) (ResetCreditResult, error) {
+func (testResetCredit) Consume(context.Context, Credential, Target, ResetCreditRequest) (ResetCreditResult, error) {
 	return ResetCreditResult{}, nil
 }
 
@@ -92,6 +92,7 @@ func completeTestRuntimeImplementations() ([]Driver, []ModelDiscovery, []QuotaOb
 		testObservation{id: modules.AntigravityQuotaObservation},
 	}, []ResetCreditAction{
 		testResetCredit{id: modules.CodexResetCreditAction},
+		testResetCredit{id: modules.ClaudeResetCreditAction},
 	}
 }
 
@@ -134,5 +135,28 @@ func TestRuntimeRejectsDuplicateImplementationIDs(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("compileRuntime() accepted duplicate driver IDs")
+	}
+}
+
+func TestValidateLocalCallbackSpecAllowsDeclaredLoopbackHosts(t *testing.T) {
+	t.Parallel()
+	for _, uri := range []string{
+		"http://localhost:1455/auth/callback",
+		"http://127.0.0.1:17326/callback",
+	} {
+		got, err := validateLocalCallbackSpec(LocalCallbackSpec{RedirectURI: uri})
+		if err != nil || got.RedirectURI != uri {
+			t.Fatalf("%s => %#v, %v", uri, got, err)
+		}
+	}
+	for _, uri := range []string{
+		"http://127.0.0.1:17326/callback?x=1",
+		"http://0.0.0.0:17326/callback",
+		"https://127.0.0.1:17326/callback",
+		"http://LocalHost:17326/callback",
+	} {
+		if _, err := validateLocalCallbackSpec(LocalCallbackSpec{RedirectURI: uri}); err == nil {
+			t.Fatalf("expected reject for %s", uri)
+		}
 	}
 }

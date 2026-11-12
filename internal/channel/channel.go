@@ -28,6 +28,8 @@ const (
 	Claude           = spec.Claude
 	Antigravity      = spec.Antigravity
 	Grok             = spec.Grok
+	Muse             = spec.Muse
+	Devin            = spec.Devin
 	Anthropic        = spec.Anthropic
 	Gemini           = spec.Gemini
 	AzureOpenAI      = spec.AzureOpenAI
@@ -58,6 +60,7 @@ const (
 	Cohere           = spec.Cohere
 	OpenCodeGo       = spec.OpenCodeGo
 	OpenCodeZen      = spec.OpenCodeZen
+	Modelflare       = spec.Modelflare
 )
 
 // InputKind describes how a field is collected without exposing its value.
@@ -128,6 +131,21 @@ type NoticeDescriptor struct {
 	Tone NoticeTone `json:"tone"`
 }
 
+// PartnerTier is the commercial partner tier of a channel preset.
+type PartnerTier = spec.PartnerTier
+
+const (
+	PartnerPrincipal = spec.PartnerPrincipal
+	PartnerFeatured  = spec.PartnerFeatured
+	PartnerStandard  = spec.PartnerStandard
+)
+
+// PartnerDescriptor 只供管理界面决定渠道选择时的位置、标识和注册链接。
+type PartnerDescriptor struct {
+	Tier      PartnerTier `json:"tier"`
+	SignupURL string      `json:"signup_url"`
+}
+
 // RouteDescriptor is the safe, compiled route projection exposed to the UI.
 type RouteDescriptor struct {
 	ClientProtocol protocol.Protocol   `json:"client_protocol"`
@@ -149,6 +167,7 @@ type Descriptor struct {
 	SearchTerms      []string             `json:"search_terms"`
 	Description      string               `json:"description"`
 	Notices          []NoticeDescriptor   `json:"notices"`
+	Partner          *PartnerDescriptor   `json:"partner"`
 	ParamFields      []FieldDescriptor    `json:"param_fields"`
 	CredentialFields []FieldDescriptor    `json:"credential_fields"`
 	Connection       ConnectionDescriptor `json:"connection"`
@@ -217,6 +236,8 @@ const (
 	ProviderClaude               = spec.ProviderClaude
 	ProviderAntigravity          = spec.ProviderAntigravity
 	ProviderGrok                 = spec.ProviderGrok
+	ProviderMuse                 = spec.ProviderMuse
+	ProviderDevin                = spec.ProviderDevin
 	ProviderAnthropic            = spec.ProviderAnthropic
 	ProviderGemini               = spec.ProviderGemini
 	ProviderMultiProtocolGateway = spec.ProviderMultiProtocolGateway
@@ -230,6 +251,7 @@ const (
 	ProviderJev                  = spec.ProviderJev
 	ProviderGroq                 = spec.ProviderGroq
 	ProviderXAI                  = spec.ProviderXAI
+	ProviderAlibaba              = spec.ProviderAlibaba
 )
 
 // ResolvedTarget is the provider-neutral execution target derived from a channel preset.
@@ -794,6 +816,10 @@ func cloneDescriptor(source Descriptor) Descriptor {
 	source.DefaultBaseURLs = append([]string{}, source.DefaultBaseURLs...)
 	source.SearchTerms = append([]string{}, source.SearchTerms...)
 	source.Notices = append([]NoticeDescriptor{}, source.Notices...)
+	if source.Partner != nil {
+		partner := *source.Partner
+		source.Partner = &partner
+	}
 	source.ParamFields = append([]FieldDescriptor{}, source.ParamFields...)
 	source.CredentialFields = append([]FieldDescriptor{}, source.CredentialFields...)
 	for index := range source.ParamFields {

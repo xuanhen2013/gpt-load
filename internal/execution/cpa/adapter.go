@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -17,14 +18,17 @@ import (
 	"unicode/utf8"
 
 	"gpt-load/internal/channel"
+	"gpt-load/internal/codexrecovery"
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/execution"
 	"gpt-load/internal/execution/responsealias"
+	"gpt-load/internal/execution/responsemodel"
 	"gpt-load/internal/outboundproxy"
 	platformredact "gpt-load/internal/platform/redact"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
 	"gpt-load/internal/subscription"
+	subscriptionproviders "gpt-load/internal/subscription/providers"
 	providerobservation "gpt-load/internal/subscription/providers/observation"
 	subscriptionruntime "gpt-load/internal/subscription/runtime"
 	"gpt-load/internal/usage"
@@ -51,19 +55,19 @@ type Adapter struct {
 
 type credentialPreparer interface {
 	Prepare(context.Context, channel.ID, execution.CredentialSnapshot, bool) (subscriptionruntime.Credential, *execution.ErrorEvidence)
-	RecordPassiveQuotaObservation(credentialID uint, identityGeneration uint64, observedAtMS int64, windows []providerobservation.QuotaWindow)
+	RecordPassiveQuotaObservation(credentialID uint, identityGeneration uint64, observedAtMS int64, windows []providerobservation.QuotaWindow, credits ...*providerobservation.CreditSummary)
 	RecordPassiveQuotaPair(credentialID uint, identityGeneration uint64, preceding, latest subscription.PassiveQuotaSample)
 }
 
 // recordPassiveQuotaObservation forwards one execution's passive quota
-// windows, if any, to the credential's pending observation. It is a no-op
-// for providers that never populate a response's QuotaWindows.
+// windows and credits, if any, to the credential's pending observation.
 func (a *Adapter) recordPassiveQuotaObservation(
 	spec execution.AttemptSpec,
 	observedAt time.Time,
 	windows []providerobservation.QuotaWindow,
+	credits *providerobservation.CreditSummary,
 ) {
-	if a == nil || a.credentials == nil || len(windows) == 0 {
+	if a == nil || a.credentials == nil || (len(windows) == 0 && credits == nil) {
 		return
 	}
 	a.credentials.RecordPassiveQuotaObservation(
@@ -71,6 +75,7 @@ func (a *Adapter) recordPassiveQuotaObservation(
 		spec.Credential.IdentityGeneration,
 		observedAt.UnixMilli(),
 		windows,
+		credits,
 	)
 }
 
@@ -89,6 +94,8 @@ func NewAdapterWithCodexConnectionReuse(credentials *subscription.CredentialMana
 			newClaudeProviderBridge(),
 			newAntigravityProviderBridge(),
 			newGrokProviderBridge(),
+			newMuseProviderBridge(),
+			newDevinProviderBridge(),
 		),
 		codexConnectionReuseEnabled: enabled,
 	}
@@ -256,7 +263,7 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 			credential,
 			request,
 		)
-		a.recordPassiveQuotaObservation(spec, response.QuotaObservedAt, response.QuotaWindows)
+		a.recordPassiveQuotaObservation(spec, response.QuotaObservedAt, response.QuotaWindows, response.Credits)
 	}
 	if err != nil {
 		result := unaryExecutionError(execCtx, provider, err, credential)
@@ -313,10 +320,14 @@ func unaryProviderSuccess(
 	if statusCode == 0 {
 		statusCode = http.StatusOK
 	}
+	model := responseModel(body, spec.UpstreamModel)
+	if responsemodel.IsConversation(spec.ClientProtocol, spec.Operation) {
+		model = responseModel(body, "")
+	}
 	return execution.AttemptResult{
 		DispatchState: execution.DispatchMaybeSent, ResponseStarted: true,
 		UpstreamProtocol: effectiveUpstreamProtocol(provider, response.UpstreamProtocol), AppliedReasoning: appliedReasoning(response.AppliedReasoningEffort, response.AppliedReasoningMode, response.AppliedReasoningBudgetTokens), StatusCode: statusCode,
-		Header: headers, Body: body, Model: responseModel(body, spec.UpstreamModel),
+		Header: headers, Body: body, Model: model,
 		UpstreamRequestID: upstreamRequestID(headers), Usage: observedUsage,
 		OutboundIdentityHeaders: response.OutboundIdentityHeaders,
 	}
@@ -404,6 +415,12 @@ func (a *Adapter) ExecuteStream(
 	defer cancelStream(context.Canceled)
 	firstByte := startFirstByteGate(spec.Timeouts.FirstByte, cancelStream)
 	defer firstByte.stop()
+	streamCtx = subscriptionproviders.WithStreamBodyObserver(streamCtx, func(body io.ReadCloser, header http.Header) io.ReadCloser {
+		if observer, ok := provider.(providerStreamBodyObserver); ok {
+			return observer.ObserveStreamBody(streamCtx, body, header)
+		}
+		return observeStreamBody(streamCtx, body, header.Get("Content-Encoding"))
+	})
 	response, err := provider.ExecuteStream(streamCtx, strconv.FormatUint(uint64(spec.Credential.ID), 10), credential, request)
 	outboundIdentityHeaders := ""
 	if response != nil {
@@ -415,7 +432,7 @@ func (a *Adapter) ExecuteStream(
 	upstreamProtocol := provider.UpstreamProtocol()
 	if response != nil {
 		upstreamProtocol = effectiveUpstreamProtocol(provider, response.UpstreamProtocol)
-		a.recordPassiveQuotaObservation(spec, response.QuotaObservedAt, response.QuotaWindows)
+		a.recordPassiveQuotaObservation(spec, response.QuotaObservedAt, response.QuotaWindows, response.Credits)
 	}
 	if err != nil {
 		result := unaryExecutionError(streamCtx, provider, err, credential)
@@ -438,11 +455,17 @@ func (a *Adapter) ExecuteStream(
 	sequence := uint64(1)
 	ready := false
 	upstreamStarted := false
+	modelObserver := responsemodel.New(spec.ClientProtocol, spec.UpstreamModel)
 	openAIDone := false
 	geminiTerminal := false
+	incomplete := false
 	var nativeResponsesAssembler *nativeResponsesSSEAssembler
+	var codexBootstrap *codexBootstrapBuffer
 	if spec.ClientProtocol == protocol.OpenAIResponses && spec.RouteMode == execution.RouteNative {
 		nativeResponsesAssembler = &nativeResponsesSSEAssembler{}
+		if provider.ProviderKind() == channel.ProviderCodex {
+			codexBootstrap = &codexBootstrapBuffer{}
+		}
 	}
 	emitPayloads := func(payloads [][]byte) *execution.StreamResult {
 		for _, unframed := range payloads {
@@ -454,6 +477,7 @@ func (a *Adapter) ExecuteStream(
 					return &failure
 				}
 			}
+			modelObserver.ObserveSSE(payload)
 			payload, rewriteErr := rewriteStreamModelAlias(spec, payload)
 			if rewriteErr != nil {
 				failure := streamInternalError(upstreamProtocol, headers, applied, "rewrite subscription response model", ready)
@@ -487,11 +511,17 @@ func (a *Adapter) ExecuteStream(
 		}
 		chunk, ok, idleErr := nextChunk(streamCtx, response.Chunks, idleTimeout)
 		if idleErr != nil {
+			if failure := emitPayloads(codexBootstrap.flush()); failure != nil {
+				return *failure
+			}
 			return streamExecutionError(streamCtx, provider, upstreamProtocol, headers, idleErr, credential, applied, ready)
 		}
 		if !ok {
 			if err := context.Cause(streamCtx); err != nil {
 				return streamExecutionError(streamCtx, provider, upstreamProtocol, headers, err, credential, applied, ready)
+			}
+			if failure := emitPayloads(codexBootstrap.flush()); failure != nil {
+				return *failure
 			}
 			if nativeResponsesAssembler != nil {
 				payloads, finishErr := nativeResponsesAssembler.finish()
@@ -517,11 +547,29 @@ func (a *Adapter) ExecuteStream(
 					return streamConsumerStopped(upstreamProtocol, headers, applied, ready)
 				}
 			}
-			return successfulStreamTerminal(upstreamProtocol, spec, headers, applied)
+			modelObserver.FinishSSE()
+			result := successfulStreamTerminal(upstreamProtocol, modelObserver.Model, headers, applied)
+			result.Incomplete = incomplete
+			return result
 		}
 		if chunk.Err != nil {
+			if codexBootstrap != nil && !codexBootstrap.released && len(chunk.Payload) == 0 &&
+				len(bytes.TrimSpace(nativeResponsesAssembler.pending)) == 0 {
+				if codexBootstrapCapacityRejection(chunk.Err) {
+					return streamExecutionError(streamCtx, provider, upstreamProtocol, headers,
+						&codexBootstrapRejectionError{cause: chunk.Err, inStream: true}, credential, applied, false)
+				}
+				// 历史续接状态被拒时丢弃前导，与没有前导的拒绝一致，交给网关清理后重放。
+				if codexrecovery.Classify(chunk.Err.Error()) != "" {
+					return streamExecutionError(streamCtx, provider, upstreamProtocol, headers, chunk.Err, credential, applied, false)
+				}
+			}
+			if failure := emitPayloads(codexBootstrap.flush()); failure != nil {
+				return *failure
+			}
 			return streamExecutionError(streamCtx, provider, upstreamProtocol, headers, chunk.Err, credential, applied, ready)
 		}
+		incomplete = incomplete || chunk.Incomplete
 		if len(chunk.Payload) == 0 && nativeResponsesAssembler == nil {
 			continue
 		}
@@ -532,6 +580,11 @@ func (a *Adapter) ExecuteStream(
 		if err := context.Cause(streamCtx); err != nil {
 			return streamExecutionError(streamCtx, provider, upstreamProtocol, headers, err, credential, applied, false)
 		}
+		if codexBootstrap.observeChunk() {
+			if failure := emitPayloads(codexBootstrap.flush()); failure != nil {
+				return *failure
+			}
+		}
 		payloads := [][]byte{chunk.Payload}
 		if nativeResponsesAssembler != nil {
 			payloads, err = nativeResponsesAssembler.push(chunk.Payload)
@@ -539,7 +592,7 @@ func (a *Adapter) ExecuteStream(
 				return streamInternalError(upstreamProtocol, headers, applied, "invalid subscription SSE stream", ready)
 			}
 		}
-		if failure := emitPayloads(payloads); failure != nil {
+		if failure := emitPayloads(codexBootstrap.filter(payloads)); failure != nil {
 			return *failure
 		}
 	}
@@ -941,14 +994,14 @@ func notSentEvidence(kind execution.ErrorKind, summary, code string) *execution.
 
 func successfulStreamTerminal(
 	upstreamProtocol protocol.Protocol,
-	spec execution.AttemptSpec,
+	model string,
 	headers http.Header,
 	applied *reasoning.Config,
 ) execution.StreamResult {
 	return execution.StreamResult{
 		DispatchState: execution.DispatchMaybeSent, ResponseStarted: true,
 		UpstreamProtocol: upstreamProtocol, AppliedReasoning: applied, StatusCode: http.StatusOK,
-		Header: headers, UpstreamRequestID: upstreamRequestID(headers), Model: spec.UpstreamModel,
+		Header: headers, UpstreamRequestID: upstreamRequestID(headers), Model: model,
 	}
 }
 

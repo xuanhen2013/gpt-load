@@ -139,17 +139,14 @@ async function submit(): Promise<void> {
 <template>
   <div class="modern-login-stage">
     <LoginMascot :quiet="typing || submitting" />
-    <AuthCard
-      class="modern-login-card"
-      :title="t('auth.title')"
-      :description="t('auth.description')"
-    >
+    <AuthCard class="modern-login-card" :title="t('auth.title')">
       <form class="modern-login-form" novalidate @submit.prevent="submit">
         <template v-if="!authenticated">
           <AppTextField
             ref="input"
             v-model="candidate"
             :label="t('auth.keyLabel')"
+            :hint="t('auth.description')"
             name="auth-key"
             :type="visible ? 'text' : 'password'"
             autocomplete="current-password"
@@ -290,7 +287,18 @@ async function submit(): Promise<void> {
 }
 @media (max-width: 760px) {
   .modern-login-stage {
-    --modern-login-mascot-width: 108px;
+    --modern-login-mascot-width: 88px;
+  }
+  .modern-login-card {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+    padding-inline: 0;
+  }
+  .modern-login-help summary {
+    min-height: var(--modern-touch-target);
+    align-content: center;
   }
 }
 </style>

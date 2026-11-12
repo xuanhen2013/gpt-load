@@ -3,6 +3,7 @@ package embedded
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -733,6 +734,26 @@ func TestBeginClaudeBrowserAuthorizationUsesFixedPKCECallback(t *testing.T) {
 	}
 }
 
+func TestBeginClaudeBrowserAuthorizationMatchesNativeClaudeCodeParameters(t *testing.T) {
+	authorization, err := BeginClaudeBrowserAuthorization()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(authorization.AuthorizationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 原生 Claude Code 使用 32 字节随机数的无填充 base64url state，授权时额外申请 Console scope。
+	decoded, err := base64.RawURLEncoding.DecodeString(authorization.State)
+	if len(authorization.State) != 43 || err != nil || len(decoded) != 32 {
+		t.Fatalf("state = %q, decode error = %v", authorization.State, err)
+	}
+	const wantScope = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+	if got := parsed.Query().Get("scope"); got != wantScope {
+		t.Fatalf("scope = %q, want %q", got, wantScope)
+	}
+}
+
 func TestCompleteClaudeBrowserAuthorizationReturnsCanonicalCredential(t *testing.T) {
 	fixedNow := time.Date(2026, 8, 16, 8, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -937,7 +958,7 @@ func TestDiscoverClaudeModelsMergesBootstrapEntitlementsWithRegistry(t *testing.
 		}
 		if request.Header.Get("Authorization") != "Bearer "+credential.AccessToken ||
 			request.Header.Get("Anthropic-Beta") != "oauth-2025-04-20" ||
-			!strings.HasPrefix(request.Header.Get("User-Agent"), "claude-code/") ||
+			request.Header.Get("User-Agent") != "claude-code/"+ClaudeClientVersion ||
 			request.URL.Query().Get("entrypoint") == "" {
 			t.Fatalf("bootstrap request = %s headers=%v", request.URL, request.Header)
 		}
@@ -1009,8 +1030,9 @@ func TestObserveClaudeAccountCombinesProfileRolesBootstrapAndUsage(t *testing.T)
 			}
 			_, _ = writer.Write([]byte(`{"oauth_account":{"account_uuid":"account-one","account_email":"owner@example.com","organization_uuid":"organization-one","organization_name":"Example Org","organization_type":"claude_team","organization_rate_limit_tier":"org-bootstrap-tier","user_rate_limit_tier":"user-tier","seat_tier":"team_standard"}}`))
 		case "/usage":
-			if request.Header.Get("Anthropic-Beta") != "" ||
-				request.Header.Get("User-Agent") != "axios/1.15.2" ||
+			if request.Header.Get("Anthropic-Beta") != claudeBootstrapBeta ||
+				request.Header.Get("User-Agent") != claudeUserAgent ||
+				request.URL.Query().Get("cedar_ember") != "1" ||
 				request.Header.Get("Content-Type") != "application/json" {
 				t.Fatalf("usage headers = %v", request.Header)
 			}
@@ -1126,6 +1148,8 @@ func TestObserveClaudeAccountRejectsSourceWithoutUsableData(t *testing.T) {
 		{name: "currency-only extra usage", path: "/usage", payload: `{"extra_usage":{"currency":""}}`},
 		{name: "limit without percent", path: "/usage", payload: `{"limits":[{"kind":"weekly","group":"opus"}]}`},
 		{name: "unknown usage schema", path: "/usage", payload: `{"new_unknown_field":"value"}`},
+		{name: "negative reset credits", path: "/usage", payload: `{"cedar_ember":{"eligible":true,"grants":[{"usable_now":true,"resets_left":-1}]}}`},
+		{name: "excessive reset credits", path: "/usage", payload: `{"cedar_ember":{"eligible":true,"grants":[{"usable_now":true,"resets_left":256},{"usable_now":true,"resets_left":1}]}}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

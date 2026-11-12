@@ -1,4 +1,6 @@
+import { credentialTestMessages } from '@shared/credential-test-messages'
 export default {
+  credentialBatchTest: credentialTestMessages['ja-JP'],
   groups: {
     title: 'グループ',
     collection: {
@@ -211,11 +213,6 @@ export default {
         headers: 'アップストリームリクエストヘッダールール',
         danger: '危険な操作',
       },
-      routing: {
-        description: 'リクエスト分配に使うグループの相対的な重みを設定します。',
-        weightHelp:
-          '既定値は 50、範囲は 1–100 です。認証情報の重みと掛け合わせて分配比率を決定します。',
-      },
       headers: {
         description:
           'アップストリームへのリクエストに適用するヘッダーの設定・上書き・削除ルール。オーバーライドするとグローバルルール全体を置き換え、マージはされません。',
@@ -324,7 +321,9 @@ export default {
         validationModelPlaceholder: 'モデル ID を検索または入力',
         validationModelHelp:
           '空欄の場合はグループの最初のモデルを使用します。エイリアスではなくアップストリームのモデル ID を入力してください。',
-        weight: 'グループの重み',
+        priority: '優先度',
+        priorityError: '-2147483648～2147483647 の整数を入力してください',
+        weight: '重み',
         auto: '自動',
         manual: '手動',
         weightError: '1～100 の整数を入力してください',
@@ -402,6 +401,12 @@ export default {
       settings: '設定',
     },
     credentials: {
+      name: '名前',
+      namePlaceholder: '認証情報の表示名（任意）',
+      nameSaveFailed: '名前を保存できませんでした。再試行してください。',
+      showAccount: 'アカウント全体を表示',
+      hideAccount: 'アカウント全体を隠す',
+
       modelCooldown: {
         label: 'モデルクールダウン',
         count: 'モデルクールダウン · {count}',
@@ -602,6 +607,8 @@ export default {
         moreActions: 'その他の操作',
         autoRenews: '使用時に自動更新',
         resetCredits: 'リセットクレジット',
+        creditBalance: 'クレジット',
+        creditUnlimited: '無制限',
         resetCreditsCount: '{count} 件利用可能',
         resetCreditsTooltipTitle: 'リセットクレジットの詳細',
         resetCreditsTooltipItem: '{index} 件目：{expires}',
@@ -619,6 +626,13 @@ export default {
         consumeResetCreditSucceeded: '利用枠をリセットし、利用枠情報を更新しました。',
         consumeResetCreditPending:
           '利用枠をリセットしましたが、利用枠情報を更新できませんでした。手動で再試行してください。',
+        periodEnd: '契約期間終了',
+        renewalEnabled: '自動更新',
+        renewalDisabled: '自動更新なし',
+        renewalUnknown: '更新状況不明',
+        billingUnavailable: '契約情報が提供されていません',
+        billingFailed: '契約情報を取得できません',
+        billingStale: '契約情報の同期に失敗・前回の情報を表示',
         tokenExpiresAt: '認証期限',
         lastTokenRefresh: '認証情報の最終更新',
         initialSyncTitle: '利用枠情報が未取得です',

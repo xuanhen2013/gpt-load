@@ -11,6 +11,7 @@ import (
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/execution"
+	"gpt-load/internal/health"
 	"gpt-load/internal/outboundproxy"
 	"gpt-load/internal/platform/config"
 	"gpt-load/internal/platform/encryption"
@@ -22,6 +23,8 @@ import (
 )
 
 type GroupSettingsResponse struct {
+	DefaultErrorRules   []health.ErrorRule           `json:"default_error_rules"`
+	Priority            int32                        `json:"priority"`
 	PriceMultiplier     string                       `json:"price_multiplier"`
 	ChannelID           channel.ID                   `json:"channel_id"`
 	ConnectionType      models.ConnectionType        `json:"connection_type"`
@@ -38,6 +41,7 @@ type GroupSettingsResponse struct {
 }
 
 type GroupSettingsUpdateRequest struct {
+	Priority           optionalField[int32]                `json:"priority"`
 	PriceMultiplier    optionalField[string]               `json:"price_multiplier"`
 	Name               optionalField[string]               `json:"name"`
 	Params             optionalField[json.RawMessage]      `json:"params"`
@@ -142,6 +146,8 @@ func groupSettingsResponse(
 		selected, _ = target.PreferredProtocol(execution.OperationProbe, model)
 	}
 	return GroupSettingsResponse{
+		DefaultErrorRules:  system.ErrorRules.Rules(),
+		Priority:           group.Priority,
 		ValidationProtocol: optionalValidationProtocol(selected), ValidationProtocols: protocols,
 		PriceMultiplier: priceMultiplierResponse(group.PriceMultiplierMicros),
 		ChannelID:       channelID,
@@ -172,6 +178,7 @@ func normalizeGroupSettingsUpdate(
 		request.Name.Set && request.Name.Null,
 		request.Params.Set && request.Params.Null,
 		request.Enabled.Set && request.Enabled.Null,
+		request.Priority.Set && request.Priority.Null,
 		request.Overrides.Set && request.Overrides.Null,
 	} {
 		if nullable {
@@ -179,7 +186,7 @@ func normalizeGroupSettingsUpdate(
 		}
 	}
 	if !request.ValidationProtocol.Set && !request.Name.Set && !request.Params.Set && !request.ValidationModel.Set &&
-		!request.Enabled.Set && !request.WeightManual.Set && !request.Overrides.Set && !request.Proxy.Set && !request.PriceMultiplier.Set {
+		!request.Priority.Set && !request.Enabled.Set && !request.WeightManual.Set && !request.Overrides.Set && !request.Proxy.Set && !request.PriceMultiplier.Set {
 		return normalizedGroupSettingsUpdate{}, app_errors.ErrBadRequest
 	}
 
@@ -281,7 +288,7 @@ func (s *Service) UpdateGroupSettings(
 			if normErr != nil {
 				return app_errors.ErrValidation
 			}
-			previous, decErr := decryptProxyOverride(s.encryption, group.ProxyConfig)
+			previous, decErr := s.resolvedProxyOverride(ctx, tx, group.ProxyConfig)
 			if decErr != nil {
 				return decErr
 			}
@@ -297,7 +304,11 @@ func (s *Service) UpdateGroupSettings(
 			normalized.proxyConfig = &ciphertext
 		}
 
-		updates := make(map[string]any, 8)
+		updates := make(map[string]any, 9)
+		if request.Priority.Set {
+			group.Priority = request.Priority.Value
+			updates["priority"] = group.Priority
+		}
 		if normalized.priceMultiplierMicros != nil {
 			group.PriceMultiplierMicros = normalized.priceMultiplierMicros
 			updates["price_multiplier_micros"] = *normalized.priceMultiplierMicros
@@ -347,6 +358,10 @@ func (s *Service) UpdateGroupSettings(
 			updates["overrides"] = group.Overrides
 		}
 		if normalized.proxySet {
+			normalized.proxyConfig, err = s.managedProxyOverride(ctx, tx, normalized.proxyConfig)
+			if err != nil {
+				return err
+			}
 			group.ProxyConfig = normalized.proxyConfig
 			updates["proxy_config"] = normalized.proxyConfig
 		}

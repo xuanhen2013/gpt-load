@@ -19,7 +19,7 @@ func (manager *RuntimeManager) ValidateRouteCapability(
 		return fmt.Errorf("runtime manager is unavailable")
 	}
 	if _, sdkBacked := sdkProviderSpecFor(providerKind); !sdkBacked &&
-		providerKind != channel.ProviderOpenAICompatible && providerKind != channel.ProviderMultiProtocolGateway &&
+		!openAICompatibleBase(providerKind) && providerKind != channel.ProviderMultiProtocolGateway &&
 		providerKind != channel.ProviderJev && providerKind != channel.ProviderCline {
 		return fmt.Errorf("provider is not implemented by Bifrost")
 	}
@@ -103,6 +103,7 @@ func nativeRouteImplemented(
 		case protocol.OpenAIResponses:
 			return operation == execution.OperationResponsesCreate ||
 				operation == execution.OperationProbe ||
+				operation == execution.OperationWebSearch ||
 				nativeResponsesLifecycleOperation(operation)
 		case protocol.OpenAIImages:
 			return operation == execution.OperationImagesGenerate ||
@@ -132,6 +133,9 @@ func nativeRouteImplemented(
 		if clientProtocol == protocol.Mistral {
 			return mistralNativeOperation(operation)
 		}
+		if clientProtocol == protocol.AudioSpeech {
+			return operation == execution.OperationAudioSpeech
+		}
 		if clientProtocol == protocol.OpenAIEmbeddings {
 			return operation == execution.OperationEmbeddingsCreate || operation == execution.OperationProbe
 		}
@@ -139,7 +143,7 @@ func nativeRouteImplemented(
 			return operation == execution.OperationImagesGenerate || operation == execution.OperationImagesEdit
 		}
 		return clientProtocol == protocol.OpenAICompletions && standardProtocolOperation(clientProtocol, operation)
-	case channel.ProviderDeepSeek:
+	case channel.ProviderDeepSeek, channel.ProviderAlibaba:
 		switch clientProtocol {
 		case protocol.OpenAICompletions, protocol.OpenAIResponses:
 			return standardProtocolOperation(clientProtocol, operation)
@@ -149,6 +153,9 @@ func nativeRouteImplemented(
 			return false
 		}
 	case channel.ProviderOpenRouter:
+		if clientProtocol == protocol.AudioSpeech {
+			return operation == execution.OperationAudioSpeech
+		}
 		if clientProtocol == protocol.OpenAIEmbeddings {
 			return operation == execution.OperationEmbeddingsCreate || operation == execution.OperationProbe
 		}
@@ -170,7 +177,6 @@ func mistralNativeOperation(operation execution.Operation) bool {
 	case execution.OperationMistralOCR,
 		execution.OperationMistralFIM,
 		execution.OperationMistralAudioTranscription,
-		execution.OperationMistralAudioSpeech,
 		execution.OperationMistralModeration,
 		execution.OperationMistralChatModeration,
 		execution.OperationMistralClassification,

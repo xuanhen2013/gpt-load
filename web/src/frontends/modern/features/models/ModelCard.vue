@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronRight, PencilLine, Settings2 } from '@lucide/vue'
+import { ChevronRight, PencilLine } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
@@ -11,24 +11,26 @@ import {
 } from '@modern/api/models'
 import {
   AppBadge,
+  AppButton,
   AppChannelIcon,
   AppCopyValue,
   AppIcon,
   AppIconButton,
   AppOverflowText,
+  AppTag,
   AppTooltip,
 } from '@modern/components/ui'
 import { protocolLabel } from '@modern/i18n/protocols'
 import { modelGroupCount, modelUnitPrice, priceStatus } from './models-display'
-import './model-group-chip.css'
 
 const props = defineProps<{
+  mobile?: boolean
   model: RequestModel
   admin: boolean
   selected?: boolean
   disabled?: boolean
 }>()
-const emit = defineEmits<{ open: [source?: number]; settings: [] }>()
+const emit = defineEmits<{ open: [source?: number] }>()
 const { t, n, locale } = useI18n()
 // 协议在同一批模型上重复度接近 100%，折成一行中性摘要，悬浮再看全量列表。
 const protocolsLabel = computed(() =>
@@ -63,23 +65,54 @@ function hiddenGroupsLabel(source: ModelSource): string {
 </script>
 
 <template>
-  <article class="modern-model-card" :class="{ 'is-selected': selected }" :aria-label="model.name">
+  <article v-if="mobile" class="modern-model-mobile">
+    <AppButton
+      variant="ghost"
+      class="modern-model-mobile-title"
+      :disabled="disabled"
+      @click="emit('open')"
+      ><strong>{{ model.name }}</strong
+      ><AppIcon :icon="ChevronRight" size="sm"
+    /></AppButton>
+    <div class="modern-model-mobile-meta">
+      <span>{{ t('modelManager.protocolCount', { count: n(model.protocols.length) }) }}</span
+      ><span>{{ t('modelManager.sourceCount', { count: n(model.sources.length) }) }}</span
+      ><span v-if="admin">{{ t('modelManager.groupCount', { count: n(groupCount) }) }}</span>
+    </div>
+    <div
+      v-for="source in admin ? model.sources : model.sources.slice(0, 2)"
+      :key="source.price.id"
+      class="modern-model-mobile-source-row"
+    >
+      <AppButton
+        variant="ghost"
+        class="modern-model-mobile-source"
+        :disabled="disabled"
+        @click="emit('open', source.price.id)"
+      >
+        <span class="modern-model-mobile-channel"
+          ><AppChannelIcon
+            :icon="source.price.channel.icon"
+            :mark="source.price.channel.mark"
+            :name="source.price.channel.name"
+            size="sm"
+          /><span>{{ source.price.channel.name }}</span></span
+        >
+        <span class="modern-model-mobile-prices"
+          ><span>{{ t('modelManager.slots.input') }} {{ price(source, 'input') }}</span
+          ><span>{{ t('modelManager.slots.output') }} {{ price(source, 'output') }}</span></span
+        >
+      </AppButton>
+    </div>
+  </article>
+  <article
+    v-else
+    class="modern-model-card"
+    :class="{ 'is-selected': selected }"
+    :aria-label="model.name"
+  >
     <header class="modern-model-card-heading">
       <span class="modern-model-card-name"><AppCopyValue :value="model.name" /></span>
-      <AppBadge
-        v-if="admin && model.hasOverrides !== undefined"
-        class="modern-model-card-profile"
-        variant="outline"
-        size="xs"
-        :tone="model.hasOverrides ? 'brand' : 'neutral'"
-        >{{
-          t(
-            model.hasOverrides
-              ? 'modelManager.profile.badgeCustom'
-              : 'modelManager.profile.badgeAutomatic',
-          )
-        }}</AppBadge
-      >
       <AppTooltip :label="protocolsLabel">
         <span tabindex="0" class="modern-model-card-meta">{{
           t('modelManager.protocolCount', { count: n(model.protocols.length) })
@@ -91,17 +124,8 @@ function hiddenGroupsLabel(source: ModelSource): string {
       <span v-if="admin" class="modern-model-card-meta">{{
         t('modelManager.groupCount', { count: n(groupCount) })
       }}</span>
-      <AppIconButton
-        v-if="admin"
-        :icon="Settings2"
-        :label="t('modelManager.profile.action')"
-        size="xxs"
-        class="modern-model-card-profile-action"
-        :disabled="disabled"
-        @click="emit('settings')"
-      />
     </header>
-    <!-- 列宽在窄屏下有下限，超出卡片宽度时横向滚动而不是把标签挤到换行。 -->
+    <!-- 桌面对齐价格列，手机按来源展示带标签的价格摘要。 -->
     <div
       class="modern-model-card-table"
       :class="{ 'is-read-only': !admin }"
@@ -147,12 +171,15 @@ function hiddenGroupsLabel(source: ModelSource): string {
           </span>
           <span v-if="admin" class="modern-model-source-groups">
             <template v-for="group in visibleGroups(source)" :key="group.id">
-              <RouterLink
+              <AppTag
+                :as="RouterLink"
                 :to="{ name: 'modern-group-detail', params: { id: group.id } }"
+                :text="group.name || t('logs.deleted')"
+                size="xs"
+                tone="neutral"
                 class="modern-model-group-chip"
                 :class="{ 'is-disabled': !group.enabled }"
-                ><AppOverflowText :text="group.name || t('logs.deleted')"
-              /></RouterLink>
+              />
             </template>
             <AppTooltip v-if="source.groups.length > 1" :label="hiddenGroupsLabel(source)">
               <span tabindex="0" class="modern-model-source-more"
@@ -164,6 +191,7 @@ function hiddenGroupsLabel(source: ModelSource): string {
             v-for="field in priceFields"
             :key="field"
             class="r modern-model-source-price"
+            :data-label="t('modelManager.slots.' + field)"
             :class="{ 'is-empty': source.price.prices[field] === null }"
             >{{ price(source, field) }}</span
           >
@@ -175,6 +203,7 @@ function hiddenGroupsLabel(source: ModelSource): string {
             <AppBadge v-if="priceStatus(source.price) === 'pending'" tone="warning" size="xs">{{
               t('modelManager.priceMethods.pending')
             }}</AppBadge>
+
             <template v-else>
               <AppIcon v-if="priceStatus(source.price) === 'manual'" :icon="PencilLine" size="xs" />
               <AppOverflowText
@@ -183,6 +212,7 @@ function hiddenGroupsLabel(source: ModelSource): string {
             </template>
           </span>
           <AppIconButton
+            class="modern-model-source-open"
             :icon="ChevronRight"
             :label="t('modelManager.details')"
             size="xs"
@@ -196,7 +226,74 @@ function hiddenGroupsLabel(source: ModelSource): string {
 </template>
 
 <style scoped>
+.modern-model-mobile-source-row {
+  display: flex;
+  align-items: center;
+  gap: var(--modern-space-3);
+}
+.modern-model-mobile-source-row > .modern-model-mobile-source {
+  flex: 1;
+  min-width: 0;
+}
+.modern-model-mobile {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: var(--modern-space-1);
+  border-bottom: var(--modern-line-width) solid var(--modern-border);
+  padding: var(--modern-space-3) 0;
+}
+.modern-model-mobile-title {
+  width: 100%;
+  justify-content: space-between;
+  color: var(--modern-text);
+  padding: 0;
+  min-width: 0;
+}
+.modern-model-mobile-title strong {
+  text-align: left;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-weight: var(--modern-weight-semibold);
+}
+.modern-model-mobile-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--modern-space-3);
+  color: var(--modern-muted);
+  font-size: var(--modern-font-size-small);
+}
+.modern-model-mobile-source {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: stretch;
+  gap: var(--modern-space-1);
+  height: auto;
+  padding: var(--modern-space-2) 0;
+  color: var(--modern-muted);
+  font-weight: var(--modern-weight-regular);
+  text-align: left;
+}
+.modern-model-mobile-channel {
+  display: flex;
+  align-items: center;
+  gap: var(--modern-space-2);
+}
+.modern-model-mobile-channel > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modern-model-mobile-prices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--modern-space-3);
+  font-size: var(--modern-font-size-small);
+}
+
 .modern-model-card {
+  container: modern-model-card / inline-size;
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -254,11 +351,6 @@ function hiddenGroupsLabel(source: ModelSource): string {
   color: var(--modern-muted);
   font-size: var(--modern-font-size-caption);
   letter-spacing: var(--modern-tracking-label);
-}
-.modern-model-card-profile,
-.modern-model-card-profile-action {
-  flex: none;
-  align-self: center;
 }
 /* 摘要读成一句而不是三个孤立标签。 */
 .modern-model-card-meta + .modern-model-card-meta::before {
@@ -345,6 +437,9 @@ function hiddenGroupsLabel(source: ModelSource): string {
   font-size: var(--modern-font-size-caption);
   line-height: var(--modern-leading-compact);
 }
+.modern-model-group-chip.is-disabled {
+  opacity: var(--modern-opacity-quiet);
+}
 /* 不换行：分组一多就折行会把行高撑乱，超出的交给 +N 提示。 */
 .modern-model-source-groups {
   display: flex;
@@ -384,5 +479,68 @@ function hiddenGroupsLabel(source: ModelSource): string {
 }
 .modern-model-source-method.is-unpriced {
   text-decoration: line-through;
+}
+/* 紧凑卡片按自身宽度重排，桌面窄窗口同样适用。 */
+@container modern-model-card (max-width: 640px) {
+  .modern-model-card-heading {
+    padding: var(--modern-space-3);
+  }
+  .modern-model-card-name {
+    flex-basis: 100%;
+  }
+  .modern-model-card-table {
+    overflow-x: visible;
+  }
+  .modern-model-row,
+  .modern-model-card-table.is-read-only .modern-model-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    min-width: 0;
+    gap: var(--modern-space-2) var(--modern-space-3);
+    padding: var(--modern-space-3);
+  }
+  .modern-model-row--head,
+  .modern-model-card-table.is-read-only .modern-model-row--head {
+    display: none;
+  }
+  .modern-model-source-name {
+    grid-column: 1 / 4;
+    grid-row: 1;
+  }
+  .modern-model-source-groups {
+    grid-column: 1 / 3;
+    grid-row: 2;
+  }
+  .modern-model-source-groups .modern-model-group-chip {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .modern-model-source-method {
+    grid-column: 3 / -1;
+    grid-row: 2;
+    justify-self: end;
+  }
+  .modern-model-row .modern-model-source-price {
+    grid-column: span 2;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--modern-space-1);
+    overflow: visible;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .modern-model-source-price::before {
+    content: attr(data-label);
+    color: var(--modern-muted);
+    font-family: var(--modern-font-sans);
+    font-size: var(--modern-font-size-caption);
+  }
+  .modern-model-source-open {
+    grid-column: 4;
+    grid-row: 1;
+    justify-self: end;
+  }
 }
 </style>

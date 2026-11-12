@@ -1,3 +1,4 @@
+import { outputTokensPerSecond } from '@shared/output-rate'
 import { numberFormatter, dateFormatter } from '@modern/components/ui/intl-formatters'
 import type { LogEntry } from '@modern/api/logs'
 import type { SemanticTone } from '@modern/components/ui'
@@ -52,29 +53,21 @@ export function exactLogMoney(value: string): string {
   const fraction = padded.slice(-9).replace(/0+$/, '')
   return '$' + padded.slice(0, -9) + (fraction ? '.' + fraction : '')
 }
+// 日志里的数值与单位紧挨着显示，不留空格。
 export function logDuration(ms: number | null, locale: string): string {
   if (ms === null) return '—'
   return (
     numberFormatter(locale, {
       minimumFractionDigits: ms < 1000 ? 0 : 1,
       maximumFractionDigits: ms < 1000 ? 0 : 1,
-    }).format(ms < 1000 ? ms : ms / 1000) + (ms < 1000 ? ' ms' : ' s')
+    }).format(ms < 1000 ? ms : ms / 1000) + (ms < 1000 ? 'ms' : 's')
   )
 }
 export function logOutputRate(row: LogEntry, locale: string): string {
-  if (
-    !row.stream ||
-    !logHasUsage(row) ||
-    row.first_response_ms === null ||
-    row.duration_ms <= row.first_response_ms
-  )
-    return '—'
-  const output = Number(row.output_tokens)
-  if (!Number.isSafeInteger(output) || output <= 0) return '—'
-  const rate = output / ((row.duration_ms - row.first_response_ms) / 1000)
-  return Number.isFinite(rate)
-    ? numberFormatter(locale, { maximumFractionDigits: 1 }).format(rate) + ' t/s'
-    : '—'
+  const rate = outputTokensPerSecond(row)
+  return rate === null
+    ? '—'
+    : numberFormatter(locale, { maximumFractionDigits: 1 }).format(rate) + 't/s'
 }
 export function logTime(ms: number, locale: string, full = false): string {
   return dateFormatter(locale, {

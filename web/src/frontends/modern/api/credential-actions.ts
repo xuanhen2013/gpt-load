@@ -25,6 +25,7 @@ export async function updateCredential(
   group: number,
   id: number,
   patch: {
+    name?: string
     weight_manual?: number | null
     account_concurrency_limit?: number | null
     proxy?: ProxyOverride | null
@@ -168,6 +169,7 @@ export interface CredentialTestResult {
   model: string
   protocol: string
   reason: string | null
+  errorDetail?: string
   proof: string | null
 }
 export async function testCredential(
@@ -191,6 +193,7 @@ export async function testCredential(
     model: text(data.model),
     protocol: text(data.protocol),
     reason: data.reason === null ? null : text(data.reason),
+    errorDetail: data.error_detail === undefined ? undefined : text(data.error_detail),
     proof:
       boolean(data.can_restore) && data.restore_proof !== null ? text(data.restore_proof) : null,
   }

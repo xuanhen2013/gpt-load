@@ -72,7 +72,7 @@ const identities = useQuery(
         rows.push(...next.items)
         next.items.forEach((row) => missing.delete(row.id))
       }
-      return new Map(rows.map((row) => [row.id, row.account || row.mask]))
+      return new Map(rows.map((row) => [row.id, row.label]))
     },
     enabled: props.group.credentials.length > 0,
   })),
@@ -91,6 +91,9 @@ function setPageSize(value: number): void {
 <template>
   <div class="modern-inspection-credentials">
     <div class="modern-inspection-weights">
+      <span
+        >{{ t('groups.edit.priority') }} <strong>{{ n(group.priority) }}</strong></span
+      >
       <span
         >{{ t('inspector.groupWeight') }} <strong>{{ n(group.weight ?? 50) }}</strong></span
       >
@@ -128,15 +131,21 @@ function setPageSize(value: number): void {
           class="modern-inspection-credential-columns"
           role="row"
         >
-          <div role="cell"><AppOverflowText :text="identity(row.id)" /></div>
-          <div role="cell">
+          <div role="cell" :data-label="t('inspector.credential')">
+            <AppOverflowText :text="identity(row.id)" />
+          </div>
+          <div role="cell" :data-label="t('inspector.status')">
             <AppBadge :tone="row.available ? 'success' : 'neutral'" variant="plain" size="xs" dot>
               {{ row.available ? t('inspector.available') : reasonLabel(row.reason, t) }}
             </AppBadge>
           </div>
-          <span role="cell">{{ n(row.weight) }}</span>
-          <span role="cell">{{ n(row.effectiveWeight) }}</span>
-          <span role="cell">{{ credentialTime(row.cooldownUntil, locale) }}</span>
+          <span role="cell" :data-label="t('inspector.weight')">{{ n(row.weight) }}</span>
+          <span role="cell" :data-label="t('inspector.effectiveWeight')">{{
+            n(row.effectiveWeight)
+          }}</span>
+          <span role="cell" :data-label="t('inspector.cooldown')">{{
+            credentialTime(row.cooldownUntil, locale)
+          }}</span>
           <div role="cell">
             <AppIconButton
               :icon="Eye"
@@ -214,5 +223,32 @@ function setPageSize(value: number): void {
 }
 .modern-inspection-credential-head {
   color: var(--modern-muted);
+}
+@media (max-width: 760px) {
+  .modern-inspection-credential-table {
+    min-width: 0;
+  }
+  .modern-inspection-credential-columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .modern-inspection-credential-head {
+    display: none;
+  }
+  .modern-inspection-credential-columns > [data-label] {
+    display: grid;
+    justify-items: start;
+    gap: var(--modern-space-1);
+  }
+  .modern-inspection-credential-columns > [data-label]::before {
+    content: attr(data-label);
+    color: var(--modern-muted);
+    font-size: var(--modern-font-size-small);
+  }
+  .modern-inspection-credential-columns > :first-child {
+    grid-column: 1 / -1;
+  }
+  .modern-inspection-credential-columns > :last-child {
+    justify-self: end;
+  }
 }
 </style>

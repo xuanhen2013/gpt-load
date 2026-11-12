@@ -28,12 +28,14 @@ import {
   type GroupRow,
   type GroupWorkspace,
 } from '@modern/api/groups'
+import { useMobileLayout } from '@modern/app/use-mobile-layout'
 import { useMessageSource } from '@modern/app/messages'
 import { useURLState } from '@modern/app/url-state'
 import { usePageRefresh } from '@modern/app/page-refresh'
 import { useLoadingFeedback } from '@modern/components/ui/loading'
 import {
   AppAdvancedFilters,
+  AppFilterSheet,
   AppAdvancedFilterSection,
   AppButton,
   AppChannelIcon,
@@ -61,6 +63,10 @@ import { protocolLabel, protocolOrder } from '@modern/i18n/protocols'
 import { groupFilterQuery as serializeGroupFilters, parseGroupFilters } from './group-route'
 
 const { t, n, locale } = useI18n()
+const isMobile = useMobileLayout()
+const mobileFilterCount = computed(
+  () => activeFilters.value.filter((item) => !['q', 'view'].includes(item.key)).length,
+)
 const client = useApiClient()
 const queryClient = useQueryClient()
 const route = useRoute()
@@ -134,11 +140,11 @@ function workspaceQuery(value: GroupFilters) {
     delete query[key]
   return { ...query, ...serializeGroupFilters(value) }
 }
-const pending = ref(new Map<number, 'toggle' | 'weight'>())
+const pending = ref(new Map<number, 'toggle' | 'priority' | 'weight'>())
 const enabledOverrides = ref(new Map<number, boolean>())
-const weightErrors = ref(new Map<number, string>())
-const weightEditors = ref(new Set<number>())
-const dirtyWeights = ref(new Set<number>())
+const inlineErrors = ref(new Map<string, string>())
+const inlineEditors = ref(new Set<string>())
+const dirtyFields = ref(new Set<string>())
 const frozenGroups = ref<GroupRow[]>()
 const rowRevision = ref(0)
 const notice = ref<{ text: string; tone: 'success' | 'warning' | 'danger' }>()
@@ -406,7 +412,7 @@ usePageRefresh({
   updatedAt: () => data.value?.observedAt,
 })
 async function refresh(): Promise<void> {
-  if (weightEditors.value.size) {
+  if (inlineEditors.value.size) {
     notice.value = { tone: 'warning', text: t('groups.row.finishEditing') }
     return
   }
@@ -479,23 +485,25 @@ function toggleExpanded(id: number): void {
       : [...expansion.value.ids, id],
   }
 }
-function weightEditing(id: number, active: boolean): void {
+function inlineEditing(id: number, field: 'priority' | 'weight', active: boolean): void {
+  const key = `${id}:${field}`
   if (active) {
-    if (!weightEditors.value.size) frozenGroups.value = [...filtered.value]
-    weightEditors.value.add(id)
+    if (!inlineEditors.value.size) frozenGroups.value = [...filtered.value]
+    inlineEditors.value.add(key)
   } else {
-    weightEditors.value.delete(id)
-    dirtyWeights.value.delete(id)
-    if (!weightEditors.value.size) frozenGroups.value = undefined
+    inlineEditors.value.delete(key)
+    dirtyFields.value.delete(key)
+    if (!inlineEditors.value.size) frozenGroups.value = undefined
   }
 }
-function weightDirty(id: number, dirty: boolean): void {
-  if (dirty) dirtyWeights.value.add(id)
-  else dirtyWeights.value.delete(id)
+function inlineDirty(id: number, field: 'priority' | 'weight', dirty: boolean): void {
+  const key = `${id}:${field}`
+  if (dirty) dirtyFields.value.add(key)
+  else dirtyFields.value.delete(key)
 }
 function guardNavigation(): boolean | Promise<boolean> {
   if (pending.value.size) return false
-  if (!dirtyWeights.value.size) return true
+  if (!dirtyFields.value.size) return true
   resolveLeave?.(false)
   discardTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
   discardRequested.value = true
@@ -505,9 +513,9 @@ function guardNavigation(): boolean | Promise<boolean> {
 }
 function finishDiscard(allow: boolean): void {
   if (allow) {
-    dirtyWeights.value.clear()
-    weightEditors.value.clear()
-    weightErrors.value.clear()
+    dirtyFields.value.clear()
+    inlineEditors.value.clear()
+    inlineErrors.value.clear()
     frozenGroups.value = undefined
     rowRevision.value++
   }
@@ -522,7 +530,7 @@ function restoreDiscardFocus(event: Event): void {
 onBeforeRouteLeave(guardNavigation)
 onBeforeRouteUpdate(guardNavigation)
 function beforeUnload(event: BeforeUnloadEvent): void {
-  if (!dirtyWeights.value.size && !pending.value.size) return
+  if (!dirtyFields.value.size && !pending.value.size) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -532,12 +540,12 @@ watch(
   (_path, previousPath) => {
     if (route.name !== 'modern-groups') return
     // 仅重置仍在编辑的行内控件；普通筛选复用已有列表行，避免图标重复挂载。
-    if (weightEditors.value.size) rowRevision.value++
+    if (inlineEditors.value.size) rowRevision.value++
     clearTimeout(searchTimer)
     search.value = filters.value.q
-    weightEditors.value.clear()
-    dirtyWeights.value.clear()
-    weightErrors.value.clear()
+    inlineEditors.value.clear()
+    dirtyFields.value.clear()
+    inlineErrors.value.clear()
     frozenGroups.value = undefined
     if (previousPath !== undefined) void nextTick(() => listFrame.value?.scrollToTop())
     const canonical = workspaceQuery(filters.value)
@@ -555,7 +563,7 @@ watch([page, () => data.value !== undefined, filterDataReady], () => {
     data.value &&
     filterDataReady.value &&
     page.value !== filters.value.page &&
-    !dirtyWeights.value.size &&
+    !dirtyFields.value.size &&
     !pending.value.size
   )
     void router.replace({
@@ -583,6 +591,7 @@ async function refreshGroup(id: number, settings: GroupBasics): Promise<void> {
                 ...group,
                 name: settings.name,
                 enabled: settings.enabled,
+                priority: settings.priority,
                 weight: settings.weight ?? 50,
                 priceMultiplier: settings.priceMultiplier,
               }
@@ -596,11 +605,11 @@ async function refreshGroup(id: number, settings: GroupBasics): Promise<void> {
 async function mutate(
   group: GroupRow,
   patch: GroupBasicsPatch,
-  kind: 'toggle' | 'weight',
+  kind: 'toggle' | 'priority' | 'weight',
 ): Promise<void> {
   if (pending.value.has(group.id)) return
   pending.value.set(group.id, kind)
-  weightErrors.value.delete(group.id)
+  inlineErrors.value.delete(`${group.id}:${kind}`)
   notice.value = undefined
   if (patch.enabled !== undefined) enabledOverrides.value.set(group.id, patch.enabled)
   try {
@@ -612,7 +621,8 @@ async function mutate(
   } catch {
     if (!controller.signal.aborted) {
       enabledOverrides.value.delete(group.id)
-      if (kind === 'weight') weightErrors.value.set(group.id, t('groups.row.weightFailed'))
+      if (kind !== 'toggle')
+        inlineErrors.value.set(`${group.id}:${kind}`, t('groups.row.saveFailed'))
       else notice.value = { tone: 'danger', text: t('groups.operationFailed') }
     }
   } finally {
@@ -739,42 +749,106 @@ useMessageSource(() =>
           @compositionend="endComposition"
         />
       </div>
-      <AppSearchSelect
-        class="modern-groups-channel"
-        :model-value="filters.channel"
-        :label="t('groups.board.channel')"
-        label-hidden
-        :options="channels"
-        @update:model-value="updateFilters({ channel: $event })"
+      <AppFilterSheet
+        v-model:open="moreFilters"
+        :mobile="isMobile"
+        :title="t('ui.mobile.filters')"
+        :active-count="mobileFilterCount"
+        @reset="
+          updateFilters({
+            channel: '',
+            model: '',
+            connection: '',
+            credential: '',
+            protocol: '',
+            sort: 'recent',
+          })
+        "
       >
-        <template #option="{ option }">
-          <AppChannelIcon
-            v-if="channelInfo.has(option.value)"
-            :icon="channelInfo.get(option.value)?.icon"
-            :mark="channelInfo.get(option.value)?.mark"
-            :name="channelInfo.get(option.value)?.name"
+        <AppSearchSelect
+          class="modern-groups-channel"
+          :model-value="filters.channel"
+          :label="t('groups.board.channel')"
+          :label-hidden="!isMobile"
+          :options="channels"
+          @update:model-value="updateFilters({ channel: $event })"
+        >
+          <template #option="{ option }">
+            <AppChannelIcon
+              v-if="channelInfo.has(option.value)"
+              :icon="channelInfo.get(option.value)?.icon"
+              :mark="channelInfo.get(option.value)?.mark"
+              :name="channelInfo.get(option.value)?.name"
+            />
+            <span>{{ option.label }}</span>
+          </template>
+        </AppSearchSelect>
+        <AppModelSelect
+          class="modern-groups-model"
+          :model-value="filters.model"
+          :label="t('groupDetail.models')"
+          :label-hidden="!isMobile"
+          :models="modelNames"
+          fuzzy
+          @update:model-value="updateFilters({ model: $event }, true)"
+        />
+        <template v-if="isMobile">
+          <AppAdvancedFilterSection :title="t('groups.board.filterSection')">
+            <AppSelect
+              :model-value="filters.connection"
+              :label="t('groupDetail.filters.channelType')"
+              :options="connectionOptions"
+              size="xs"
+              @update:model-value="
+                updateFilters({ connection: $event as GroupFilters['connection'] })
+              "
+            />
+            <AppSearchSelect
+              :model-value="filters.credential"
+              :label="t('groups.board.credentials')"
+              :placeholder="t('groups.board.searchCredentials')"
+              :options="credentialOptions"
+              :loading="credentialCatalog.isFetching.value"
+              size="xs"
+              @update:model-value="updateFilters({ credential: $event })"
+            />
+            <AppSelect
+              :model-value="filters.protocol"
+              :label="t('groups.board.protocolFilter')"
+              :options="protocolOptions"
+              size="xs"
+              @update:model-value="updateFilters({ protocol: $event })"
+            >
+              <template #value="{ value, label }">
+                <AppProtocolTag v-if="value" :protocol="value" />
+                <AppOverflowText v-else :text="label" />
+              </template>
+              <template #option="{ option }">
+                <AppProtocolTag v-if="option.value" :protocol="option.value" />
+                <span v-else>{{ option.label }}</span>
+              </template>
+            </AppSelect>
+          </AppAdvancedFilterSection>
+          <AppSelect
+            :model-value="filters.sort"
+            :label="t('groups.sort.label')"
+            :options="sortOptions"
+            :disabled="pending.size > 0"
+            @update:model-value="updateFilters({ sort: $event as GroupFilters['sort'] })"
           />
-          <span>{{ option.label }}</span>
         </template>
-      </AppSearchSelect>
-      <AppModelSelect
-        class="modern-groups-model"
-        :model-value="filters.model"
-        :label="t('groupDetail.models')"
-        label-hidden
-        :models="modelNames"
-        fuzzy
-        @update:model-value="updateFilters({ model: $event }, true)"
-      />
+      </AppFilterSheet>
       <div class="modern-groups-toolbar-actions">
         <AppIconButton
           :icon="SlidersHorizontal"
+          :variant="isMobile && mobileFilterCount ? 'brand' : 'ghost'"
           :label="t('groups.board.moreFilters')"
           :aria-expanded="moreFilters"
           aria-controls="modern-groups-more-filters"
           @click="moreFilters = !moreFilters"
         />
         <AppSortMenu
+          v-if="!isMobile"
           :model-value="filters.sort"
           :label="t('groups.sort.label')"
           :options="sortOptions"
@@ -784,13 +858,15 @@ useMessageSource(() =>
         <AppButton
           variant="primary"
           :icon="Plus"
+          :icon-only="isMobile"
+          :aria-label="t('groups.create')"
           :disabled="pending.size > 0"
           @click="openCreate"
-          >{{ t('groups.create') }}</AppButton
+          ><span v-if="!isMobile">{{ t('groups.create') }}</span></AppButton
         >
       </div>
     </form>
-    <AppAdvancedFilters id="modern-groups-more-filters" :open="moreFilters">
+    <AppAdvancedFilters v-if="!isMobile" id="modern-groups-more-filters" :open="moreFilters">
       <AppAdvancedFilterSection :title="t('groups.board.filterSection')">
         <AppSelect
           :model-value="filters.connection"
@@ -851,8 +927,8 @@ useMessageSource(() =>
     </div>
     <AppListFrame
       ref="listFrame"
+      mobile-flow
       :label="t('groups.list')"
-      :scroll-key="route.fullPath"
       :loading="
         Boolean(data) &&
         (listLoading ||
@@ -869,6 +945,7 @@ useMessageSource(() =>
           <span>{{ t('groups.row.usage24h') }}</span>
           <span class="modern-group-list-actions-head"
             ><span>{{ t('groups.row.enabled') }}</span
+            ><span>{{ t('groups.edit.priority') }}</span
             ><span>{{ t('groups.row.weight') }}</span></span
           >
         </div>
@@ -920,19 +997,25 @@ useMessageSource(() =>
           v-for="group in visible"
           :key="group.id + ':' + rowRevision"
           :group="group"
+          :mobile="isMobile"
           :expanded="expanded.has(group.id)"
           :pending="pending.get(group.id)"
           :enabled-override="enabledOverrides.get(group.id)"
           :usage="usageByID.get(group.id)"
           :usage-loading="usage.isFetching.value"
           :usage-incomplete="usage.data.value?.incomplete ?? false"
-          :weight-error="weightErrors.get(group.id)"
+          :priority-error="inlineErrors.get(`${group.id}:priority`)"
+          :weight-error="inlineErrors.get(`${group.id}:weight`)"
           @expand="toggleExpanded(group.id)"
           @toggle="mutate(group, { enabled: $event }, 'toggle')"
+          @priority="mutate(group, { priority: $event }, 'priority')"
+          @priority-editing="inlineEditing(group.id, 'priority', $event)"
+          @priority-dirty="inlineDirty(group.id, 'priority', $event)"
+          @clear-priority-error="inlineErrors.delete(`${group.id}:priority`)"
           @weight="mutate(group, { weight_manual: $event }, 'weight')"
-          @weight-editing="weightEditing(group.id, $event)"
-          @weight-dirty="weightDirty(group.id, $event)"
-          @clear-weight-error="weightErrors.delete(group.id)"
+          @weight-editing="inlineEditing(group.id, 'weight', $event)"
+          @weight-dirty="inlineDirty(group.id, 'weight', $event)"
+          @clear-weight-error="inlineErrors.delete(`${group.id}:weight`)"
         />
       </template>
       <template #footer>
@@ -970,9 +1053,11 @@ useMessageSource(() =>
 
 <style scoped>
 .modern-groups-workspace {
-  --modern-group-list-width: 1024px;
-  --modern-group-action-columns: 36px var(--modern-inline-number-width);
-  --modern-group-columns: minmax(260px, 2fr) minmax(168px, 1fr) 90px 114px 140px 138px;
+  --modern-group-list-width: calc(
+    1024px + var(--modern-inline-number-width) + var(--modern-space-4)
+  );
+  --modern-group-action-columns: 36px repeat(2, var(--modern-inline-number-width));
+  --modern-group-columns: minmax(260px, 2fr) minmax(168px, 1fr) 90px 114px 140px max-content;
   display: flex;
   flex: 1;
   min-width: 0;
@@ -984,8 +1069,8 @@ useMessageSource(() =>
   flex: none;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--modern-space-3);
-  padding: var(--modern-space-5) 0 var(--modern-space-3);
+  gap: var(--modern-page-toolbar-gap);
+  padding: var(--modern-page-toolbar-top) 0 var(--modern-page-toolbar-bottom);
 }
 .modern-groups-search {
   flex: 2 1 240px;
@@ -1017,8 +1102,8 @@ useMessageSource(() =>
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: var(--modern-space-2);
-  padding-bottom: var(--modern-space-4);
+  gap: var(--modern-page-statusbar-gap);
+  padding-bottom: var(--modern-page-statusbar-bottom);
 }
 .modern-groups-filter-actions {
   display: flex;
@@ -1050,7 +1135,7 @@ useMessageSource(() =>
   display: grid;
   grid-template-columns: var(--modern-group-action-columns);
   justify-items: start;
-  gap: var(--modern-space-4);
+  gap: var(--modern-space-2);
   text-align: left;
 }
 @media (max-width: 1150px) {
@@ -1060,10 +1145,25 @@ useMessageSource(() =>
 }
 @media (max-width: 760px) {
   .modern-groups-workspace {
-    --modern-group-action-columns: 44px 112px;
+    flex: none;
+  }
+  .modern-groups-workspace {
+    --modern-inline-number-width: 80px;
+    --modern-group-action-columns: 44px repeat(2, var(--modern-inline-number-width));
   }
   .modern-groups-toolbar {
-    gap: var(--modern-space-2);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .modern-groups-channel,
+  .modern-groups-model {
+    flex: 1 1 0;
+  }
+  .modern-groups-toolbar-actions {
+    display: contents;
+  }
+  .modern-groups-search {
+    grid-column: auto;
   }
   .modern-group-list-head {
     display: none;

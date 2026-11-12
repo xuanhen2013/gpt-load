@@ -1,3 +1,5 @@
+import { credentialDisplayText } from '@shared/credential-display'
+import { readErrorRules, type ErrorRule } from '@shared/error-rules'
 import { codexLiveModes, type CodexLiveMode } from '@shared/codex-live'
 import type { ApiClient } from '@shared/http/client'
 import { ApiError, InvalidResponseError } from '@shared/http/errors'
@@ -63,8 +65,10 @@ export type RuntimeSettings = Partial<
   codex_live_mode?: CodexLiveMode
   header_rules?: HeaderRules
   parameter_overrides?: ParameterRule[]
+  error_rules?: ErrorRule[]
 }
 export interface GroupSettings extends GroupBasics {
+  defaultErrorRules: ErrorRule[]
   channelID: string
   params: Record<string, string>
   validationModel: string | null
@@ -72,7 +76,14 @@ export interface GroupSettings extends GroupBasics {
   validationProtocols: string[]
   overrides: RuntimeSettings
   effective: Required<Omit<RuntimeSettings, 'parameter_overrides'>>
-  proxy: { mode: 'inherit' | 'direct' | 'custom'; display: string; hasAuth: boolean }
+  proxy: {
+    id?: number
+    name?: string
+    referenceState?: string
+    mode: 'inherit' | 'direct' | 'custom'
+    display: string
+    hasAuth: boolean
+  }
 }
 export interface AdvancedSettingsPatch {
   params?: Record<string, string>
@@ -87,6 +98,7 @@ function stringMap(value: unknown): Record<string, string> {
 function readRuntime(value: unknown): RuntimeSettings {
   const raw = record(value)
   const result: RuntimeSettings = {}
+  if (raw.error_rules !== undefined) result.error_rules = readErrorRules(raw.error_rules)
   for (const key of runtimeNumbers) if (raw[key] !== undefined) result[key] = integer(raw[key])
   for (const key of runtimeSwitches) if (raw[key] !== undefined) result[key] = boolean(raw[key])
   if (raw.codex_live_mode !== undefined)
@@ -115,6 +127,7 @@ function readSettings(value: unknown): GroupSettings {
   const data = record(value)
   const proxy = record(data.proxy)
   const effective = readRuntime(data.effective)
+  effective.error_rules ??= []
   if (
     [...runtimeNumbers, ...runtimeSwitches, 'codex_live_mode', 'header_rules'].some(
       (key) => effective[key as keyof RuntimeSettings] === undefined,
@@ -123,6 +136,7 @@ function readSettings(value: unknown): GroupSettings {
     throw new InvalidResponseError()
   return {
     ...readGroupBasics(data),
+    defaultErrorRules: readErrorRules(data.default_error_rules ?? []),
     channelID: text(data.channel_id),
     params: stringMap(data.params),
     validationModel: data.validation_model === null ? null : text(data.validation_model),
@@ -131,6 +145,9 @@ function readSettings(value: unknown): GroupSettings {
     overrides: readRuntime(data.overrides),
     effective: effective as GroupSettings['effective'],
     proxy: {
+      id: proxy.proxy_id === undefined ? undefined : integer(proxy.proxy_id, 1),
+      name: proxy.proxy_name === undefined ? undefined : text(proxy.proxy_name),
+      referenceState: proxy.reference_state === undefined ? undefined : text(proxy.reference_state),
       mode: oneOf(proxy.configured_mode, ['inherit', 'direct', 'custom']),
       display: proxy.display_url === undefined ? '' : text(proxy.display_url),
       hasAuth: boolean(proxy.has_auth),
@@ -243,6 +260,8 @@ export async function discoverGroupModels(client: ApiClient, id: number, signal:
 }
 
 export interface CredentialRow {
+  name: string
+  label: string
   rpmPeakHour?: number
   id: number
   mask: string
@@ -264,6 +283,7 @@ export interface CredentialRow {
   lastRefresh?: number
   authError?: string
   failureCategory: string
+  lastFailureSummary?: string
   lastStatusCode: number | null
   modelCooldowns: { model: string; until: number }[]
   recovery: {
@@ -271,7 +291,14 @@ export interface CredentialRow {
     automatic: boolean
     at: number | null
   }
-  proxy: { mode: 'inherit' | 'direct' | 'custom'; source: string; display: string }
+  proxy: {
+    id?: number
+    name?: string
+    referenceState?: string
+    mode: 'inherit' | 'direct' | 'custom'
+    source: string
+    display: string
+  }
   observation?: CredentialObservation
 }
 export interface CredentialCollection {
@@ -290,6 +317,12 @@ export function readCredential(value: unknown): CredentialRow {
   return {
     id: integer(row.credential_id, 1),
     rpmPeakHour: row.rpm_peak_hour == null ? undefined : integer(row.rpm_peak_hour),
+    name: text(row.name ?? ''),
+    label: credentialDisplayText(
+      text(row.name ?? ''),
+      account ? text(account.email ?? account.email_mask ?? '') || text(row.mask) : text(row.mask),
+      text(row.connection_type),
+    ),
     mask: text(row.mask),
     account: account ? text(account.email ?? account.email_mask ?? '') : '',
     state: oneOf(row.effective_status, credentialStates),
@@ -327,6 +360,8 @@ export function readCredential(value: unknown): CredentialRow {
       account?.last_refresh_at_ms === undefined ? undefined : integer(account.last_refresh_at_ms),
     authError: row.auth_error_code === undefined ? undefined : text(row.auth_error_code),
     failureCategory: text(row.last_failure_category),
+    lastFailureSummary:
+      row.last_failure_summary === undefined ? undefined : text(row.last_failure_summary),
     lastStatusCode: row.last_status_code === null ? null : integer(row.last_status_code),
     modelCooldowns: list(row.model_cooldowns).map((value) => {
       const cooldown = record(value)
@@ -338,6 +373,9 @@ export function readCredential(value: unknown): CredentialRow {
       at: recovery.at_ms === null ? null : integer(recovery.at_ms),
     },
     proxy: {
+      id: proxy.proxy_id === undefined ? undefined : integer(proxy.proxy_id, 1),
+      name: proxy.proxy_name === undefined ? undefined : text(proxy.proxy_name),
+      referenceState: proxy.reference_state === undefined ? undefined : text(proxy.reference_state),
       mode: oneOf(proxy.configured_mode, ['inherit', 'direct', 'custom']),
       source: text(proxy.effective_source),
       display: proxy.display_url === undefined ? '' : text(proxy.display_url),

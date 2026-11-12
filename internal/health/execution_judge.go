@@ -136,7 +136,9 @@ func JudgeExecution(attempt ExecutionAttempt, decisionContext DecisionContext) D
 				evidence.ReplaySafety = execution.ReplaySafetyRejectedBeforeProcessing
 				attempt.Evidence = &evidence
 				category := classifyExecutionEvidence(attempt)
-				return constrainCommittedDecision(decisionForExecutionCategory(category, attempt, decisionContext), attempt)
+				result := decisionForExecutionCategory(category, attempt, decisionContext)
+				result = decisionContext.ErrorRules.apply(result, attempt, decisionContext)
+				return constrainCommittedDecision(result, attempt)
 			}
 			return decision(FailureCategoryAmbiguous, originForEvidence(attempt.Evidence), attempt.Evidence.ScopeHint,
 				RetryNone, EffectNone, "fallback.not_sent")
@@ -212,6 +214,7 @@ func JudgeExecution(attempt ExecutionAttempt, decisionContext DecisionContext) D
 	}
 	category := classifyExecutionEvidence(attempt)
 	result := decisionForExecutionCategory(category, attempt, decisionContext)
+	result = decisionContext.ErrorRules.apply(result, attempt, decisionContext)
 	if attempt.Evidence.ReplaySafety == execution.ReplaySafetyUnknown &&
 		result.RuleID == "fallback.ambiguous" {
 		result.RuleID = "safety.replay_unknown"
@@ -348,6 +351,8 @@ func classifyExecutionEvidence(attempt ExecutionAttempt) FailureCategory {
 		return FailureCategoryInvalidKey
 	case statusCode >= http.StatusInternalServerError && statusCode <= 599:
 		return FailureCategoryUpstreamHostError
+	case attempt.Evidence != nil && attempt.Evidence.Kind == execution.ErrorKindConversionUnsupported:
+		return FailureCategoryConversionUnsupported
 	case attempt.Evidence != nil && attempt.Evidence.Kind == execution.ErrorKindInvalidRequest:
 		return FailureCategoryClientError
 	default:
@@ -637,6 +642,7 @@ func rateLimitDecision(attempt ExecutionAttempt, decisionContext DecisionContext
 		effect,
 		ruleID,
 	)
+	result.QuotaCooldown = true
 	if attempt.Evidence.RetryAfter > 0 {
 		result.CooldownUntil = attempt.Now.Add(attempt.Evidence.RetryAfter)
 		result.RuleID = "rate_limit.retry_after"
@@ -730,6 +736,9 @@ func constrainCommittedDecision(result Decision, attempt ExecutionAttempt) Decis
 		result.RuleID = "rate_limit.credential.committed"
 	} else if originalRetry != result.Retry || originalEffect != result.Effect {
 		result.RuleID = "safety.committed"
+	}
+	if result.Effect != EffectCooldownCredential && result.Effect != EffectCooldownModel {
+		result.QuotaCooldown = false
 	}
 	return result
 }

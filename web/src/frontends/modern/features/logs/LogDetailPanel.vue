@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { Activity, ArrowDownToLine, Clock3, Coins, ShieldCheck } from '@lucide/vue'
+import { useMobileLayout } from '@modern/app/use-mobile-layout'
+import { customErrorRuleLabel } from '@shared/error-rules'
+import { Activity, ArrowDownToLine, Clock3, Coins, Copy, ShieldCheck } from '@lucide/vue'
 import { timeRangeQuery } from '@modern/app/time-range'
 import type { DateRangePreset } from '@modern/components/ui/date-time'
 import { useQuery } from '@tanstack/vue-query'
@@ -7,7 +9,7 @@ import { DialogRoot } from 'reka-ui'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
-import { getLogDetail, logDetailKey, type LogReasoning } from '@modern/api/logs'
+import { getLogDetail, logDetailKey, type LogQuery, type LogReasoning } from '@modern/api/logs'
 import type { GroupRow } from '@modern/api/groups'
 import type { GroupChannel } from '@modern/api/group-create'
 import { useMessages, useMessageSource } from '@modern/app/messages'
@@ -22,9 +24,10 @@ import {
   AppFormSection,
   AppOverflowText,
   AppIcon,
+  AppIconButton,
   AppChannelIcon,
-  AppTooltip,
 } from '@modern/components/ui'
+import { formatByteSize } from '@modern/components/ui/format'
 import { useApiClient } from '@shared/http/client-context'
 import type { LogColumnId } from './log-columns'
 import {
@@ -41,7 +44,9 @@ import LogPricingReceipt from './LogPricingReceipt.vue'
 import LogValue from './LogValue.vue'
 import LogModelWarning from './LogModelWarning.vue'
 import LogCredentialValue from './LogCredentialValue.vue'
+import LogFilterLink from './LogFilterLink.vue'
 
+const isMobile = useMobileLayout()
 const props = defineProps<{
   id: string
   admin: boolean
@@ -51,7 +56,7 @@ const props = defineProps<{
   to: string
   preset?: DateRangePreset
 }>()
-defineEmits<{ close: [] }>()
+defineEmits<{ close: []; filter: [query: LogQuery] }>()
 const { t, te, n, locale } = useI18n()
 const client = useApiClient()
 const messages = useMessages()
@@ -60,6 +65,13 @@ const query = useQuery({
   queryFn: ({ signal }) => getLogDetail(client, props.id, signal),
 })
 const log = computed(() => query.data.value)
+const requestBodySize = computed(() =>
+  log.value?.request_body
+    ? t('logs.requestBody.originalSize', {
+        size: formatByteSize(log.value.request_body.original_bytes, locale.value),
+      })
+    : '',
+)
 const outputRate = computed(() => (log.value ? logOutputRate(log.value, locale.value) : '—'))
 const outcomeFields = computed<LogColumnId[]>(() => [
   'status_code',
@@ -184,6 +196,12 @@ function resolveRedactedLog(): Promise<string> {
   if (!log.value) throw new Error('LOG_NOT_AVAILABLE')
   return createRedactedLogExport(log.value)
 }
+function decisionRuleLabel(ruleID: string): string {
+  const rule = customErrorRuleLabel(ruleID)
+  return rule
+    ? t('errorRules.logRule', { source: t('errorRules.' + rule.source), number: rule.number })
+    : ruleID
+}
 </script>
 
 <template>
@@ -234,6 +252,28 @@ function resolveRedactedLog(): Promise<string> {
               <span>{{ t('logs.columns.request_id') }}</span
               ><AppCopyValue :value="log.request_id" :label="t('logs.copyRequest')" />
             </div>
+            <div class="modern-log-request-identity">
+              <span>{{ t('logs.columns.client_ip') }}</span>
+              <template v-if="log.client_ip">
+                <LogFilterLink
+                  :label="t('logs.filterByValue', { value: log.client_ip })"
+                  @click="$emit('filter', { client_ip: log.client_ip })"
+                  ><AppOverflowText :text="log.client_ip"
+                /></LogFilterLink>
+                <AppCopyValue :value="log.client_ip">
+                  <template #trigger="{ copy, pending }">
+                    <AppIconButton
+                      :icon="Copy"
+                      :label="t('logs.copyIP')"
+                      size="xs"
+                      :disabled="pending"
+                      @click="copy()"
+                    />
+                  </template>
+                </AppCopyValue>
+              </template>
+              <span v-else>—</span>
+            </div>
             <LogModelWarning v-if="admin" :row="log" detail />
             <div
               v-if="log.error_code || log.error_summary"
@@ -263,14 +303,12 @@ function resolveRedactedLog(): Promise<string> {
                 <dd>
                   <template v-if="field === 'stream'">
                     {{ t(log.stream ? 'logs.yes' : 'logs.no') }}
-                    <AppTooltip v-if="outputRate !== '—'" :label="t('logs.outputRate')">
-                      <span
-                        class="modern-log-stream-rate"
-                        tabindex="0"
-                        :aria-label="t('logs.outputRate') + ': ' + outputRate"
-                        >&nbsp;·&nbsp;{{ outputRate }}</span
-                      >
-                    </AppTooltip>
+                    <span
+                      v-if="outputRate !== '—'"
+                      class="modern-log-stream-rate"
+                      :aria-label="t('logs.outputRate') + ': ' + outputRate"
+                      >&nbsp;·&nbsp;{{ outputRate }}</span
+                    >
                   </template>
                   <LogValue
                     v-else
@@ -288,10 +326,46 @@ function resolveRedactedLog(): Promise<string> {
             </dl>
           </section>
           <AppFormSection
+            v-if="log.request_body"
+            :collapsible="isMobile"
+            :title="t('logs.requestBody.title')"
+            compact
+          >
+            <template #actions>
+              <span class="modern-log-detail-note">{{ requestBodySize }}</span>
+              <AppCopyValue
+                v-if="log.request_body.body !== null"
+                :value="log.request_body.body"
+                @copied="messages.show({ tone: 'success', text: t('ui.copy.success') })"
+              >
+                <template #trigger="{ copy, pending }">
+                  <AppButton
+                    size="xs"
+                    :icon="Copy"
+                    :loading="pending"
+                    :aria-label="t('logs.requestBody.copy')"
+                    @click="copy()"
+                    >{{ t('ui.copy.action') }}</AppButton
+                  >
+                </template>
+              </AppCopyValue>
+            </template>
+            <p v-if="log.request_body.state !== 'original'" class="modern-log-request-body-state">
+              {{ t('logs.requestBody.states.' + log.request_body.state) }}
+            </p>
+            <pre
+              v-if="log.request_body.body !== null"
+              class="modern-log-request-body"
+              tabindex="0"
+              :aria-label="t('logs.requestBody.title')"
+            ><code>{{ log.request_body.body }}</code></pre>
+          </AppFormSection>
+          <AppFormSection
             v-if="
               log.request_audit &&
               (log.request_audit.outcome !== 'allowed' || log.request_audit.reason)
             "
+            :collapsible="isMobile"
             :title="t('requestAudit.title')"
             compact
           >
@@ -312,7 +386,12 @@ function resolveRedactedLog(): Promise<string> {
               </div>
             </dl>
           </AppFormSection>
-          <AppFormSection v-if="log.auto_decision" :title="t('autoModel.log')" compact>
+          <AppFormSection
+            v-if="log.auto_decision"
+            :collapsible="isMobile"
+            :title="t('autoModel.log')"
+            compact
+          >
             <dl class="modern-log-detail-grid">
               <div>
                 <dt>{{ t('autoModel.source') }}</dt>
@@ -370,7 +449,7 @@ function resolveRedactedLog(): Promise<string> {
               </div>
               <div v-if="log.auto_decision.called">
                 <dt>{{ t('autoModel.duration') }}</dt>
-                <dd>{{ log.auto_decision.duration_ms }} ms</dd>
+                <dd>{{ log.auto_decision.duration_ms }}ms</dd>
               </div>
               <div v-if="log.auto_decision.confidence !== null">
                 <dt>{{ t('autoModel.confidenceValue') }}</dt>
@@ -388,7 +467,12 @@ function resolveRedactedLog(): Promise<string> {
               </div>
             </dl>
           </AppFormSection>
-          <AppFormSection v-if="admin" :title="t('logs.routingInfo')" compact>
+          <AppFormSection
+            v-if="admin"
+            :collapsible="isMobile"
+            :title="t('logs.routingInfo')"
+            compact
+          >
             <dl class="modern-log-detail-grid">
               <div v-for="field in routingFields" :key="field">
                 <dt>{{ t('logs.columns.' + field) }}</dt>
@@ -398,7 +482,7 @@ function resolveRedactedLog(): Promise<string> {
               </div>
             </dl>
           </AppFormSection>
-          <AppFormSection :title="t('logs.usageInfo')" compact>
+          <AppFormSection :collapsible="isMobile" :title="t('logs.usageInfo')" compact>
             <dl class="modern-log-detail-grid is-numeric">
               <div v-for="field in tokenFields" :key="field">
                 <dt>{{ t('logs.columns.' + field) }}</dt>
@@ -408,7 +492,7 @@ function resolveRedactedLog(): Promise<string> {
               </div>
             </dl>
           </AppFormSection>
-          <AppFormSection :title="t('logs.costInfo')" compact>
+          <AppFormSection :collapsible="isMobile" :title="t('logs.costInfo')" compact>
             <dl class="modern-log-detail-grid is-numeric">
               <div v-for="field in costFields" :key="field">
                 <dt>{{ t('logs.columns.' + field) }}</dt>
@@ -422,8 +506,9 @@ function resolveRedactedLog(): Promise<string> {
             v-if="
               receipt || log.auto_decision || log.request_audit?.calls.some((call) => call.called)
             "
+            :collapsible="isMobile"
             :title="t('logs.pricingInfo')"
-            :description="t('logs.frozenPricing')"
+            :hint="t('logs.frozenPricing')"
             compact
             ><LogPricingReceipt
               :receipt="receipt"
@@ -431,7 +516,12 @@ function resolveRedactedLog(): Promise<string> {
               :audit="log.request_audit"
               :total-cost="log.estimated_cost_nano_usd"
           /></AppFormSection>
-          <AppFormSection v-if="admin && log.attempts.length" :title="t('logs.attempts')" compact>
+          <AppFormSection
+            v-if="admin && log.attempts.length"
+            :collapsible="isMobile"
+            :title="t('logs.attempts')"
+            compact
+          >
             <template #actions
               ><span class="modern-log-detail-note">{{
                 t('logs.attemptCount', { count: n(log.attempts.length) })
@@ -567,7 +657,7 @@ function resolveRedactedLog(): Promise<string> {
                     </div>
                     <div v-if="attempt.rule_id" class="is-wide">
                       <dt>{{ t('logs.matchedRule') }}</dt>
-                      <dd>{{ attempt.rule_id }}</dd>
+                      <dd>{{ decisionRuleLabel(attempt.rule_id) }}</dd>
                     </div>
                     <div v-if="attempt.error_code" class="is-wide">
                       <dt>{{ t('logs.columns.error_code') }}</dt>
@@ -799,6 +889,35 @@ function resolveRedactedLog(): Promise<string> {
 .modern-log-detail-note {
   color: var(--modern-muted);
   font-size: var(--modern-font-size-small);
+}
+.modern-log-request-body-state {
+  color: var(--modern-muted);
+  font-size: var(--modern-font-size-small);
+  line-height: var(--modern-leading-body);
+}
+.modern-log-request-body {
+  min-width: 0;
+  max-height: 360px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  border: var(--modern-line-width) solid var(--modern-border);
+  border-radius: var(--modern-radius-control);
+  background: var(--modern-subtle);
+  padding: var(--modern-space-3);
+  font-family: var(--modern-font-mono);
+  font-size: var(--modern-font-size-small);
+  line-height: var(--modern-leading-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-gutter: var(--modern-scrollbar-gutter);
+}
+.modern-log-request-body:focus-visible {
+  outline: var(--modern-focus-width) solid var(--modern-accent);
+  outline-offset: var(--modern-focus-offset);
+}
+.modern-log-request-body code {
+  font: inherit;
 }
 .modern-log-request-identity {
   display: flex;

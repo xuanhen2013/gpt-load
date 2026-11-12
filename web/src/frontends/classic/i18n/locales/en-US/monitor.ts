@@ -11,6 +11,12 @@ export default {
     help: 'View description',
     scrollHint: 'Scroll horizontally to inspect every column.',
     currentState: 'Current state',
+    autoRefresh: {
+      label: 'Auto refresh',
+      off: 'Auto refresh off',
+      seconds: 'Every {count}s',
+      minutes: 'Every {count} min',
+    },
     tabs: {
       label: 'Monitor sections',
       health: 'Health',
@@ -415,10 +421,10 @@ export default {
         embeddings_create: 'Create embeddings',
         rerank: 'Rerank documents',
         decisions_create: 'Create decision',
+        audio_speech: 'Synthesize speech',
         mistral_ocr: 'OCR',
         mistral_fim: 'Fill in the middle',
         mistral_audio_transcription: 'Transcribe audio',
-        mistral_audio_speech: 'Synthesize speech',
         mistral_moderation: 'Moderate text',
         mistral_chat_moderation: 'Moderate chat',
         mistral_classification: 'Classify',
@@ -502,9 +508,9 @@ export default {
         title: 'Candidate Groups',
         description: {
           native_first:
-            'Native routes are tried first; converted routes are used when no native candidate is available. Selection within a tier follows a weighted rotation using shared allocation progress; rows are sorted by tier and weight. Request affinity still applies, so weight shares are not actual traffic ratios.',
+            'Select the highest available priority, prefer native routes within that tier, then rotate by effective weight and shared progress. Lower tiers remain backups. Affinity applies, so weight shares are not actual traffic ratios.',
           weighted_mix:
-            'Eligible native and converted candidates share one rotation based on effective weight and shared allocation progress; rows are sorted by weight. Request affinity still applies, so weight shares are not actual traffic ratios.',
+            'Select the highest available priority, then rotate native and converted candidates in that tier by effective weight and shared progress. Lower tiers remain backups. Affinity applies, so weight shares are not actual traffic ratios.',
         },
         count: '{count}',
         tableLabel: 'Candidate Group route explanation',
@@ -556,7 +562,7 @@ export default {
         effective: 'Raw effective weight',
         null: 'null',
         none: '—',
-        group: 'Group weight {value}',
+        group: 'Weight {value}',
       },
       excluded: {
         title: 'Excluded Groups',
@@ -594,6 +600,9 @@ export default {
       },
     },
     logs: {
+      ipColumn: 'IP column',
+      copyIP: 'Copy IP',
+      filterIP: 'Show only logs for IP {value}',
       loading: 'Loading request logs…',
       loadFailed: 'Unable to load request logs.',
       loadMore: 'Load more',
@@ -614,6 +623,7 @@ export default {
         partialFailed: 'Some filter options are unavailable. Log queries remain available.',
       },
       filters: {
+        clientIP: 'IP',
         label: 'Request log filters',
         timeRange: 'Time range',
         from: 'From',
@@ -693,6 +703,7 @@ export default {
         appliedCostState: 'Cost {value}',
         appliedCompleteness: 'Pricing {value}',
         appliedRequestId: 'Request ID {value}',
+        appliedClientIP: 'IP {value}',
         timezone: 'Local timezone',
         lastRefreshed: 'Last successful refresh',
         remove: 'Remove filter {value}',
@@ -836,6 +847,7 @@ export default {
         embeddings_create: 'Create embeddings',
         rerank: 'Rerank documents',
         decisions_create: 'Create decision',
+        audio_speech: 'Synthesize speech',
         mistral_ocr: 'OCR',
         mistral_fim: 'Fill in the middle',
         mistral_audio_transcription: 'Transcribe audio',
@@ -894,7 +906,7 @@ export default {
         statusCode: 'Status code',
         duration: 'Duration',
         firstResponse: 'First response',
-        outputRate: 'Output rate',
+        outputRate: 'Average output speed',
         attemptCount: 'Attempts',
         request: 'Client request',
         finalExecution: 'Upstream execution',
@@ -936,6 +948,17 @@ export default {
         modelObservation: 'Upstream response model observation',
         requestedModel: 'Upstream requested model',
         reportedModel: 'Upstream reported model',
+        requestBody: {
+          title: 'Request body',
+          originalSize: 'Original size {size}',
+          copy: 'Copy request body',
+          states: {
+            truncated: 'Overlong strings were truncated; the structure is unchanged',
+            non_json: 'Not a JSON request; the body was not recorded',
+            too_large: 'The request body is too large; the body was not recorded',
+            queue_full: 'The recording queue was busy; the body was not recorded',
+          },
+        },
         usage: {
           title: 'Usage & cost',
           description:
@@ -979,6 +1002,7 @@ export default {
         },
       },
       columns: {
+        clientIP: 'IP',
         time: 'Time',
         modelProtocol: 'Model / protocol',
         response: 'Response',
@@ -1044,6 +1068,7 @@ export default {
         identity: 'Pricing identity',
         historicalSchema1: 'Historical scope',
         historicalSchema2: 'Historical global price',
+        advisor: 'Advisor ({model})',
       },
       pricingMode: {
         fastLabel: 'Fast mode pricing',

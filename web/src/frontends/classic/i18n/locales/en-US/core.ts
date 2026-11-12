@@ -1,4 +1,8 @@
+import { errorRuleMessages } from '@shared/error-rule-messages'
+import { enUS as proxies } from '@shared/proxies/messages'
 export default {
+  errorRules: errorRuleMessages['en-US'],
+  proxies,
   concurrency: {
     label: 'Concurrency limit',
     value: 'Concurrency {current} / {limit}',
@@ -119,6 +123,8 @@ export default {
         'Credential refresh is temporarily unavailable; try again later',
       versionConflict: 'The authorization changed elsewhere; reload and try again',
       resetCreditUnavailable: 'No reset credit is available; sync the account first',
+      resetCreditPreparationFailed:
+        'Reset preparation failed; no reset credit was consumed. Please try again later',
       resetCreditRejected: 'The upstream did not accept the reset credit; sync and try again',
       resetCreditOutcomeUnknown:
         'The reset outcome is unknown. Do not reload the page; confirm again to retry safely with the same operation identity',
@@ -226,6 +232,10 @@ export default {
     accessKeyReadOnly: 'Access key · Read-only',
     accessKeyReadOnlyDescription:
       'Signed in with an access key. Pages and data are limited to this key, and system configuration is read-only.',
+    demoNotice:
+      'Shared demo · All data resets in {time}. External requests are disabled. Do not enter real credentials or personal data.',
+    requestBodyRecordingNotice:
+      'An administrator has enabled request body recording for this access key. Content you send with it is kept for {days} days and can be viewed by administrators and anyone who holds this key. Do not send anything you do not want recorded with this key.',
     language: 'Language',
     theme: 'Theme',
     localeZh: '简体中文',

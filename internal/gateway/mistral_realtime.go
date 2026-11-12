@@ -59,6 +59,7 @@ func (handler *Handler) handleMistralRealtime(c *gin.Context, request *dataPlane
 		c.Header(requestIDHeader, id)
 	}
 	recorder := newRequestRecorder(handler.requestLogSink, id, request.requestStarted, request.accessKey.ID, request.selectedRoute.Protocol, handler.requestNow)
+	recorder.clientIP = requestPeerIP(c.Request)
 	recorder.setOperation(execution.OperationMistralRealtimeTranscription)
 	recorder.setUsageApplicable(false)
 	connected := false
@@ -205,6 +206,7 @@ func (handler *Handler) dialMistralRealtime(ctx context.Context, c *gin.Context,
 			handler.setMistralRealtimeRetryAfter(c, failure, cooldownUntil)
 			return nil, "", nil, &failure
 		}
+		iterator.AdvancePriority(selection)
 	}
 	handler.setMistralRealtimeRetryAfter(c, failure, cooldownUntil)
 	return nil, "", nil, &failure
@@ -300,6 +302,7 @@ func (handler *Handler) dialMistralRealtimeSelection(ctx context.Context, record
 		ErrorSummary: value.Message, UpstreamProtocol: protocol.Mistral, ExecutionError: evidence,
 	}
 	decision := judgeUpstreamResult(result, handler.now(), health.DecisionContext{
+		ErrorRules:               selection.Group.ErrorRules,
 		DefaultRateLimitCooldown: subscriptionruntime.DefaultRefreshFailureCooldown,
 		Method:                   http.MethodGet, Operation: execution.OperationMistralRealtimeTranscription,
 	})

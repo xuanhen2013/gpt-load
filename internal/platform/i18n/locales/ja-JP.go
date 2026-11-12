@@ -2,6 +2,7 @@ package locales
 
 // MessagesJaJP contains Japanese control-plane translations.
 var MessagesJaJP = map[string]string{
+	"demo.restricted":                            "デモではこの操作を利用できません。上流リクエスト、認証連携、ネットワーク診断は無効です。",
 	"access_key.custom_invalid":                  "空白や制御文字を含まない、256 文字以内の表示可能な ASCII 文字を使用してください。",
 	"access_key.admin_conflict":                  "管理者キーをアクセスキーとして使用することはできません。",
 	"access_key.exists":                          "このアクセスキーは既に存在します。別のキーを使用してください。",
@@ -19,12 +20,16 @@ var MessagesJaJP = map[string]string{
 	"control.operation_incomplete":               "リソースは確定しましたが、実行時の復旧が未完了です",
 	"control.recovery_pending":                   "以前に確定した操作を復旧中です",
 	"reset_credit.unavailable":                   "現在利用できるリセットカードはありません",
+	"reset_credit.preparation_failed":            "リセットの準備に失敗しました。リセットカードは消費されていません。しばらくしてから再試行してください",
 	"reset_credit.rejected":                      "上流でリセットカードを使用できませんでした",
 	"reset_credit.outcome_unknown":               "リセット結果を確認できません。同じ冪等キーで再試行し、新しいクレジットの重複消費を防いでください",
 	"model_price.not_found":                      "モデル価格が存在しません",
 	"model_price.unpriced_confirmation_required": "モデル価格を未設定としてマークするには明示的な確認が必要です",
 	"model_price.referenced":                     "モデル価格はグループから参照されています",
 	"model_price.automatic_delete_forbidden":     "自動モデル価格は手動で削除できません",
+	"model_price.reference_cycle":                "自身や循環するモデルは関連付けできません。別のモデルを選択してください",
+	"model_price.source_referenced":              "{{.source}} は削除できません。{{.dependents}} が参照中です。参照先を変更するか手動価格に切り替えてください",
+	"model_price.source_unavailable":             "参照元の価格は利用できなくなりました。別の参照元を選択してください",
 	"auth.invalid_key":                           "無効な認証キー",
 	"auth.forbidden":                             "現在のキーにはこの機能へのアクセス権がありません",
 	"auth.locked":                                "認証試行回数が多すぎます。しばらくしてから再試行してください",

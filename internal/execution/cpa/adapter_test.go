@@ -81,9 +81,10 @@ func (f *fakeCredentialPreparer) RecordPassiveQuotaObservation(
 	identityGeneration uint64,
 	observedAtMS int64,
 	windows []providerobservation.QuotaWindow,
+	credits ...*providerobservation.CreditSummary,
 ) {
 	if f.delegate != nil {
-		f.delegate.RecordPassiveQuotaObservation(credentialID, identityGeneration, observedAtMS, windows)
+		f.delegate.RecordPassiveQuotaObservation(credentialID, identityGeneration, observedAtMS, windows, credits...)
 	}
 }
 
@@ -1032,7 +1033,7 @@ func TestAdapterStreamsEverySupportedClientProtocolThroughCPA(t *testing.T) {
 				}
 				return nil
 			})
-			if result.Error != nil || fake.calls != 1 || fake.request.Format != test.wantFormat || result.UpstreamProtocol != test.wantAPI {
+			if result.Error != nil || result.Model != "" || fake.calls != 1 || fake.request.Format != test.wantFormat || result.UpstreamProtocol != test.wantAPI {
 				t.Fatalf("result=%#v calls=%d request=%#v", result, fake.calls, fake.request)
 			}
 			if strings.Join(data, "") != strings.Join(test.wantData, "") {
@@ -1248,10 +1249,10 @@ func TestAdapterRewritesStreamModelAliasForEveryProtocol(t *testing.T) {
 		operation execution.Operation
 		payload   string
 	}{
-		{name: "OpenAI Chat", protocol: protocol.OpenAICompletions, operation: execution.OperationChatCompletion, payload: `{"model":"upstream-model","choices":[{"finish_reason":"stop"}]}`},
-		{name: "OpenAI Responses", protocol: protocol.OpenAIResponses, operation: execution.OperationResponsesCreate, payload: "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"upstream-model\"}}\n\n"},
-		{name: "Anthropic", protocol: protocol.Anthropic, operation: execution.OperationChatCompletion, payload: "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"upstream-model\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}"},
-		{name: "Gemini", protocol: protocol.Gemini, operation: execution.OperationChatCompletion, payload: `{"modelVersion":"upstream-model","candidates":[{"finishReason":"STOP"}]}`},
+		{name: "OpenAI Chat", protocol: protocol.OpenAICompletions, operation: execution.OperationChatCompletion, payload: `{"model":"reported-model","choices":[{"finish_reason":"stop"}]}`},
+		{name: "OpenAI Responses", protocol: protocol.OpenAIResponses, operation: execution.OperationResponsesCreate, payload: "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"reported-model\"}}\n\n"},
+		{name: "Anthropic", protocol: protocol.Anthropic, operation: execution.OperationChatCompletion, payload: "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"reported-model\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}"},
+		{name: "Gemini", protocol: protocol.Gemini, operation: execution.OperationChatCompletion, payload: `{"modelVersion":"reported-model","candidates":[{"finishReason":"STOP"}]}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1276,7 +1277,7 @@ func TestAdapterRewritesStreamModelAliasForEveryProtocol(t *testing.T) {
 				}
 				return nil
 			})
-			if result.Error != nil || !strings.Contains(wire.String(), "public-model") || strings.Contains(wire.String(), "upstream-model") {
+			if result.Error != nil || result.Model != "reported-model" || !strings.Contains(wire.String(), "public-model") || strings.Contains(wire.String(), "reported-model") {
 				t.Fatalf("result = %#v, wire = %q", result, wire.String())
 			}
 		})
@@ -1404,7 +1405,7 @@ func TestAdapterStreamsRealCPAResponsesAsCompleteClientSSE(t *testing.T) {
 			name: "Gemini", protocol: protocol.Gemini,
 			body:         `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`,
 			wantFragment: `"text":"hello"`,
-			wantTerminal: `data: {"candidates":[{"finishReason":"STOP"}]}` + "\n\n",
+			wantTerminal: "\n\n",
 		},
 	}
 	for _, test := range tests {
@@ -1447,7 +1448,7 @@ func TestAdapterStreamsRealCPAResponsesAsCompleteClientSSE(t *testing.T) {
 					if test.protocol == protocol.OpenAIResponses {
 						wantPrefix = []byte("event:")
 					}
-					if !bytes.HasPrefix(event.Data, wantPrefix) {
+					if !bytes.HasPrefix(event.Data, wantPrefix) || !bytes.HasSuffix(event.Data, []byte("\n\n")) {
 						t.Errorf("unframed client event = %q", event.Data)
 					}
 					_, _ = wire.Write(event.Data)
@@ -1463,6 +1464,29 @@ func TestAdapterStreamsRealCPAResponsesAsCompleteClientSSE(t *testing.T) {
 			if test.protocol == protocol.OpenAIResponses &&
 				!strings.Contains(wire.String(), "event: response.completed\ndata: ") {
 				t.Fatalf("Responses terminal event is incomplete: %q", wire.String())
+			}
+			if test.protocol == protocol.Gemini {
+				frames := strings.Split(strings.TrimSuffix(wire.String(), "\n\n"), "\n\n")
+				var terminal struct {
+					Candidates []struct {
+						FinishReason string `json:"finishReason"`
+					} `json:"candidates"`
+					UsageMetadata struct {
+						PromptTokenCount     int `json:"promptTokenCount"`
+						CandidatesTokenCount int `json:"candidatesTokenCount"`
+						TotalTokenCount      int `json:"totalTokenCount"`
+					} `json:"usageMetadata"`
+				}
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(frames[len(frames)-1], "data:")), &terminal); err != nil {
+					t.Fatalf("decode Gemini terminal event: %v", err)
+				}
+				if len(terminal.Candidates) != 1 || terminal.Candidates[0].FinishReason != "STOP" {
+					t.Fatalf("Gemini terminal candidates = %#v", terminal.Candidates)
+				}
+				if terminal.UsageMetadata.PromptTokenCount != 1 || terminal.UsageMetadata.CandidatesTokenCount != 1 ||
+					terminal.UsageMetadata.TotalTokenCount != 2 {
+					t.Fatalf("Gemini terminal usage = %#v", terminal.UsageMetadata)
+				}
 			}
 		})
 	}
@@ -1635,4 +1659,22 @@ func validSpec(t *testing.T, row models.Credential, keyService encryption.Servic
 	identityGeneration := stateloader.CredentialIdentityGeneration(
 		row.IdentityFingerprint, "codex", "subscription", json.RawMessage(`{}`))
 	return execution.NewAttemptSpec(execution.AttemptSpec{RequestID: "request-1", AttemptID: "attempt-1", Sequence: 1, ChannelID: "codex", RouteMode: execution.RouteNative, ClientProtocol: protocol.OpenAIResponses, Operation: execution.OperationResponsesCreate, ClientModel: "gpt-5", UpstreamModel: "gpt-5", Method: http.MethodPost, Path: "/v1/responses", Body: []byte(`{"model":"gpt-5","input":"hi"}`), TargetConfig: json.RawMessage(`{}`), Credential: execution.NewCredentialSnapshot(row.ID, row.SecretVersion, identityGeneration, []byte(plaintext))})
+}
+
+func TestAdapterDoesNotInventMissingUnaryModel(t *testing.T) {
+	adapter, _, _, keys, row := newAdapterFixture(t, credentialJSON("access", "refresh", time.Now().Add(time.Hour)))
+	setCodexExecutor(t, adapter, &fakeExecutor{result: codex.ExecuteResponse{Payload: []byte(`{"id":"resp_1","object":"response","output":[]}`)}})
+	result := adapter.Execute(t.Context(), validSpec(t, row, keys))
+	if result.Error != nil || result.Model != "" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestUnaryProviderSuccessKeepsTokenCountModelContract(t *testing.T) {
+	spec := execution.AttemptSpec{ClientProtocol: protocol.Anthropic, Operation: execution.OperationCountTokens, UpstreamModel: "requested"}
+	response := providerResponse{UpstreamProtocol: protocol.Anthropic, Payload: []byte(`{"input_tokens":3}`)}
+	result := unaryProviderSuccess(nil, spec, response)
+	if result.Model != "requested" || result.Error != nil {
+		t.Fatalf("result=%+v", result)
+	}
 }

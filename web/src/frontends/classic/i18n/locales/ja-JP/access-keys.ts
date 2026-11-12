@@ -168,6 +168,20 @@ export default {
       limits: '制限',
       lastRequest: '前回のリクエスト',
       actions: '操作',
+      recordRequestBody: '内容記録',
+    },
+    recordRequestBody: {
+      label: 'リクエスト内容を記録',
+      description:
+        '有効にすると、このキーで送信されたクライアントの元のリクエストをトラブルシューティング用に保存します。',
+      enabled: 'オン',
+      disabled: 'オフ',
+      confirmTitle: 'リクエスト内容の記録を有効にしますか？',
+      confirmDescription:
+        '有効にすると、このキーによるすべてのリクエストの完全な内容（会話、ツール呼び出し、画像を含む）がデータベースに保存されます。長すぎる部分は切り詰められます。{retention}これらの内容には個人情報、パスワード、キー、営業秘密が含まれる可能性があります。トラブルシューティングの間だけ有効にし、終わったらすぐに無効にしてください。また、これらの内容を記録する権限があることを確認してください。このキーを持つ人が管理画面にログインすると「記録が有効」の通知が表示され、記録された内容も閲覧できます。API だけを利用する人には通知が表示されないため、別途お知らせください。',
+      retentionDays: '保存された内容は {days} 日後に自動削除されます。',
+      retentionDefault: '保存された内容はリクエストログの保持期間に従って自動削除されます。',
+      confirm: '理解しました。有効にする',
     },
     actions: {
       more: 'その他の操作',
@@ -197,14 +211,16 @@ export default {
       expirationTimezone: '現在のタイムゾーン {timezone} で入力してください。',
       expirationRequired: '有効期限日時を選択してください',
       expirationFuture: '有効期限は現在時刻より後にしてください',
-      sourceIP: '接続元 IP',
-      sourceIPDescription: 'GPT-Load に直接接続する送信元アドレスを制限します。',
+      sourceIP: '送信元 IP',
+      sourceIPDescription:
+        'リクエストログと同じ、解決済みのクライアント IP でアクセスを制限します。',
       sourceAll: '制限なし',
       sourceRestricted: 'IP/CIDR を指定',
       allowedCIDRs: '許可する IP/CIDR',
       allowedCIDRsDescription: '1 行に 1 件、最大 64 件です。IPv4、IPv6、CIDR を使用できます。',
       allowedCIDRsPlaceholder: '192.0.2.10\n2001:db8::/32',
-      proxyIPWarning: 'リバースプロキシ経由では、通常プロキシの IP が接続元になります。',
+      proxyIPWarning:
+        'プロキシ経由の場合、リクエストログが想定したクライアント IP を記録しているか確認してください。',
       sourceRequired: 'IP または CIDR を 1 件以上入力してください',
       sourceLimit: 'IP/CIDR は最大 64 件です',
       permissionScope: '権限範囲',
@@ -260,9 +276,9 @@ export default {
         enableTotal: '総額上限を有効化',
         enablePeriodic: '周期上限を有効化',
         totalDescription:
-          'グループ・アクセスキー倍率適用後の累積推定コストを制限します。合計上限は自動リセットされません。',
+          'グループ・アクセスキー倍率適用後の累積推定コストを制限します（価格なしのリクエストは計上しません）。合計上限は自動リセットされません。',
         periodicDescription:
-          '最初のリクエストから始まる固定期間で倍率適用後の推定コストを制限します。最大 10 ルール。',
+          '最初のリクエストから始まる固定期間で倍率適用後の推定コストを制限します（価格なしのリクエストは計上しません）。最大 10 ルール。',
         addPeriodic: '周期上限を追加',
         total: '総額上限',
         periodic: '周期上限',

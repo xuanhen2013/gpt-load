@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import CredentialDisplay from '@/components/CredentialDisplay.vue'
+import CredentialNameEditor from './CredentialNameEditor.vue'
 import {
   Check,
   CircleCheck,
@@ -55,6 +57,7 @@ const props = withDefaults(
     channelMark?: string
     capabilities: ChannelCapabilitiesDto
     saveProxy: (value: ProxyMutation) => Promise<void>
+    saveName: (value: string) => Promise<string>
   }>(),
   {
     channelIcon: undefined,
@@ -176,6 +179,21 @@ const supportsResetCredit = computed(() =>
   props.capabilities.credential_actions.includes('reset_credit'),
 )
 const snapshot = computed(() => observation.value?.snapshot)
+const subscriptionRenewal = computed(() =>
+  t(
+    snapshot.value?.subscription?.will_renew === undefined
+      ? 'group.credentials.subscription.renewalUnknown'
+      : snapshot.value.subscription.will_renew
+        ? 'group.credentials.subscription.renewalEnabled'
+        : 'group.credentials.subscription.renewalDisabled',
+  ),
+)
+const creditBalanceLabel = computed(() => {
+  const credits = snapshot.value?.credits
+  if (credits?.unlimited) return t('group.credentials.subscription.creditUnlimited')
+  const balance = Number(credits?.balance)
+  return Number.isFinite(balance) && balance > 0 ? n(Math.ceil(balance)) : ''
+})
 function isAccountWideQuotaWindow(window: CredentialQuotaWindowDto): boolean {
   return window.scope === 'account'
 }
@@ -252,7 +270,7 @@ const quotaSubjectKeys: Readonly<Record<string, CredentialQuotaLabelKey>> = {
   'pay as you go': 'pay_as_you_go',
   'oauth apps': 'oauth_apps',
 }
-const accountName = computed(() => props.item.account.email ?? props.item.mask)
+const accountName = computed(() => props.item.label)
 const planLabel = computed(() => {
   const plan = snapshot.value?.plan_summary.name?.trim()
   return plan ?? ''
@@ -487,12 +505,14 @@ const dailyIncompleteHint = computed(() =>
     ? t('group.credentials.subscription.dailyIncomplete')
     : undefined,
 )
-const failureLabel = computed(() =>
-  props.item.recent_failure_count === 0
-    ? t('group.credentials.none')
-    : `${presentCredentialFailureCategory(t, props.item.last_failure_category)}${
-        props.item.last_status_code === null ? '' : ` · ${props.item.last_status_code}`
-      }`,
+const failureLabel = computed(
+  () =>
+    props.item.last_failure_summary ||
+    (props.item.last_status_code === null && props.item.last_failure_category === 'ambiguous'
+      ? t('group.credentials.none')
+      : `${presentCredentialFailureCategory(t, props.item.last_failure_category)}${
+          props.item.last_status_code === null ? '' : ` · ${props.item.last_status_code}`
+        }`),
 )
 const observationErrorKeys: Readonly<Record<string, string>> = {
   observation_access_denied: 'group.credentials.subscription.observationError.accessDenied',
@@ -928,9 +948,14 @@ function saveAccountConcurrency(): void {
           </div>
         </div>
         <div class="subscription-account__top-row">
-          <OverflowTooltip class="subscription-account__mail" :content="accountName">
-            {{ accountName }}
-          </OverflowTooltip>
+          <CredentialDisplay
+            class="subscription-account__mail"
+            :name="item.name"
+            :value="item.account.email || item.mask"
+            subscription
+            detail
+            reveal
+          />
         </div>
       </header>
 
@@ -1032,9 +1057,9 @@ function saveAccountConcurrency(): void {
         {{ t('group.credentials.subscription.noQuota') }}
       </p>
 
-      <div v-if="hasResetCredits" class="subscription-account__credits">
-        <span>{{ t('group.credentials.subscription.resetCredits') }}</span>
-        <AppTooltip :content="resetCreditsTooltip">
+      <div v-if="hasResetCredits || creditBalanceLabel" class="subscription-account__credits">
+        <span v-if="hasResetCredits">{{ t('group.credentials.subscription.resetCredits') }}</span>
+        <AppTooltip v-if="hasResetCredits" :content="resetCreditsTooltip">
           <span
             class="subscription-account__credits-summary"
             tabindex="0"
@@ -1055,7 +1080,9 @@ function saveAccountConcurrency(): void {
           </span>
         </AppTooltip>
         <span
-          v-if="nearestResetCredit && nearestResetCredit.expires_at_ms !== undefined"
+          v-if="
+            hasResetCredits && nearestResetCredit && nearestResetCredit.expires_at_ms !== undefined
+          "
           class="subscription-account__credits-expiry"
         >
           {{ t('group.credentials.subscription.nearestResetCredit') }}
@@ -1066,8 +1093,15 @@ function saveAccountConcurrency(): void {
             hint
           />
         </span>
+        <span v-if="creditBalanceLabel" class="subscription-account__credit-balance">
+          <span>{{ t('group.credentials.subscription.creditBalance') }}</span>
+          <strong>{{ creditBalanceLabel }}</strong>
+        </span>
         <span class="subscription-account__spacer"></span>
-        <AppTooltip :content="t('group.credentials.subscription.resetCreditsActionTooltip')">
+        <AppTooltip
+          v-if="hasResetCredits"
+          :content="t('group.credentials.subscription.resetCreditsActionTooltip')"
+        >
           <AppButton
             class="subscription-account__credits-action"
             variant="ghost"
@@ -1293,7 +1327,7 @@ function saveAccountConcurrency(): void {
             </dl>
             <dl>
               <dt>{{ t('group.credentials.detailsFailure') }}</dt>
-              <dd>{{ failureLabel }}</dd>
+              <dd class="subscription-account__failure-summary">{{ failureLabel }}</dd>
             </dl>
             <dl>
               <dt>{{ t('group.credentials.detailsConsecutive') }}</dt>
@@ -1326,6 +1360,37 @@ function saveAccountConcurrency(): void {
                 />
               </dd>
             </dl>
+            <dl v-if="snapshot?.subscription" class="subscription-account__billing">
+              <dt>{{ t('group.credentials.subscription.periodEnd') }}</dt>
+              <dd>
+                <template v-if="snapshot.subscription.period_end_ms !== undefined">
+                  <span>
+                    {{ formatLocalInstant(snapshot.subscription.period_end_ms, locale) }}
+                    · {{ subscriptionRenewal }}
+                  </span>
+                  <span
+                    v-if="snapshot.subscription.state === 'error'"
+                    class="subscription-account__billing-warning"
+                    >{{ t('group.credentials.subscription.billingStale') }}</span
+                  >
+                </template>
+                <span
+                  v-else
+                  :class="{
+                    'subscription-account__billing-warning':
+                      snapshot.subscription.state === 'error',
+                  }"
+                >
+                  {{
+                    t(
+                      snapshot.subscription.state === 'error'
+                        ? 'group.credentials.subscription.billingFailed'
+                        : 'group.credentials.subscription.billingUnavailable',
+                    )
+                  }}
+                </span>
+              </dd>
+            </dl>
             <dl>
               <dt>{{ t('group.credentials.subscription.lastQuotaSync') }}</dt>
               <dd>
@@ -1349,6 +1414,7 @@ function saveAccountConcurrency(): void {
         </section>
       </div>
       <div class="subscription-account__panels">
+        <CredentialNameEditor :value="item.name" :disabled="busy" :save="saveName" />
         <div class="setting-panel">
           <span class="setting-panel__title">{{ t('group.credentials.columns.weight') }}</span>
           <div class="setting-panel__body">
@@ -1910,6 +1976,7 @@ function saveAccountConcurrency(): void {
 }
 .subscription-account__credits {
   display: flex;
+  flex-wrap: wrap;
   min-height: var(--control-compact);
   align-items: center;
   gap: var(--space-2);
@@ -1922,6 +1989,17 @@ function saveAccountConcurrency(): void {
   width: 26px;
   min-height: 26px;
   padding: 0;
+}
+.subscription-account__credit-balance {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-faint);
+  white-space: nowrap;
+}
+.subscription-account__credit-balance strong {
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
 }
 .subscription-account__credits > span:first-child,
 .subscription-account__credits-expiry {
@@ -2238,6 +2316,22 @@ function saveAccountConcurrency(): void {
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.subscription-account__diagnostics .subscription-account__failure-summary {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.subscription-account__diagnostics .subscription-account__billing {
+  grid-column: 1 / -1;
+}
+.subscription-account__billing dd {
+  display: grid;
+  gap: var(--space-1);
+  overflow: visible;
+  white-space: normal;
+}
+.subscription-account__billing-warning {
+  color: var(--color-warning);
 }
 .subscription-account__models {
   display: flex;

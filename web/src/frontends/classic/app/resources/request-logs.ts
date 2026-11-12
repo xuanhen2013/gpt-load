@@ -1,3 +1,4 @@
+import { credentialDisplayText } from '@shared/credential-display'
 import { readAuditResult, type AuditResult } from './experimental'
 import { keepPreviousData, queryOptions } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
@@ -60,6 +61,7 @@ export type RequestLogOperation =
   | 'embeddings_create'
   | 'rerank'
   | 'decisions_create'
+  | 'audio_speech'
   | 'mistral_ocr'
   | 'mistral_fim'
   | 'mistral_audio_transcription'
@@ -86,6 +88,7 @@ export interface RequestLogFilters {
   group_id?: number
   channel_id?: string
   credential_id?: number
+  client_ip?: string
   client_model?: string
   upstream_model?: string
   access_key_id?: number
@@ -119,7 +122,9 @@ export interface RequestLogFilters {
 }
 
 export interface RequestLogPricingLineDto {
-  code: 'input' | 'cache_read' | 'cache_write_5m' | 'cache_write_1h' | 'cache_write' | 'output'
+  code: (typeof receiptCodes)[number]
+  // 仅 v7 的 advisor 行携带，记录计价所用的 advisor 模型。
+  model_id?: string
   quantity: string
   rate_nano_usd_per_million: string | null
   multiplier: { numerator: string; denominator: string }
@@ -128,7 +133,7 @@ export interface RequestLogPricingLineDto {
 }
 
 export interface RequestLogPricingReceiptDto {
-  schema_version: 1 | 2 | 3 | 4 | 5 | 6
+  schema_version: 1 | 2 | 3 | 4 | 5 | 6 | 7
   method: 'unit_rate_sum'
   method_version: 1
   currency: 'USD'
@@ -200,6 +205,7 @@ export interface RequestLogItemDto {
   protocol: AccessProtocol
   operation: RequestLogOperation | null
   upstream_protocol: RequestLogUpstreamProtocol | null
+  client_ip: string | null
   client_model: string | null
   upstream_model: string | null
   upstream_reported_model: string | null
@@ -262,8 +268,19 @@ export interface AutoDecisionDto {
   receipt: RequestLogPricingReceiptDto | null
 }
 
+export type RequestLogRequestBodyState =
+  'original' | 'truncated' | 'non_json' | 'too_large' | 'queue_full'
+
+export interface RequestLogRequestBodyDto {
+  state: RequestLogRequestBodyState
+  original_bytes: number
+  /** original / truncated 时为已格式化的 JSON 文本，其余状态为 null。 */
+  body: string | null
+}
+
 export interface RequestLogDetailDto extends RequestLogItemDto {
   attempts: RequestLogAttemptDto[]
+  request_body: RequestLogRequestBodyDto | null
 }
 
 export interface RequestLogPageDto {
@@ -310,6 +327,7 @@ const operations = [
   'embeddings_create',
   'rerank',
   'decisions_create',
+  'audio_speech',
   'mistral_ocr',
   'mistral_fim',
   'mistral_audio_transcription',
@@ -335,6 +353,12 @@ const receiptCodes = [
   'cache_write_1h',
   'cache_write',
   'output',
+  'advisor_input',
+  'advisor_cache_read',
+  'advisor_cache_write_5m',
+  'advisor_cache_write_1h',
+  'advisor_cache_write',
+  'advisor_output',
 ] as const
 const receiptLineStates = ['priced', 'unpriced'] as const
 const itemFields = [
@@ -349,6 +373,7 @@ const itemFields = [
   'protocol',
   'operation',
   'upstream_protocol',
+  'client_ip',
   'client_model',
   'upstream_model',
   'upstream_reported_model',
@@ -368,6 +393,8 @@ const itemFields = [
   'channel_id',
   'credential_id',
   'credential_name',
+  'credential_alias',
+  'credential_connection_type',
   'route_mode',
   'usage_state',
   'cost_state',
@@ -445,6 +472,7 @@ function projectPricingReceipt(value: unknown): RequestLogPricingReceiptDto | nu
     const line = projectRecord(lineValue)
     assertNoSecretLikeFields(line, [
       'code',
+      'model_id',
       'quantity',
       'rate_nano_usd_per_million',
       'multiplier',
@@ -456,8 +484,12 @@ function projectPricingReceipt(value: unknown): RequestLogPricingReceiptDto | nu
     const numerator = projectNonNegativeInt64String(multiplier.numerator)
     const denominator = projectNonNegativeInt64String(multiplier.denominator)
     if (numerator === '0' || denominator === '0') invalidResponse()
+    const code = projectEnum(line.code, receiptCodes)
+    const advisor = code.startsWith('advisor_')
+    if (advisor !== (line.model_id !== undefined)) invalidResponse()
     return {
-      code: projectEnum(line.code, receiptCodes),
+      code,
+      ...(advisor ? { model_id: projectNonBlankString(line.model_id) } : {}),
       quantity: projectNonNegativeInt64String(line.quantity),
       rate_nano_usd_per_million:
         line.rate_nano_usd_per_million === null
@@ -472,8 +504,9 @@ function projectPricingReceipt(value: unknown): RequestLogPricingReceiptDto | nu
         line.amount_nano_usd === null ? null : projectNonNegativeInt64String(line.amount_nano_usd),
     }
   })
-  const schemaVersion = projectSafeInteger(record.schema_version, { minimum: 1, maximum: 6 }) as
-    1 | 2 | 3 | 4 | 5 | 6
+  const schemaVersion = projectSafeInteger(record.schema_version, { minimum: 1, maximum: 7 }) as
+    1 | 2 | 3 | 4 | 5 | 6 | 7
+  if (schemaVersion < 7 && lines.some((line) => line.model_id !== undefined)) invalidResponse()
   let priceMultipliers: RequestLogPricingReceiptDto['price_multipliers']
   if (schemaVersion >= 5) {
     const multipliers = projectRecord(record.price_multipliers)
@@ -486,7 +519,7 @@ function projectPricingReceipt(value: unknown): RequestLogPricingReceiptDto | nu
     invalidResponse()
   }
   let baseTotal: string | undefined
-  if (schemaVersion === 6) {
+  if (schemaVersion >= 6) {
     baseTotal = projectNonNegativeInt64String(record.base_total_nano_usd)
   } else if (record.base_total_nano_usd !== undefined) {
     invalidResponse()
@@ -531,6 +564,8 @@ function projectAttempt(value: unknown): RequestLogAttemptDto {
     'channel_id',
     'credential_id',
     'credential_name',
+    'credential_alias',
+    'credential_connection_type',
     'operation',
     'route_mode',
     'upstream_model',
@@ -565,7 +600,11 @@ function projectAttempt(value: unknown): RequestLogAttemptDto {
       record.credential_id === null
         ? null
         : projectSafeInteger(record.credential_id, { minimum: 1 }),
-    credential_name: projectString(record.credential_name, { allowEmpty: true }),
+    credential_name: credentialDisplayText(
+      projectString(record.credential_alias ?? '', { allowEmpty: true }),
+      projectString(record.credential_name, { allowEmpty: true }),
+      projectString(record.credential_connection_type ?? '', { allowEmpty: true }),
+    ),
     credential_deleted: record.credential_id !== null && record.credential_name === '',
     operation: record.operation === null ? null : projectEnum(record.operation, operations),
     route_mode: record.route_mode === null ? null : projectEnum(record.route_mode, routeModes),
@@ -694,6 +733,7 @@ function projectItemRecord(record: Record<string, unknown>): RequestLogItemDto {
       record.upstream_protocol === null
         ? null
         : projectEnum(record.upstream_protocol, enabledDataProtocols),
+    client_ip: projectNullableModel(record.client_ip),
     client_model: projectNullableModel(record.client_model),
     upstream_model: upstreamModel,
     upstream_reported_model: upstreamReportedModel,
@@ -718,7 +758,11 @@ function projectItemRecord(record: Record<string, unknown>): RequestLogItemDto {
       record.credential_id === null
         ? null
         : projectSafeInteger(record.credential_id, { minimum: 1 }),
-    credential_name: projectString(record.credential_name, { allowEmpty: true }),
+    credential_name: credentialDisplayText(
+      projectString(record.credential_alias ?? '', { allowEmpty: true }),
+      projectString(record.credential_name, { allowEmpty: true }),
+      projectString(record.credential_connection_type ?? '', { allowEmpty: true }),
+    ),
     credential_deleted: record.credential_id !== null && record.credential_name === '',
     route_mode: record.route_mode === null ? null : projectEnum(record.route_mode, routeModes),
     pricing_mode: record.pricing_mode === null ? null : projectPricingMode(record.pricing_mode),
@@ -758,7 +802,11 @@ function projectAutoDecision(value: unknown): AutoDecisionDto {
     provider: optional(row.provider),
     group_name: optional(row.group_name),
     channel_name: optional(row.channel_name),
-    credential_name: optional(row.credential_name),
+    credential_name: credentialDisplayText(
+      optional(row.credential_alias),
+      optional(row.credential_name),
+      optional(row.credential_connection_type),
+    ),
     credential_deleted: projectBoolean(row.credential_deleted ?? false),
     requested_model: optional(row.requested_model),
     upstream_model: optional(row.upstream_model),
@@ -786,12 +834,29 @@ export function projectRequestLogItem(value: unknown): RequestLogItemDto {
   return projectItemRecord(record)
 }
 
+const requestBodyStates = ['original', 'truncated', 'non_json', 'too_large', 'queue_full'] as const
+
+function projectRequestBody(value: unknown): RequestLogRequestBodyDto | null {
+  if (value === null || value === undefined) return null
+  const record = projectRecord(value)
+  assertNoSecretLikeFields(record, ['state', 'original_bytes', 'body'])
+  const state = projectEnum(record.state, requestBodyStates)
+  const hasBody = state === 'original' || state === 'truncated'
+  if (hasBody !== (record.body !== null)) invalidResponse()
+  return {
+    state,
+    original_bytes: projectSafeInteger(record.original_bytes, { minimum: 0 }),
+    body: hasBody ? projectString(record.body, { allowEmpty: true }) : null,
+  }
+}
+
 export function projectRequestLogDetail(value: unknown): RequestLogDetailDto {
   const record = projectRecord(value)
-  assertNoSecretLikeFields(record, [...itemFields, 'attempts'])
+  assertNoSecretLikeFields(record, [...itemFields, 'attempts', 'request_body'])
   return {
     ...projectItemRecord(record),
     attempts: projectArray(record.attempts, projectAttempt),
+    request_body: projectRequestBody(record.request_body),
   }
 }
 

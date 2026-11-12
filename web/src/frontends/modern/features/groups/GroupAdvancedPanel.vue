@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import { useMobileLayout } from '@modern/app/use-mobile-layout'
 import { codexLiveModes, type CodexLiveMode } from '@shared/codex-live'
 import { protocolLabel } from '@modern/i18n/protocols'
-import { Plus, Trash2 } from '@lucide/vue'
+import { Trash2 } from '@lucide/vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import { computed, onScopeDispose, ref, watch } from 'vue'
+import { computed, nextTick, onScopeDispose, ref, watch } from 'vue'
 import { useMessageSource } from '@modern/app/messages'
 import { useI18n } from 'vue-i18n'
 import {
@@ -32,6 +33,7 @@ import {
   AppNotice,
   AppFormSection,
   AppSearchSelect,
+  AppSegmentedControl,
   AppSegmentedField,
   AppSelect,
   AppTextArea,
@@ -39,13 +41,18 @@ import {
 } from '@modern/components/ui'
 import { useApiClient } from '@shared/http/client-context'
 import { groupConnectionParams, validBaseURL } from './group-create-rules'
-import { validProxyURL } from '@modern/app/proxy'
+import { validProxySelection } from '@shared/proxies/api'
+import ProxySelect from '../proxies/ProxySelect.vue'
 import GroupChannelSelect from './GroupChannelSelect.vue'
 import GroupBaseURLField from './GroupBaseURLField.vue'
 import GroupWorkspacePanel from './GroupWorkspacePanel.vue'
 import ParameterRulesEditor from '../config/ParameterRulesEditor.vue'
+import ErrorRulesEditor from '../config/ErrorRulesEditor.vue'
+import { cloneErrorRules, type ErrorRule } from '@shared/error-rules'
 import { groupValidationModelOptions } from './group-model-options'
 
+const isMobile = useMobileLayout()
+const mobileSection = ref('connection')
 const props = defineProps<{ group: GroupRow; channel?: GroupChannel; models: GroupModel[] }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
 const { t } = useI18n()
@@ -67,13 +74,17 @@ const liveOptions = computed(() => [
   ...codexLiveModes.map((value) => ({ value, label: t('settingsForm.liveModes.' + value) })),
 ])
 const proxyMode = ref('inherit')
-const proxyURL = ref('')
+const proxyID = ref('')
 const headersMode = ref('inherit')
 const headers = ref<{ key: number; name: string; value: string }[]>([])
 const removeHeaders = ref('')
 const rules = ref<ParameterRule[]>([])
+const errorRules = ref<ErrorRule[]>([])
+const errorRulesMode = ref('inherit')
+const errorRulesPending = ref(false)
 const rulesValid = ref(true)
 const rulesEditor = ref<InstanceType<typeof ParameterRulesEditor>>()
+const errorRulesEditor = ref<InstanceType<typeof ErrorRulesEditor>>()
 const baseline = ref('')
 const attempted = ref(false)
 const saving = ref(false)
@@ -89,15 +100,21 @@ function snapshot(): string {
     switches.value,
     liveMode.value,
     proxyMode.value,
-    proxyURL.value,
+    proxyID.value,
     headersMode.value,
     headers.value,
     removeHeaders.value,
     rules.value,
+    errorRulesMode.value,
+    errorRulesMode.value === 'inherit' ? [] : errorRules.value,
   ])
 }
 const dirty = computed(
-  () => Boolean(saved.value) && (snapshot() !== baseline.value || !rulesValid.value),
+  () =>
+    Boolean(saved.value) &&
+    (snapshot() !== baseline.value ||
+      !rulesValid.value ||
+      (errorRulesMode.value === 'override' && errorRulesPending.value)),
 )
 watch(
   query.data,
@@ -121,9 +138,9 @@ watch(
     )
     liveMode.value = data.overrides.codex_live_mode ?? ''
     proxyMode.value = data.proxy.mode
-    // display_url 可能脱敏；未编辑时不能把它作为代理凭据重新写回。
-    proxyURL.value = ''
-    headersMode.value = data.overrides.header_rules === undefined ? 'inherit' : 'custom'
+    // 未改选时保留原关联，包括暂时停用或已删除的代理引用。
+    proxyID.value = ''
+    headersMode.value = data.overrides.header_rules === undefined ? 'inherit' : 'override'
     const value = data.overrides.header_rules ?? data.effective.header_rules
     headers.value = Object.entries(value.set).map(([name, value]) => ({
       key: nextHeader++,
@@ -132,6 +149,8 @@ watch(
     }))
     removeHeaders.value = value.remove.join('\n')
     rules.value = JSON.parse(JSON.stringify(data.overrides.parameter_overrides ?? []))
+    errorRulesMode.value = data.overrides.error_rules === undefined ? 'inherit' : 'override'
+    errorRules.value = cloneErrorRules(data.overrides.error_rules ?? [])
     rulesValid.value = true
     baseline.value = snapshot()
   },
@@ -139,19 +158,18 @@ watch(
 )
 const inheritOptions = computed(() => [
   { value: 'inherit', label: t('groupDetail.inherit') },
-  { value: 'custom', label: t('groupDetail.override') },
+  { value: 'override', label: t('groupDetail.override') },
 ])
 const switchOptions = computed(() => [
   { value: '', label: t('groupDetail.inherit') },
   { value: 'true', label: t('groupDetail.on') },
   { value: 'false', label: t('groupDetail.off') },
 ])
-const proxyOptions = computed(() =>
-  ['inherit', 'direct', 'custom'].map((value) => ({
-    value,
-    label: t('groupCreate.proxy' + value[0]!.toUpperCase() + value.slice(1)),
-  })),
-)
+const proxyOptions = computed(() => [
+  { value: 'inherit', label: t('groupCreate.proxyInherit') },
+  { value: 'direct', label: t('groupCreate.proxyDirect') },
+  { value: 'custom', label: t('settingsForm.proxy.custom') },
+])
 const modelOptions = computed(() => [
   { value: '', label: t('groupDetail.automatic') },
   ...groupValidationModelOptions(props.models),
@@ -191,13 +209,18 @@ function numberInvalid(key: RuntimeNumber): boolean {
   )
 }
 const proxyChanged = computed(
-  () => proxyMode.value !== saved.value?.proxy.mode || Boolean(proxyURL.value),
+  () =>
+    proxyMode.value !== saved.value?.proxy.mode ||
+    (Boolean(proxyID.value) && Number(proxyID.value) !== saved.value?.proxy.id),
 )
 const proxyInvalid = computed(
-  () => proxyChanged.value && proxyMode.value === 'custom' && !validProxyURL(proxyURL.value.trim()),
+  () =>
+    proxyChanged.value &&
+    proxyMode.value === 'custom' &&
+    !validProxySelection(proxyID.value.trim()),
 )
 const headerInvalid = computed(() => {
-  if (headersMode.value !== 'custom') return false
+  if (headersMode.value !== 'override') return false
   const names = headers.value.map((header) => header.name.trim().toLowerCase())
   return (
     new Set(names).size !== names.length ||
@@ -210,7 +233,22 @@ const headerInvalid = computed(() => {
 async function save(): Promise<void> {
   if (!saved.value || !dirty.value || saving.value || switching.value) return
   attempted.value = true
+  if (errorRulesMode.value === 'override') {
+    if (isMobile.value) {
+      mobileSection.value = 'errors'
+      await nextTick()
+    }
+    if (!(await errorRulesEditor.value?.prepareSave())) return
+  }
+  if (!dirty.value) {
+    emit('close')
+    return
+  }
   if (!rulesValid.value) {
+    if (isMobile.value) {
+      mobileSection.value = 'parameters'
+      await nextTick()
+    }
     await rulesEditor.value?.focusFirstInvalid()
     return
   }
@@ -219,8 +257,16 @@ async function save(): Promise<void> {
     runtimeNumbers.some(numberInvalid) ||
     proxyInvalid.value ||
     headerInvalid.value
-  )
+  ) {
+    if (isMobile.value)
+      mobileSection.value =
+        Object.keys(paramErrors.value).length || proxyInvalid.value
+          ? 'connection'
+          : runtimeNumbers.some(numberInvalid)
+            ? 'runtime'
+            : 'headers'
     return
+  }
   const base = saved.value
   const overrides: RuntimeSettings = JSON.parse(JSON.stringify(base.overrides))
   for (const key of runtimeNumbers) {
@@ -244,6 +290,8 @@ async function save(): Promise<void> {
     }
   if (rules.value.length) overrides.parameter_overrides = rules.value
   else delete overrides.parameter_overrides
+  if (errorRulesMode.value === 'inherit') delete overrides.error_rules
+  else overrides.error_rules = cloneErrorRules(errorRules.value)
   const patch: AdvancedSettingsPatch = {}
   const nextParams = groupConnectionParams(params.value, props.channel)
   if (JSON.stringify(nextParams) !== JSON.stringify(base.params)) patch.params = nextParams
@@ -258,7 +306,7 @@ async function save(): Promise<void> {
         ? null
         : proxyMode.value === 'direct'
           ? { mode: 'direct' }
-          : { mode: 'custom', url: proxyURL.value.trim() }
+          : { mode: 'custom', proxy_id: Number(proxyID.value) }
   if (!Object.keys(patch).length) {
     emit('close')
     return
@@ -359,20 +407,33 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
     @close="emit('close')"
     @save="save"
   >
+    <template v-if="isMobile" #toolbar
+      ><div class="modern-advanced-mobile-toolbar">
+        <AppSelect
+          v-model="mobileSection"
+          :label="t('groupDetail.advanced')"
+          label-hidden
+          :options="[
+            { value: 'connection', label: t('groupDetail.channel') },
+            { value: 'runtime', label: t('credentialCards.runtime') },
+            { value: 'headers', label: t('groupDetail.headers') },
+            { value: 'errors', label: t('groupDetail.errorHandling') },
+            { value: 'parameters', label: t('groupDetail.parameters') },
+          ]"
+        /></div
+    ></template>
     <AppCollectionState v-if="query.isPending.value" :title="t('collection.loading')" loading />
     <AppCollectionState v-else-if="!saved" :title="t('groups.edit.loadFailed')" error
       ><AppButton @click="query.refetch()">{{ t('ui.retry') }}</AppButton></AppCollectionState
     >
     <template v-else>
-      <AppFormSection :title="t('groupDetail.connection')">
+      <AppFormSection v-show="!isMobile || mobileSection === 'connection'">
         <GroupChannelSelect
           v-if="switchable"
           :model-value="saved.channelID"
           :channels="switchableChannels"
           :label="t('groupDetail.channel')"
-          :description="
-            dirty ? t('groupDetail.channelSwitchBlocked') : t('groupDetail.channelHelp')
-          "
+          :hint="dirty ? t('groupDetail.channelSwitchBlocked') : t('groupDetail.channelHelp')"
           size="sm"
           :disabled="busy || dirty"
           @update:model-value="requestChannelSwitch($event)"
@@ -430,45 +491,48 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
             >
           </AppSelect>
         </div>
-        <template v-if="channel?.proxy">
-          <div class="modern-advanced-columns">
-            <AppSegmentedField
-              v-model="proxyMode"
-              :label="t('groupCreate.proxy')"
-              :options="proxyOptions"
-              size="sm"
-              :disabled="busy"
-            />
-            <AppTextField
-              v-if="proxyMode === 'custom'"
-              v-model="proxyURL"
-              :label="t('groupCreate.proxyURL')"
-              :placeholder="
-                saved.proxy.mode === 'custom' ? saved.proxy.display : 'http://127.0.0.1:7890'
-              "
-              :description="
-                saved.proxy.mode === 'custom' ? t('groupDetail.proxyUnchanged') : undefined
-              "
-              :error="attempted && proxyInvalid ? t('groupCreate.proxyError') : undefined"
-              size="sm"
-              :disabled="busy"
-              autocomplete="off"
-            />
-          </div>
-        </template>
       </AppFormSection>
-      <AppFormSection :title="t('groupDetail.runtime')" :description="t('groupDetail.runtimeHelp')">
+      <AppFormSection
+        v-if="channel?.proxy"
+        v-show="!isMobile || mobileSection === 'connection'"
+        compact
+        :title="t('groupCreate.proxy')"
+      >
+        <template #actions>
+          <AppSegmentedControl
+            v-model="proxyMode"
+            :label="t('groupCreate.proxy')"
+            :options="proxyOptions"
+            appearance="field"
+            size="xs"
+            :disabled="busy"
+          />
+        </template>
+        <ProxySelect
+          v-if="proxyMode === 'custom'"
+          v-model="proxyID"
+          label-hidden
+          size="sm"
+          :saved-id="saved?.proxy.id"
+          :saved-name="saved?.proxy.name"
+          :saved-address="saved?.proxy.display"
+          :reference-state="saved?.proxy.referenceState"
+          :disabled="busy"
+          :error="attempted && proxyInvalid ? t('proxies.selectHelp') : undefined"
+        />
+      </AppFormSection>
+      <AppFormSection v-show="!isMobile || mobileSection === 'runtime'">
         <div class="modern-advanced-columns">
           <AppTextField
             v-for="key in runtimeNumbers"
             :key="key"
             :model-value="numbers[key] ?? ''"
             :label="t('groupDetail.runtimeFields.' + key)"
-            :placeholder="String(saved.effective[key])"
-            :description="
+            :placeholder="t('groupDetail.effective', { value: saved.effective[key] })"
+            :hint="
               key === 'concurrency_limit'
                 ? t('concurrency.overrideHelp')
-                : t('groupDetail.effective', { value: saved.effective[key] })
+                : t('groupDetail.runtimeHelp')
             "
             :error="attempted && numberInvalid(key) ? t('groupDetail.invalidNumber') : undefined"
             inputmode="numeric"
@@ -481,13 +545,6 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
             v-model="liveMode"
             :label="t('settingsForm.fields.codex_live_mode')"
             :options="liveOptions"
-            :description="
-              t('groupDetail.effective', {
-                value: t('settingsForm.liveModes.' + saved.effective.codex_live_mode),
-              }) +
-              ' · ' +
-              t('settingsForm.hints.codex_live_mode')
-            "
             size="sm"
             :disabled="busy"
           />
@@ -497,7 +554,7 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
             :model-value="switches[key] ?? ''"
             :label="t('groupDetail.runtimeFields.' + key)"
             :options="switchOptions"
-            :description="
+            :hint="
               t('groupDetail.effective', {
                 value: t(saved.effective[key] ? 'groupDetail.on' : 'groupDetail.off'),
               })
@@ -508,65 +565,113 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
           />
         </div>
       </AppFormSection>
-      <AppFormSection compact :title="t('groupDetail.headers')">
-        <template #actions
-          ><AppSegmentedField
+      <AppFormSection
+        v-show="!isMobile || mobileSection === 'headers'"
+        compact
+        :title="t('groupDetail.headers')"
+        :add-label="t('groupDetail.addHeader')"
+        :add-disabled="busy || headersMode === 'inherit'"
+        @add="headers.push({ key: nextHeader++, name: '', value: '' })"
+      >
+        <template #actions>
+          <AppSegmentedControl
             v-model="headersMode"
-            class="modern-advanced-mode"
             :label="t('groupDetail.headers')"
-            label-hidden
             :options="inheritOptions"
+            appearance="field"
             size="xs"
-            :disabled="busy" /><AppIconButton
-            :icon="Plus"
-            :label="t('groupDetail.addHeader')"
-            size="xs"
-            :disabled="busy || headersMode === 'inherit'"
-            @click="headers.push({ key: nextHeader++, name: '', value: '' })"
-        /></template>
-        <div v-if="headers.length" class="modern-advanced-header-labels" aria-hidden="true">
-          <span>{{ t('groupDetail.headerName') }}</span
-          ><span>{{ t('groupDetail.headerValue') }}</span>
-        </div>
-        <div v-for="header in headers" :key="header.key" class="modern-advanced-header-row">
-          <AppTextField
-            v-model="header.name"
-            :label="t('groupDetail.headerName')"
-            label-hidden
-            :placeholder="t('groupDetail.headerName')"
-            size="xs"
-            :disabled="busy || headersMode === 'inherit'"
+            :disabled="busy"
           />
-          <AppTextField
-            v-model="header.value"
-            :label="t('groupDetail.headerValue')"
-            label-hidden
-            :placeholder="t('groupDetail.headerValue')"
+        </template>
+        <template v-if="headersMode === 'override'">
+          <div v-if="headers.length" class="modern-advanced-header-labels" aria-hidden="true">
+            <span>{{ t('groupDetail.headerName') }}</span
+            ><span>{{ t('groupDetail.headerValue') }}</span>
+          </div>
+          <div v-for="header in headers" :key="header.key" class="modern-advanced-header-row">
+            <AppTextField
+              v-model="header.name"
+              :label="t('groupDetail.headerName')"
+              :label-hidden="!isMobile"
+              :placeholder="t('groupDetail.headerName')"
+              size="xs"
+              :disabled="busy"
+            />
+            <AppTextField
+              v-model="header.value"
+              :label="t('groupDetail.headerValue')"
+              :label-hidden="!isMobile"
+              :placeholder="t('groupDetail.headerValue')"
+              size="xs"
+              :disabled="busy"
+            />
+            <AppIconButton
+              :icon="Trash2"
+              :label="t('groupDetail.removeHeader')"
+              size="xs"
+              :disabled="busy"
+              @click="headers = headers.filter((row) => row.key !== header.key)"
+            />
+          </div>
+          <AppTextArea
+            v-model="removeHeaders"
+            :label="t('groupDetail.removeHeaders')"
+            :rows="2"
             size="xs"
-            :disabled="busy || headersMode === 'inherit'"
+            :placeholder="t('groupDetail.oneHeaderPerLine')"
+            mono
+            :disabled="busy"
           />
-          <AppIconButton
-            :icon="Trash2"
-            :label="t('groupDetail.removeHeader')"
-            size="xs"
-            :disabled="busy || headersMode === 'inherit'"
-            @click="headers = headers.filter((row) => row.key !== header.key)"
-          />
-        </div>
-        <AppTextArea
-          v-model="removeHeaders"
-          :label="t('groupDetail.removeHeaders')"
-          :rows="2"
-          size="xs"
-          :placeholder="t('groupDetail.oneHeaderPerLine')"
-          mono
-          :disabled="busy || headersMode === 'inherit'"
-        />
-        <AppNotice v-if="attempted && headerInvalid" tone="danger">{{
-          t('groupDetail.invalidHeaders')
-        }}</AppNotice>
+          <AppNotice v-if="attempted && headerInvalid" tone="danger">{{
+            t('groupDetail.invalidHeaders')
+          }}</AppNotice>
+        </template>
       </AppFormSection>
-      <AppFormSection compact :title="t('groupDetail.parameters')">
+      <AppFormSection
+        v-show="!isMobile || mobileSection === 'errors'"
+        compact
+        :title="t('groupDetail.errorHandling')"
+        :hint="t('errorRules.order')"
+        :add-label="t('errorRules.add')"
+        :add-disabled="busy || errorRulesMode === 'inherit' || !errorRulesEditor?.canAdd"
+        @add="errorRulesEditor?.add()"
+      >
+        <template #actions>
+          <AppSegmentedControl
+            v-model="errorRulesMode"
+            :label="t('groupDetail.errorHandling')"
+            :options="inheritOptions"
+            appearance="field"
+            size="xs"
+            :disabled="busy"
+          />
+        </template>
+        <ErrorRulesEditor
+          v-if="errorRulesMode === 'override'"
+          ref="errorRulesEditor"
+          v-model="errorRules"
+          :disabled="busy"
+          @update:pending="errorRulesPending = $event"
+        />
+      </AppFormSection>
+      <AppFormSection
+        v-show="!isMobile || mobileSection === 'parameters'"
+        compact
+        :title="t('groupDetail.parameters')"
+        :hint="
+          [
+            t('parameterRules.order'),
+            t('parameterRules.modelHelp'),
+            t('parameterRules.typeHelp'),
+            t('parameterRules.pathHelp'),
+            t('parameterRules.mergeHelp'),
+            t('parameterRules.jsonHelp'),
+          ].join('\n')
+        "
+        :add-label="t('parameterRules.addRule')"
+        :add-disabled="busy || !rulesEditor?.canAdd"
+        @add="rulesEditor?.addRule()"
+      >
         <ParameterRulesEditor
           ref="rulesEditor"
           v-model="rules"
@@ -604,14 +709,16 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
 </template>
 
 <style scoped>
+.modern-advanced-mobile-toolbar {
+  padding: var(--modern-space-3) var(--modern-space-5);
+  border-bottom: var(--modern-line-width) solid var(--modern-border);
+}
+
 .modern-advanced-columns {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
   gap: var(--modern-space-3) var(--modern-space-4);
-}
-.modern-advanced-mode {
-  width: var(--modern-menu-min-width);
 }
 .modern-advanced-header-labels,
 .modern-advanced-header-row {
@@ -631,9 +738,20 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
   }
 }
 @media (max-width: 760px) {
-  .modern-advanced-header-labels,
+  .modern-advanced-header-labels {
+    display: none;
+  }
   .modern-advanced-header-row {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) var(--modern-touch-target);
+    grid-template-columns: minmax(0, 1fr) var(--modern-touch-target);
+  }
+  .modern-advanced-header-row > :nth-child(2) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .modern-advanced-header-row > :last-child {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    align-self: center;
   }
 }
 </style>

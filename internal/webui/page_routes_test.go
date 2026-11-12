@@ -6,6 +6,7 @@ import (
 )
 
 func TestParsePageRouteManifestValidatesSharedRouteContract(t *testing.T) {
+	t.Parallel()
 	valid := []byte(`{
 		"version": 1,
 		"routes": [
@@ -97,6 +98,7 @@ func TestParsePageRouteManifestValidatesSharedRouteContract(t *testing.T) {
 }
 
 func TestEmbeddedPageRouteManifestContainsCurrentPages(t *testing.T) {
+	t.Parallel()
 	routes, err := loadPageRoutes()
 	if err != nil {
 		t.Fatalf("loadPageRoutes() error = %v", err)
@@ -119,6 +121,7 @@ func TestEmbeddedPageRouteManifestContainsCurrentPages(t *testing.T) {
 		"monitor-health":    "/monitor/health",
 		"monitor-inspector": "/monitor/inspector",
 		"models":            "/models",
+		"proxies":           "/proxies",
 		"settings":          "/settings",
 	}
 	if len(got) != len(want) {
@@ -132,6 +135,7 @@ func TestEmbeddedPageRouteManifestContainsCurrentPages(t *testing.T) {
 }
 
 func TestClassicPageRouteManifestKeepsOriginalPages(t *testing.T) {
+	t.Parallel()
 	routes, err := parsePageRouteManifest(embeddedPageRouteManifest)
 	if err != nil {
 		t.Fatalf("parse classic page route manifest: %v", err)
@@ -145,6 +149,7 @@ func TestClassicPageRouteManifestKeepsOriginalPages(t *testing.T) {
 		"access-keys":  "/access-keys",
 		"monitor":      "/monitor",
 		"models":       "/models",
+		"proxies":      "/proxies",
 		"settings":     "/settings",
 	}
 	if len(routes) != len(want) {

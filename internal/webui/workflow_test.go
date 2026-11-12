@@ -18,17 +18,18 @@ const (
 	setupGoActionRef          = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
 	setupNodeActionRef        = "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020"
 	pnpmSetupActionRef        = "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271"
-	uploadArtifactActionRef   = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-	downloadArtifactActionRef = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+	uploadArtifactActionRef   = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
+	downloadArtifactActionRef = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
 	qemuActionRef             = "docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1"
 	buildxActionRef           = "docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069"
-	dockerLoginActionRef      = "docker/login-action@dbcb813823bdd20940b903addbd779551569679f"
+	dockerLoginActionRef      = "docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550"
 	dockerMetadataActionRef   = "docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302"
 	dockerBuildActionRef      = "docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc"
-	githubReleaseActionRef    = "softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64"
+	githubReleaseActionRef    = "softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3"
 )
 
 func TestWebCICompositeActionRunsCompleteFrontendGate(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/actions/web-ci/action.yml")
 	for _, required := range []string{
 		pnpmSetupActionRef,
@@ -85,6 +86,7 @@ func TestWebCICompositeActionRunsCompleteFrontendGate(t *testing.T) {
 }
 
 func TestDependencyVulnerabilityMonitoringIsDelegatedToDependabot(t *testing.T) {
+	t.Parallel()
 	for _, file := range []string{
 		".github/actions/web-ci/action.yml",
 		".github/workflows/ci.yml",
@@ -116,16 +118,24 @@ func TestDependencyVulnerabilityMonitoringIsDelegatedToDependabot(t *testing.T) 
 }
 
 func TestMakeCheckDoesNotDuplicateWebTypeCheck(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, "Makefile")
-	if strings.Contains(content, "run type-check") {
-		t.Fatal("make check duplicates the type-check already run by the build script")
+	// make check 拆开执行 type-check 与 vite build；build 脚本本身已含 type-check，不能再调用。
+	start, end := strings.Index(content, "\ncheck:"), strings.Index(content, "\n.PHONY: release")
+	if start < 0 || end < start {
+		t.Fatal("Makefile check target is missing")
 	}
-	if !strings.Contains(content, "run build") {
+	check := content[start:end]
+	if strings.Contains(check, "run build") || strings.Count(check, "run type-check") != 1 {
+		t.Fatal("make check must run the web type-check exactly once")
+	}
+	if !strings.Contains(check, "exec vite build") {
 		t.Fatal("make check does not build the web application")
 	}
 }
 
 func TestBranchAndReleaseWorkflowsFollowDefaultBranch(t *testing.T) {
+	t.Parallel()
 	ci := readRepositoryFile(t, ".github/workflows/ci.yml")
 	triggers := workflowTopLevelBlock(t, ci, "on")
 	wantTriggers := "on:\n  pull_request:\n    branches:\n      - main"
@@ -153,6 +163,7 @@ func TestBranchAndReleaseWorkflowsFollowDefaultBranch(t *testing.T) {
 }
 
 func TestWorkflowNamesDoNotCarryRetiredV2PhaseLabel(t *testing.T) {
+	t.Parallel()
 	for _, workflow := range []struct {
 		file string
 		name string
@@ -168,6 +179,7 @@ func TestWorkflowNamesDoNotCarryRetiredV2PhaseLabel(t *testing.T) {
 }
 
 func TestWorkflowTopLevelScalarAllowsLeadingYAMLMetadata(t *testing.T) {
+	t.Parallel()
 	content := "---\n# Generated workflow metadata.\nname: CI\non:\n"
 	if got := workflowTopLevelScalar(t, content, "name"); got != "CI" {
 		t.Fatalf("workflow name = %q, want CI", got)
@@ -175,6 +187,7 @@ func TestWorkflowTopLevelScalarAllowsLeadingYAMLMetadata(t *testing.T) {
 }
 
 func TestBranchAndReleaseWorkflowsRunRaceInParallelGates(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/ci.yml")
 	testJob := workflowJobBlock(t, content, "test")
 	workflowGoFormattingScript(t, content, "test")
@@ -195,7 +208,7 @@ func TestBranchAndReleaseWorkflowsRunRaceInParallelGates(t *testing.T) {
 		t,
 		workflowJobBlock(t, content, "race-tests"),
 		"Run race-enabled tests",
-		"go test -race -vet=off -count=1 -timeout=15m . ./internal/...",
+		"go test -race -vet=off -count=1 -timeout=15m -gcflags='modernc.org/...=-race=false' . ./internal/...",
 	)
 	branchCPA := workflowStepBlock(
 		t,
@@ -224,7 +237,7 @@ func TestBranchAndReleaseWorkflowsRunRaceInParallelGates(t *testing.T) {
 		t,
 		workflowJobBlock(t, releaseContent, "race-tests"),
 		"Run race-enabled tests",
-		"go test -race -vet=off -count=1 -timeout=15m . ./internal/...",
+		"go test -race -vet=off -count=1 -timeout=15m -gcflags='modernc.org/...=-race=false' . ./internal/...",
 	)
 	releaseCPA := workflowStepBlock(
 		t,
@@ -242,6 +255,7 @@ func TestBranchAndReleaseWorkflowsRunRaceInParallelGates(t *testing.T) {
 }
 
 func TestWindowsCIExecutesManagedStorageACLTests(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/ci.yml")
 	job := workflowJobBlock(t, content, "windows-encryption-acl")
 	if count := strings.Count(job, "runs-on: [self-hosted, Windows, X64]"); count != 1 {
@@ -271,6 +285,7 @@ func TestWindowsCIExecutesManagedStorageACLTests(t *testing.T) {
 }
 
 func TestWorkflowsPinExternalActionsAndHostedRunners(t *testing.T) {
+	t.Parallel()
 	actionRef := regexp.MustCompile(`(?m)^\s*uses:\s+([^#\s]+)`)
 	immutableRef := regexp.MustCompile(`^[^@\s]+@[0-9a-f]{40}$`)
 	for _, name := range []string{
@@ -302,6 +317,7 @@ func TestWorkflowsPinExternalActionsAndHostedRunners(t *testing.T) {
 }
 
 func TestBranchWorkflowCancelsSupersededRuns(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/ci.yml")
 	concurrency := workflowTopLevelBlock(t, content, "concurrency")
 	for _, required := range []string{
@@ -315,6 +331,7 @@ func TestBranchWorkflowCancelsSupersededRuns(t *testing.T) {
 }
 
 func TestWorkflowsDisableCheckoutCredentialPersistence(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{
 		".github/workflows/ci.yml",
 		".github/workflows/release.yml",
@@ -337,6 +354,7 @@ func TestWorkflowsDisableCheckoutCredentialPersistence(t *testing.T) {
 }
 
 func TestGoFormattingScriptsFailClosed(t *testing.T) {
+	t.Parallel()
 	for _, workflow := range []struct {
 		name string
 		file string
@@ -400,6 +418,7 @@ esac
 }
 
 func TestReleaseWorkflowUsesTagOnlyTriggerAndStrictSemverGuard(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	trigger := workflowTopLevelBlock(t, content, "on")
 	for _, required := range []string{"push:", "tags:", `- "v2.*"`} {
@@ -578,6 +597,7 @@ func TestReleaseWorkflowUsesTagOnlyTriggerAndStrictSemverGuard(t *testing.T) {
 }
 
 func TestReleasePublicationStateClassifiesFreshConsistentConflictAndPartial(t *testing.T) {
+	t.Parallel()
 	script := filepath.Join("..", "..", ".github", "scripts", "release-publication-state.sh")
 	expectedSHA := "0123456789abcdef0123456789abcdef01234567"
 	base := map[string]string{
@@ -740,6 +760,7 @@ func TestReleasePublicationStateClassifiesFreshConsistentConflictAndPartial(t *t
 }
 
 func TestReleaseWorkflowDoesNotRequireUntrackedAgentInstructionFiles(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	verifyJob := workflowJobBlock(t, content, "static-checks")
 	if !strings.Contains(verifyJob, "git diff --check") {
@@ -753,6 +774,7 @@ func TestReleaseWorkflowDoesNotRequireUntrackedAgentInstructionFiles(t *testing.
 }
 
 func TestReleaseWorkflowBuildsOneWebDistAndFiveVersionedBinaries(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	if count := strings.Count(content, "uses: ./.github/actions/web-ci"); count != 1 {
 		t.Fatalf("release workflow invokes web-ci %d times, want exactly once", count)
@@ -789,6 +811,7 @@ func TestReleaseWorkflowBuildsOneWebDistAndFiveVersionedBinaries(t *testing.T) {
 }
 
 func TestReleaseWorkflowGatesSingleReleaseWriterAndImagePublication(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	preflight := workflowJobBlock(t, content, "publication-preflight")
 	for _, dependency := range []string{
@@ -821,6 +844,7 @@ func TestReleaseWorkflowGatesSingleReleaseWriterAndImagePublication(t *testing.T
 }
 
 func TestReleaseWorkflowDraftReadersRequestPushVisibility(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	for _, jobName := range []string{
 		"publication-preflight",
@@ -835,6 +859,7 @@ func TestReleaseWorkflowDraftReadersRequestPushVisibility(t *testing.T) {
 }
 
 func TestReleaseWorkflowUsesOneSharedPublicationPreflight(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	if count := strings.Count(content, "  publication-preflight:"); count != 1 {
 		t.Fatalf("publication preflight job count = %d, want exactly 1", count)
@@ -870,6 +895,7 @@ func TestReleaseWorkflowUsesOneSharedPublicationPreflight(t *testing.T) {
 }
 
 func TestReleaseWorkflowUsesTrustedCurrentRunChecksumForExistingRelease(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	for _, test := range []struct {
 		job  string
@@ -977,6 +1003,7 @@ func TestReleaseWorkflowUsesTrustedCurrentRunChecksumForExistingRelease(t *testi
 }
 
 func TestReleaseWorkflowKeepsUntrustedImageRevisionInsideJQComparison(t *testing.T) {
+	t.Parallel()
 	revisionVerifier := readRepositoryFile(
 		t, ".github/scripts/release-verify-image-revision.sh",
 	)
@@ -1158,6 +1185,7 @@ func TestReleaseWorkflowKeepsUntrustedImageRevisionInsideJQComparison(t *testing
 }
 
 func TestReleaseImageVersionAcceptsOnlyMatchingStrictSemverLabels(t *testing.T) {
+	t.Parallel()
 	script := filepath.Join("..", "..", ".github", "scripts", "release-image-version.sh")
 	fakeBin := t.TempDir()
 	fakeDocker := filepath.Join(fakeBin, "docker")
@@ -1221,6 +1249,7 @@ func TestReleaseImageVersionAcceptsOnlyMatchingStrictSemverLabels(t *testing.T) 
 }
 
 func TestReleaseWorkflowPublishesImagesBeforeGitHubRelease(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	imageJob := workflowJobBlock(t, content, "publish-images")
 	releaseJob := workflowJobBlock(t, content, "publish-github")
@@ -1235,6 +1264,7 @@ func TestReleaseWorkflowPublishesImagesBeforeGitHubRelease(t *testing.T) {
 }
 
 func TestReleaseWorkflowPromotesVerifiedImageChannelsMonotonically(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	imageJob := workflowJobBlock(t, content, "publish-images")
 	for _, forbidden := range []string{
@@ -1305,6 +1335,7 @@ func TestReleaseWorkflowPromotesVerifiedImageChannelsMonotonically(t *testing.T)
 }
 
 func TestReleaseWorkflowKeepsExactImagePublicationImmutable(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	imageJob := workflowJobBlock(t, content, "publish-images")
 	exactStep := workflowStepBlock(t, imageJob, "Verify exact published images")
@@ -1336,6 +1367,7 @@ func TestReleaseWorkflowKeepsExactImagePublicationImmutable(t *testing.T) {
 }
 
 func TestReleaseWorkflowMaintainsVersionedBetaChannelAlias(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	validateJob := workflowJobBlock(t, content, "validate-tag")
 	for _, required := range []string{
@@ -1378,6 +1410,7 @@ func TestReleaseWorkflowMaintainsVersionedBetaChannelAlias(t *testing.T) {
 }
 
 func TestReleaseWorkflowDeploysCurrentMajorChannelToRender(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	job := workflowJobBlock(t, content, "deploy-render")
 
@@ -1452,6 +1485,7 @@ func TestReleaseWorkflowDeploysCurrentMajorChannelToRender(t *testing.T) {
 }
 
 func TestReleaseWorkflowRetriesStaleRenderHealthVersion(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	health := workflowStepBlock(
 		t,
@@ -1534,6 +1568,7 @@ body="$(cat)"
 }
 
 func TestReleaseWorkflowConsistentRerunIsVerifyOnly(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	for _, test := range []struct {
 		job  string
@@ -1582,6 +1617,7 @@ func TestReleaseWorkflowConsistentRerunIsVerifyOnly(t *testing.T) {
 }
 
 func TestReleaseWorkflowAlwaysReconcilesWriterAndPostPublishResults(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	job := workflowJobBlock(t, content, "reconcile-publication")
 	if !strings.Contains(job, "if: ${{ always() }}") {
@@ -1612,6 +1648,7 @@ func TestReleaseWorkflowAlwaysReconcilesWriterAndPostPublishResults(t *testing.T
 }
 
 func TestReleaseWorkflowReconciliationHasNoWriteOperations(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	job := workflowJobBlock(t, content, "reconcile-publication")
 	for _, required := range []string{
@@ -1644,6 +1681,7 @@ func TestReleaseWorkflowReconciliationHasNoWriteOperations(t *testing.T) {
 }
 
 func TestReleaseWorkflowPreparesDraftsWithoutLatest(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	imageJob := workflowJobBlock(t, content, "publish-images")
 	for _, required := range []string{
@@ -1735,6 +1773,7 @@ func TestReleaseWorkflowPreparesDraftsWithoutLatest(t *testing.T) {
 }
 
 func TestReleaseWorkflowKeepsReleaseNotesConciseAndWarnsAboutDataIncompatibility(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	releaseJob := workflowJobBlock(t, content, "publish-github")
 	draftStep := workflowStepBlock(t, releaseJob, "Create or update GitHub Release draft")
@@ -1803,6 +1842,7 @@ func TestReleaseWorkflowKeepsReleaseNotesConciseAndWarnsAboutDataIncompatibility
 }
 
 func TestCommunityTemplatesCaptureVersionCompatibilityAndSecretSafety(t *testing.T) {
+	t.Parallel()
 	bug := readRepositoryFile(t, ".github/ISSUE_TEMPLATE/bug_report.md")
 	for _, required := range []string{
 		"当前主版本线的最新补丁版本",
@@ -1859,6 +1899,7 @@ func TestCommunityTemplatesCaptureVersionCompatibilityAndSecretSafety(t *testing
 }
 
 func TestReleaseWorkflowVerifiesDownloadedNativeChecksumsAndGeneratedKeys(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	nativeJob := workflowJobBlock(t, content, "native-artifact-smoke")
 	for _, scriptPath := range []string{
@@ -1935,6 +1976,7 @@ func TestReleaseWorkflowVerifiesDownloadedNativeChecksumsAndGeneratedKeys(t *tes
 }
 
 func TestWindowsNativeSmokeMatchesManagedStorageACLContract(t *testing.T) {
+	t.Parallel()
 	script := readRepositoryFile(t, ".github/scripts/release-native-smoke.ps1")
 	for _, required := range []string{
 		"Assert-CurrentUserOnlyAcl",
@@ -1957,6 +1999,7 @@ func TestWindowsNativeSmokeMatchesManagedStorageACLContract(t *testing.T) {
 }
 
 func TestReleaseWorkflowRunsCompleteLocalDockerSmoke(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	dockerJob := workflowJobBlock(t, content, "docker-smoke")
 	if !strings.Contains(dockerJob, ".github/scripts/release-docker-smoke.sh") {
@@ -2002,6 +2045,7 @@ func TestReleaseWorkflowRunsCompleteLocalDockerSmoke(t *testing.T) {
 }
 
 func TestReleaseDockerSmokeUsesIsolatedFakeUpstreamNetwork(t *testing.T) {
+	t.Parallel()
 	script := readRepositoryFile(t, ".github/scripts/release-docker-smoke.sh")
 	for _, required := range []string{
 		`fake_container="gpt-load-release-fake-${suffix}"`,
@@ -2030,6 +2074,7 @@ func TestReleaseDockerSmokeUsesIsolatedFakeUpstreamNetwork(t *testing.T) {
 }
 
 func TestReleaseDockerSmokeUsesCompleteModelPriceReplacement(t *testing.T) {
+	t.Parallel()
 	script := readRepositoryFile(t, ".github/scripts/release-docker-smoke.sh")
 	start := strings.Index(script, `api_write PUT "/api/model-prices/${model_price_id}"`)
 	if start < 0 {
@@ -2056,6 +2101,7 @@ func TestReleaseDockerSmokeUsesCompleteModelPriceReplacement(t *testing.T) {
 }
 
 func TestReleaseDockerSmokeDefersOwnedResourceCleanupUntilAfterConflictChecks(t *testing.T) {
+	t.Parallel()
 	script := readRepositoryFile(t, ".github/scripts/release-docker-smoke.sh")
 	tempTrapIndex := strings.Index(script, "trap cleanup_temp EXIT")
 	containerCheckIndex := strings.Index(script, `for target in "${container}" "${probe}" "${fake_container}"; do`)
@@ -2098,6 +2144,7 @@ func TestReleaseDockerSmokeDefersOwnedResourceCleanupUntilAfterConflictChecks(t 
 }
 
 func TestReleaseWorkflowPostPublishVerifiesExactDigestsBeforePromotion(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	job := workflowJobBlock(t, content, "post-publish-verify")
 	for _, required := range []string{
@@ -2120,6 +2167,7 @@ func TestReleaseWorkflowPostPublishVerifiesExactDigestsBeforePromotion(t *testin
 }
 
 func TestReleaseWorkflowPostPublishVerifiesDraftAssetsAgainstCurrentRun(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	inventoryJob := workflowJobBlock(t, content, "post-publish-verify")
 	for _, required := range []string{
@@ -2164,6 +2212,7 @@ func TestReleaseWorkflowPostPublishVerifiesDraftAssetsAgainstCurrentRun(t *testi
 }
 
 func TestReleaseWorkflowRunsBothPublishedImagesAndPreservesLatest(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	snapshotJob := workflowJobBlock(t, content, "publication-preflight")
 	for _, required := range []string{
@@ -2269,6 +2318,7 @@ func TestReleaseWorkflowRunsBothPublishedImagesAndPreservesLatest(t *testing.T) 
 }
 
 func TestReleaseImageDigestFailsClosedOnOperationalInspectionErrors(t *testing.T) {
+	t.Parallel()
 	for _, message := range []string{"rate limit exceeded", "docker: command not found"} {
 		t.Run(message, func(t *testing.T) {
 			script := filepath.Join("..", "..", ".github", "scripts", "release-image-digest.sh")
@@ -2294,7 +2344,21 @@ func TestReleaseImageDigestFailsClosedOnOperationalInspectionErrors(t *testing.T
 	}
 }
 
+func TestLocalReleaseCLIHelp(t *testing.T) {
+	t.Parallel()
+	command := exec.Command("python3", "-m", "scripts.release", "--help")
+	command.Dir = filepath.Join("..", "..")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("load local release CLI: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "--simulate") {
+		t.Fatalf("local release CLI did not show its help: %s", output)
+	}
+}
+
 func TestReleaseSemverComparatorOrdersChannelCandidates(t *testing.T) {
+	t.Parallel()
 	script := filepath.Join("..", "..", ".github", "scripts", "release-compare-semver.py")
 	for _, test := range []struct {
 		name  string
@@ -2332,6 +2396,7 @@ func TestReleaseSemverComparatorOrdersChannelCandidates(t *testing.T) {
 }
 
 func TestReleaseImageChannelPromotionIsMonotonicAndPreservesLatest(t *testing.T) {
+	t.Parallel()
 	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("resolve repository root: %v", err)
@@ -2525,6 +2590,7 @@ else:
 }
 
 func TestReleaseImageDigestReturnsAbsentOnlyForMissingManifest(t *testing.T) {
+	t.Parallel()
 	script := filepath.Join("..", "..", ".github", "scripts", "release-image-digest.sh")
 	fakeBin := t.TempDir()
 	fakeDocker := filepath.Join(fakeBin, "docker")
@@ -2547,6 +2613,7 @@ func TestReleaseImageDigestReturnsAbsentOnlyForMissingManifest(t *testing.T) {
 }
 
 func TestReleaseDockerSmokeCanUsePublishedSourceWithoutDeletingIt(t *testing.T) {
+	t.Parallel()
 	script := readRepositoryFile(t, ".github/scripts/release-docker-smoke.sh")
 	for _, required := range []string{
 		"RELEASE_SMOKE_SOURCE_IMAGE",
@@ -2584,6 +2651,7 @@ func TestReleaseDockerSmokeCanUsePublishedSourceWithoutDeletingIt(t *testing.T) 
 }
 
 func TestReleaseWorkflowRemovesObsoletePublishers(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{
 		".github/workflows/docker-build.yml",
 		".github/workflows/release-linux.yml",
@@ -2597,6 +2665,7 @@ func TestReleaseWorkflowRemovesObsoletePublishers(t *testing.T) {
 }
 
 func TestReadmesDoNotExposeInternalReleaseTaskNames(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"README.md", "README_CN.md", "README_JP.md"} {
 		content := readRepositoryFile(t, name)
 		if strings.Contains(content, "T18") {
@@ -2606,6 +2675,7 @@ func TestReadmesDoNotExposeInternalReleaseTaskNames(t *testing.T) {
 }
 
 func TestDockerfileCopiesWebInstallPolicyBeforeInstalling(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, "Dockerfile")
 	copyInputs := "COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./web/"
 	install := "RUN pnpm --dir web install --frozen-lockfile"
@@ -2624,12 +2694,13 @@ func TestDockerfileCopiesWebInstallPolicyBeforeInstalling(t *testing.T) {
 }
 
 func TestDockerfilePinsBuildAndRuntimeImagesByVersionAndDigest(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, "Dockerfile")
 	for _, required := range []string{
 		"node:24.18.0-alpine3.24@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd",
 		"pnpm@11.17.0",
-		"golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc",
-		"alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b",
+		"golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd",
+		"alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf",
 	} {
 		if !strings.Contains(content, required) {
 			t.Errorf("Dockerfile does not contain %q", required)
@@ -2637,7 +2708,8 @@ func TestDockerfilePinsBuildAndRuntimeImagesByVersionAndDigest(t *testing.T) {
 	}
 }
 
-func TestDockerfileRuntimePinsPatchedOpenSSLPackages(t *testing.T) {
+func TestDockerfileRuntimePinsPatchedAlpinePackages(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, "Dockerfile")
 	runtimeStart := strings.Index(content, "\nFROM alpine:")
 	if runtimeStart < 0 {
@@ -2649,17 +2721,18 @@ func TestDockerfileRuntimePinsPatchedOpenSSLPackages(t *testing.T) {
 	}
 	runtimeStage := content[runtimeStart : runtimeStart+1+runtimeEnd]
 
-	upgrade := "apk add --no-cache libcrypto3=3.5.9-r0 libssl3=3.5.9-r0"
+	// 基础镜像尚未包含的安全修复版本在此显式固定，避免发布前漏洞扫描阻断。
+	upgrade := "apk add --no-cache libcrypto3=3.5.9-r0 libssl3=3.5.9-r0 zlib=1.4-r0"
 	upgradeIndex := strings.Index(runtimeStage, upgrade)
 	if upgradeIndex < 0 {
-		t.Fatalf("Dockerfile runtime stage does not pin patched OpenSSL packages via %q", upgrade)
+		t.Fatalf("Dockerfile runtime stage does not pin patched Alpine packages via %q", upgrade)
 	}
 	packageInstallIndex := strings.Index(runtimeStage, "apk add --no-cache ca-certificates tzdata")
 	if packageInstallIndex < 0 {
 		t.Fatal("Dockerfile runtime stage does not install certificate and timezone packages")
 	}
 	if upgradeIndex >= packageInstallIndex {
-		t.Fatal("Dockerfile upgrades OpenSSL after installing certificate and timezone packages")
+		t.Fatal("Dockerfile upgrades patched packages after installing certificate and timezone packages")
 	}
 }
 
@@ -2834,6 +2907,7 @@ func workflowMarkedScript(t *testing.T, content, marker string) string {
 }
 
 func TestReleaseWorkflowReusesCIVerdictOnlyOnProvenSuccess(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 	verdict := workflowMarkedScript(t, content, "release-ci-verdict-reuse")
 	scriptPath := filepath.Join(t.TempDir(), "reuse-ci-verdict.sh")
@@ -2889,6 +2963,7 @@ func TestReleaseWorkflowReusesCIVerdictOnlyOnProvenSuccess(t *testing.T) {
 }
 
 func TestReleaseWorkflowSkipsOnlyCIProvenGatesAndStillFailsClosed(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 
 	// 只有同一 commit 上确定性重跑的 gate 才允许复用 CI 结论。
@@ -2932,6 +3007,7 @@ func TestReleaseWorkflowSkipsOnlyCIProvenGatesAndStillFailsClosed(t *testing.T) 
 }
 
 func TestReleaseWorkflowJobsDownstreamOfSkippableGatesOverrideDefaultCondition(t *testing.T) {
+	t.Parallel()
 	content := readRepositoryFile(t, ".github/workflows/release.yml")
 
 	jobNamePattern := regexp.MustCompile(`(?m)^  ([A-Za-z][\w-]*):\n`)
@@ -3013,6 +3089,7 @@ func TestReleaseWorkflowJobsDownstreamOfSkippableGatesOverrideDefaultCondition(t
 }
 
 func TestReleaseAssetManifestIsTheSingleSourceOfTruth(t *testing.T) {
+	t.Parallel()
 	manifest := readRepositoryFile(t, ".github/release-assets.txt")
 	var assets []string
 	for _, line := range strings.Split(manifest, "\n") {

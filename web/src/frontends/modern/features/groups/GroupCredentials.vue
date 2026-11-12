@@ -9,12 +9,17 @@ import {
   RotateCcw,
   RefreshCw,
   Search,
+  Stethoscope,
   Trash2,
   Upload,
+  X,
 } from '@lucide/vue'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, onScopeDispose, ref, watch } from 'vue'
+import { useMobileLayout } from '@modern/app/use-mobile-layout'
+import { SlidersHorizontal } from '@lucide/vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import {
   batchGroupCredentials,
   batchAllGroupCredentials,
@@ -38,7 +43,10 @@ import {
   resetCredentialQuota,
   revealCredential,
   runCredentialAction,
+  updateCredential,
+  testCredential,
 } from '@modern/api/credential-actions'
+import { useCredentialTestBatch, type CredentialTestOptions } from '@shared/credential-test-batch'
 import { ApiError } from '@shared/http/errors'
 import {
   APIKeyFileImportError,
@@ -51,6 +59,7 @@ import SubscriptionCredentialCard from './SubscriptionCredentialCard.vue'
 import CredentialDetailPanel from './CredentialDetailPanel.vue'
 import CredentialTestDialog from './CredentialTestDialog.vue'
 import {
+  AppFilterSheet,
   AppButton,
   AppActionMenu,
   AppIcon,
@@ -61,6 +70,8 @@ import {
   AppFilterSummary,
   AppIconButton,
   AppListFrame,
+  AppNotice,
+  AppOverflowText,
   AppPagination,
   AppSegmentedControl,
   AppSortMenu,
@@ -72,19 +83,28 @@ import { useURLState, positivePage } from '@modern/app/url-state'
 import { useMessageSource } from '@modern/app/messages'
 import AppDraftGuard from '@modern/components/AppDraftGuard.vue'
 
-const props = defineProps<{ group: GroupRow; channel?: GroupChannel }>()
+const props = defineProps<{ group: GroupRow; visible?: boolean; channel?: GroupChannel }>()
 const emit = defineEmits<{
   add: []
   changed: []
   pending: [value: boolean]
   updatedAt: [value: number]
 }>()
+const isMobile = useMobileLayout()
+const mobileFilterCount = computed(
+  () => filterSummary.value.filter((item) => ['proxy', 'reset', 'sort'].includes(item.key)).length,
+)
+const mobileFilters = ref(false)
 const { t, n } = useI18n()
 const client = useApiClient()
 const cache = useQueryClient()
-const filters = useURLState<CredentialFilters>(
-  ['q', 'status', 'page', 'page_size', 'sort', 'proxy', 'reset', 'credential_key'],
-  (query) => ({
+const route = useRoute()
+const router = useRouter()
+const filterKeys = ['q', 'status', 'page', 'page_size', 'sort', 'proxy', 'reset', 'credential_key']
+// 路由保护确认后才更新列表，避免切换条件时提前销毁名称草稿。
+const filters = computed<CredentialFilters>(() => {
+  const query = route.query
+  return {
     credential:
       typeof query.credential_key === 'string' && /^[a-f0-9]{64}$/u.test(query.credential_key)
         ? query.credential_key
@@ -103,27 +123,13 @@ const filters = useURLState<CredentialFilters>(
       (query.reset === 'available' || query.reset === 'none' || query.reset === 'unknown')
         ? query.reset
         : '',
-  }),
-  (value) => ({
-    ...(value.credential ? { credential_key: value.credential } : {}),
-    ...(value.q ? { q: value.q } : {}),
-    ...(value.status ? { status: value.status } : {}),
-    ...(value.page > 1 ? { page: String(value.page) } : {}),
-    ...(value.pageSize !== 20 ? { page_size: String(value.pageSize) } : {}),
-    ...(value.sort !== 'priority' ? { sort: value.sort } : {}),
-    ...(value.proxy ? { proxy: value.proxy } : {}),
-    ...(value.reset ? { reset: value.reset } : {}),
-  }),
-)
+  }
+})
 const search = ref(filters.value.q)
-watch(
-  () => filters.value.q,
-  (value) => {
-    search.value = value
-  },
-)
 const composing = ref(false)
 const selected = ref(new Set<number>())
+const nameDrafts = ref(new Set<number>())
+const cardRevision = ref(0)
 const credentialView = useURLState(
   ['credential', 'credential_view'],
   (query) => ({
@@ -191,6 +197,18 @@ const accountBatch = ref<{
 }>()
 const list = ref<InstanceType<typeof AppListFrame>>()
 const controller = new AbortController()
+const {
+  report: testBatch,
+  pending: testBatchPending,
+  itemsByID: testBatchItems,
+  counts: testBatchCounts,
+  retryIDs: testBatchRetryIDs,
+  run: runTestBatch,
+  stop: stopTestBatch,
+  reset: resetTestBatch,
+} = useCredentialTestBatch()
+const testBatchTargets = ref<number[]>([])
+const testBatchDismissed = ref(false)
 const syncSuccessTimers = new Map<number, ReturnType<typeof setTimeout>>()
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 const query = useQuery(
@@ -203,7 +221,9 @@ const query = useQuery(
 )
 const rows = computed(() => query.data.value?.items ?? [])
 const filteredCredential = computed(() => (filters.value.credential ? rows.value[0] : undefined))
-const busy = computed(() => query.isFetching.value || mutating.value !== undefined)
+const busy = computed(
+  () => query.isFetching.value || mutating.value !== undefined || testBatchPending.value,
+)
 const syncPending = (id: number) => syncing.value.has(id) || queuedSync.value.has(id)
 const bulkBusy = computed(() => busy.value || accountBatchPending.value || syncing.value.size > 0)
 const stale = computed(() => query.isError.value && Boolean(query.data.value))
@@ -263,10 +283,7 @@ const filterSummary = computed(() => [
           key: 'credential',
           label: t('groups.board.credentialFilter'),
           value: filteredCredential.value
-            ? filteredCredential.value.account ||
-              (props.group.connectionType === 'api_key'
-                ? filteredCredential.value.mask
-                : props.group.channelName)
+            ? filteredCredential.value.label
             : t('groups.board.selectedCredential'),
         },
       ]
@@ -323,21 +340,61 @@ const canSyncSelected = computed(
     rows.value.some((row) => selected.value.has(row.id) && !syncPending(row.id)),
 )
 watch(bulkBusy, (value) => emit('pending', value), { immediate: true })
+watch(
+  () => props.group.id,
+  () => {
+    resetTestBatch()
+    testBatchTargets.value = []
+    testBatchDismissed.value = false
+  },
+)
 watch(query.dataUpdatedAt, (value) => emit('updatedAt', value), { immediate: true })
-watch(query.data, (data) => {
+watch([query.data, bulkBusy], ([data, pending]) => {
   if (!data || query.isPlaceholderData.value) return
   const max = Math.max(1, Math.ceil(data.total / filters.value.pageSize))
-  if (filters.value.page > max) filters.value = { ...filters.value, page: max }
+  if (!pending && filters.value.page > max) void setFilters({ ...filters.value, page: max })
   selected.value = new Set(
     [...selected.value].filter((id) => data.items.some((row) => row.id === id)),
   )
 })
+watch(
+  () => JSON.stringify(filters.value),
+  () => {
+    clearTimeout(searchTimer)
+    search.value = filters.value.q
+    if (nameDrafts.value.size) {
+      nameDrafts.value.clear()
+      cardRevision.value++
+    }
+    selected.value = new Set()
+    accountBatch.value = undefined
+    list.value?.scrollToTop()
+  },
+)
+async function setFilters(value: CredentialFilters): Promise<void> {
+  const query = { ...route.query }
+  filterKeys.forEach((key) => delete query[key])
+  Object.assign(query, {
+    ...(value.credential ? { credential_key: value.credential } : {}),
+    ...(value.q ? { q: value.q } : {}),
+    ...(value.status ? { status: value.status } : {}),
+    ...(value.page > 1 ? { page: String(value.page) } : {}),
+    ...(value.pageSize !== 20 ? { page_size: String(value.pageSize) } : {}),
+    ...(value.sort !== 'priority' ? { sort: value.sort } : {}),
+    ...(value.proxy ? { proxy: value.proxy } : {}),
+    ...(value.reset ? { reset: value.reset } : {}),
+  })
+  try {
+    await router.replace({ query, hash: route.hash })
+  } catch {
+    search.value = filters.value.q
+    return
+  }
+  search.value = filters.value.q
+}
 function change(value: Partial<typeof filters.value>): void {
   if (mutating.value !== undefined || accountBatchPending.value) return
-  filters.value = { ...filters.value, ...value }
-  selected.value = new Set()
-  accountBatch.value = undefined
-  list.value?.scrollToTop()
+  void setFilters({ ...filters.value, ...value })
 }
 function scheduleSearch(): void {
   clearTimeout(searchTimer)
@@ -452,6 +509,29 @@ async function runAccountBatch(
     accountBatchPending.value = false
     if (action === 'download') mutating.value = undefined
   }
+}
+function openBatchTest(): void {
+  if (bulkBusy.value || props.group.connectionType !== 'api_key') return
+  testBatchTargets.value = rows.value
+    .filter((row) => selected.value.has(row.id))
+    .map((row) => row.id)
+}
+async function startBatchTest(
+  options: CredentialTestOptions,
+  ids = testBatchTargets.value,
+  retry = false,
+): Promise<void> {
+  if (bulkBusy.value || props.group.connectionType !== 'api_key' || !ids.length) return
+  const groupID = props.group.id
+  testBatchTargets.value = []
+  testBatchDismissed.value = false
+  await runTestBatch(
+    ids,
+    options,
+    (id, selected, signal) =>
+      testCredential(client, groupID, id, selected.protocol, selected.model, signal),
+    retry,
+  )
 }
 async function syncQuota(row: CredentialRow): Promise<void> {
   const previous = syncSuccessTimers.get(row.id)
@@ -700,6 +780,30 @@ function saved(row: CredentialRow): void {
   void changed()
   void cache.invalidateQueries({ queryKey: credentialDetailKey(props.group.id, row.id) })
 }
+function nameDirty(id: number, dirty: boolean): void {
+  if (dirty) nameDrafts.value.add(id)
+  else nameDrafts.value.delete(id)
+}
+async function saveName(row: CredentialRow, name: string): Promise<void> {
+  if (busy.value || syncPending(row.id)) throw new Error('CREDENTIAL_BUSY')
+  mutating.value = row.id
+  pendingAction.value = 'name'
+  try {
+    const result = await updateCredential(
+      client,
+      props.group.id,
+      row.id,
+      { name },
+      controller.signal,
+    )
+    if (controller.signal.aborted) return
+    cacheRow(result)
+    await changed()
+    void cache.invalidateQueries({ queryKey: credentialDetailKey(props.group.id, row.id) })
+  } finally {
+    mutating.value = undefined
+  }
+}
 async function action(row: CredentialRow, value: string): Promise<void> {
   if (busy.value || syncPending(row.id)) return
   if (value === 'quota') {
@@ -789,17 +893,26 @@ async function resetQuota(): Promise<void> {
     void cache.invalidateQueries({ queryKey: credentialDetailKey(props.group.id, row.id) })
   } catch (cause) {
     if (controller.signal.aborted) return
+    const preparationFailed =
+      cause instanceof ApiError && cause.code === 'RESET_CREDIT_PREPARATION_FAILED'
     const unknown =
-      !(cause instanceof ApiError) ||
-      cause.code === 'RESET_CREDIT_OUTCOME_UNKNOWN' ||
-      cause.status >= 500
+      !preparationFailed &&
+      (!(cause instanceof ApiError) ||
+        cause.code === 'RESET_CREDIT_OUTCOME_UNKNOWN' ||
+        cause.status >= 500)
     if (!unknown) {
       resetKeys.delete(row.id)
       resetTarget.value = undefined
     }
     cardErrors.value.set(
       row.id,
-      t(unknown ? 'credentialCards.resetUnknown' : 'credentialCards.actionFailed'),
+      t(
+        preparationFailed
+          ? 'credentialCards.resetPreparationFailed'
+          : unknown
+            ? 'credentialCards.resetUnknown'
+            : 'credentialCards.actionFailed',
+      ),
     )
   } finally {
     mutating.value = undefined
@@ -875,7 +988,7 @@ defineExpose({ refresh })
 </script>
 
 <template>
-  <section class="modern-credentials">
+  <section v-show="visible !== false" class="modern-credentials">
     <div class="modern-credentials-toolbar">
       <AppTextField
         v-model="search"
@@ -890,40 +1003,76 @@ defineExpose({ refresh })
         @compositionstart="composing = true"
         @compositionend="compositionEnd"
       />
-      <AppSelect
-        v-if="group.connectionType === 'subscription'"
-        class="modern-credentials-filter-control"
-        :model-value="filters.reset"
-        :label="t('groupDetail.filters.reset')"
-        label-hidden
-        :options="resetOptions"
-        :disabled="mutating !== undefined || accountBatchPending"
-        @update:model-value="change({ reset: $event as CredentialFilters['reset'], page: 1 })"
-      />
-      <AppSelect
-        class="modern-credentials-filter-control"
-        :model-value="filters.proxy"
-        :label="t('groupDetail.filters.proxy')"
-        label-hidden
-        :options="proxyOptions"
-        :disabled="mutating !== undefined || accountBatchPending"
-        @update:model-value="change({ proxy: $event as CredentialFilters['proxy'], page: 1 })"
+      <AppFilterSheet
+        v-model:open="mobileFilters"
+        :mobile="isMobile"
+        :title="t('ui.mobile.filters')"
+        :active-count="mobileFilterCount"
+        @reset="change({ proxy: '', reset: '', sort: 'priority', page: 1 })"
+      >
+        <AppSelect
+          v-if="group.connectionType === 'subscription'"
+          class="modern-credentials-filter-control"
+          :model-value="filters.reset"
+          :label="t('groupDetail.filters.reset')"
+          :label-hidden="!isMobile"
+          :options="resetOptions"
+          :disabled="mutating !== undefined || accountBatchPending"
+          @update:model-value="change({ reset: $event as CredentialFilters['reset'], page: 1 })" />
+        <AppSelect
+          class="modern-credentials-filter-control"
+          :model-value="filters.proxy"
+          :label="t('groupDetail.filters.proxy')"
+          :label-hidden="!isMobile"
+          :options="proxyOptions"
+          :disabled="mutating !== undefined || accountBatchPending"
+          @update:model-value="change({ proxy: $event as CredentialFilters['proxy'], page: 1 })" />
+        <template v-if="isMobile">
+          <AppSelect
+            :model-value="filters.sort"
+            :label="t('groups.sort.label')"
+            :options="sortOptions"
+            :disabled="mutating !== undefined || accountBatchPending"
+            @update:model-value="change({ sort: $event as CredentialFilters['sort'], page: 1 })"
+          /> </template
+      ></AppFilterSheet>
+      <AppIconButton
+        v-if="isMobile"
+        :icon="SlidersHorizontal"
+        :variant="isMobile && mobileFilterCount ? 'brand' : 'ghost'"
+        :label="t('ui.mobile.filters')"
+        @click="mobileFilters = true"
       />
       <div class="modern-credentials-toolbar-actions">
         <AppSortMenu
+          v-if="!isMobile"
           :model-value="filters.sort"
           :label="t('groups.sort.label')"
           :options="sortOptions"
           :disabled="mutating !== undefined || accountBatchPending"
           @update:model-value="change({ sort: $event as CredentialFilters['sort'], page: 1 })"
         />
-        <AppButton :icon="Plus" variant="primary" :disabled="!channel" @click="emit('add')">{{
-          t(
-            group.connectionType === 'subscription'
-              ? 'groupDetail.connectAccount'
-              : 'groupDetail.addCredentials',
-          )
-        }}</AppButton>
+        <AppButton
+          :icon="Plus"
+          :icon-only="isMobile"
+          :aria-label="
+            t(
+              group.connectionType === 'subscription'
+                ? 'groupDetail.connectAccount'
+                : 'groupDetail.addCredentials',
+            )
+          "
+          variant="primary"
+          :disabled="!channel"
+          @click="emit('add')"
+          ><span v-if="!isMobile">{{
+            t(
+              group.connectionType === 'subscription'
+                ? 'groupDetail.connectAccount'
+                : 'groupDetail.addCredentials',
+            )
+          }}</span></AppButton
+        >
       </div>
     </div>
     <div class="modern-credentials-filters">
@@ -943,6 +1092,7 @@ defineExpose({ refresh })
     </div>
     <AppListFrame
       ref="list"
+      mobile-flow
       :label="t('groupDetail.credentials')"
       :loading="query.isFetching.value"
     >
@@ -978,6 +1128,14 @@ defineExpose({ refresh })
                 size="sm"
                 :disabled="bulkBusy"
                 @click="deleting = [...selected]"
+              />
+              <AppIconButton
+                v-if="group.connectionType === 'api_key'"
+                :icon="Stethoscope"
+                :label="t('credentialBatchTest.selected')"
+                size="sm"
+                :disabled="bulkBusy"
+                @click="openBatchTest"
               />
               <AppIconButton
                 v-if="group.connectionType === 'subscription' && channel?.quotaObservation"
@@ -1026,6 +1184,52 @@ defineExpose({ refresh })
             </template>
           </AppFileButton>
         </div>
+        <AppNotice
+          v-if="testBatch && !testBatchDismissed"
+          inline
+          :tone="
+            testBatchPending
+              ? 'info'
+              : testBatchCounts.passed === testBatchCounts.total
+                ? 'success'
+                : 'warning'
+          "
+        >
+          <div class="modern-credential-test-summary">
+            <AppOverflowText
+              class="modern-credential-test-target"
+              :text="`${testBatch.options.protocol} · ${testBatch.options.model}`"
+            />
+            <AppOverflowText
+              class="modern-credential-test-counts"
+              :text="
+                t('credentialBatchTest.progress', testBatchCounts) +
+                (testBatchCounts.cancelled
+                  ? ' · ' + t('credentialBatchTest.cancelled', { count: testBatchCounts.cancelled })
+                  : '')
+              "
+            />
+          </div>
+          <template #actions>
+            <AppButton v-if="testBatchPending" size="sm" @click="stopTestBatch">{{
+              t('credentialBatchTest.stop')
+            }}</AppButton>
+            <AppButton
+              v-else-if="testBatchRetryIDs.length"
+              size="sm"
+              :disabled="bulkBusy"
+              @click="startBatchTest(testBatch.options, testBatchRetryIDs, true)"
+              >{{ t('credentialBatchTest.retry') }}</AppButton
+            >
+            <AppIconButton
+              v-if="!testBatchPending"
+              :icon="X"
+              :label="t('shell.close')"
+              size="sm"
+              @click="testBatchDismissed = true"
+            />
+          </template>
+        </AppNotice>
       </template>
       <AppCollectionState
         v-if="query.isError.value && !query.data.value"
@@ -1044,7 +1248,7 @@ defineExpose({ refresh })
           'modern-credential-cards--subscriptions': group.connectionType === 'subscription',
         }"
       >
-        <template v-for="row in rows" :key="row.id">
+        <template v-for="row in rows" :key="row.id + ':' + cardRevision">
           <SubscriptionCredentialCard
             v-if="group.connectionType === 'subscription'"
             :row="row"
@@ -1057,6 +1261,8 @@ defineExpose({ refresh })
             :sync-succeeded="syncSucceeded.has(row.id)"
             :disabled="busy || syncPending(row.id)"
             :error="cardErrors.get(row.id)"
+            :save-name="(name) => saveName(row, name)"
+            @name-dirty="nameDirty(row.id, $event)"
             @select="select(row.id, $event)"
             @toggle="toggle(row, $event)"
             @action="action(row, $event)"
@@ -1066,9 +1272,12 @@ defineExpose({ refresh })
             :row="row"
             :selected="selected.has(row.id)"
             :pending="mutating === row.id"
+            :test-state="testBatchItems.get(row.id)"
             :disabled="busy"
             :error="cardErrors.get(row.id)"
             :resolve-secret="copySecret(row.id)"
+            :save-name="(name) => saveName(row, name)"
+            @name-dirty="nameDirty(row.id, $event)"
             @select="select(row.id, $event)"
             @toggle="toggle(row, $event)"
             @action="action(row, $event)"
@@ -1132,7 +1341,7 @@ defineExpose({ refresh })
     :open="Boolean(resetTarget)"
     :icon="RotateCcw"
     :title="t('credentialCards.useReset')"
-    :subject="resetTarget?.account || resetTarget?.mask"
+    :subject="resetTarget?.label"
     :description="t('credentialCards.confirmReset')"
     :confirm-label="t('credentialCards.useReset')"
     :pending="mutating !== undefined"
@@ -1158,14 +1367,23 @@ defineExpose({ refresh })
     @close="testing = undefined"
     @changed="changed"
   />
+  <CredentialTestDialog
+    v-if="testBatchTargets.length"
+    :group-id="group.id"
+    :batch-count="testBatchTargets.length"
+    @close="testBatchTargets = []"
+    @start="startBatchTest"
+  />
   <AppDraftGuard
-    :dirty="false"
+    :dirty="nameDrafts.size > 0"
     :pending="mutating !== undefined || accountBatchPending || syncing.size > 0"
+    :query-scope="filterKeys"
   />
 </template>
 
 <style scoped>
 .modern-credentials {
+  --modern-list-header-background: var(--modern-canvas);
   container: modern-credentials / inline-size;
   display: flex;
   flex: 1;
@@ -1231,6 +1449,20 @@ defineExpose({ refresh })
 .modern-credentials-selected-actions > :first-child {
   margin-right: var(--modern-space-1);
 }
+.modern-credential-test-summary {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--modern-space-3);
+}
+.modern-credential-test-target {
+  flex: 0 1 auto;
+  max-width: 40%;
+}
+.modern-credential-test-counts {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
 .modern-credential-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--modern-key-card-min)), 1fr));
@@ -1248,6 +1480,19 @@ defineExpose({ refresh })
   }
   .modern-credentials-toolbar > :first-child {
     flex-basis: 100%;
+  }
+}
+@media (max-width: 760px) {
+  .modern-credentials-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: var(--modern-space-2);
+  }
+  .modern-credentials-toolbar > :first-child {
+    grid-column: auto;
+  }
+  .modern-credentials-toolbar-actions {
+    display: contents;
   }
 }
 </style>

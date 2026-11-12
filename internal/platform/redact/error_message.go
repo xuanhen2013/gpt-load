@@ -28,6 +28,16 @@ func ExtractErrorMessage(body []byte) string {
 	return safeErrorMessageText(text)
 }
 
+// SanitizeErrorMessageText 校验已提取的诊断文本，保留方括号前缀并拒绝原始 JSON、标记和控制字符。
+func SanitizeErrorMessageText(value string) string {
+	value = strings.TrimSpace(value)
+	if !utf8.ValidString(value) || strings.HasPrefix(value, "{") || looksLikeMarkup(value) ||
+		(strings.HasPrefix(value, "[") && json.Valid([]byte(value))) {
+		return ""
+	}
+	return safeErrorMessageText(value)
+}
+
 func extractJSONErrorMessage(body []byte) (string, bool) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
@@ -41,6 +51,13 @@ func extractJSONErrorMessage(body []byte) (string, bool) {
 	if nested, ok := payload["error"].(map[string]any); ok {
 		if message := firstErrorMessage(nested); message != "" {
 			return message, true
+		}
+	}
+	if response, ok := payload["response"].(map[string]any); ok {
+		if nested, ok := response["error"].(map[string]any); ok {
+			if message := firstErrorMessage(nested); message != "" {
+				return message, true
+			}
 		}
 	}
 	if message := firstErrorMessage(payload); message != "" {

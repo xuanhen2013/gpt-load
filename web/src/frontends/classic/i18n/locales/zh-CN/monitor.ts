@@ -11,6 +11,12 @@ export default {
     help: '查看说明',
     scrollHint: '可横向滚动查看全部列。',
     currentState: '当前状态',
+    autoRefresh: {
+      label: '自动刷新',
+      off: '不自动刷新',
+      seconds: '每 {count} 秒',
+      minutes: '每 {count} 分钟',
+    },
     tabs: {
       label: '监控分区',
       health: '健康',
@@ -399,10 +405,10 @@ export default {
         embeddings_create: '创建向量',
         rerank: '文档重排序',
         decisions_create: '创建判断',
+        audio_speech: '语音合成',
         mistral_ocr: 'OCR',
         mistral_fim: '代码补全',
         mistral_audio_transcription: '语音转写',
-        mistral_audio_speech: '语音合成',
         mistral_moderation: '文本审核',
         mistral_chat_moderation: '对话审核',
         mistral_classification: '分类',
@@ -482,9 +488,9 @@ export default {
         title: '候选分组',
         description: {
           native_first:
-            '先尝试原生路由，原生无可用候选时使用协议转换；同层按有效权重和共享分配进度轮询。列表按层级和权重排序；请求亲和仍生效，权重份额不等于实际流量比例。',
+            '先选最高可用优先级，同档内优先原生路由，再按有效权重和共享进度轮询。低档保留为备用；亲和仍生效，权重份额不等于实际流量比例。',
           weighted_mix:
-            '符合请求要求的原生与转换候选在同一池按有效权重和共享分配进度轮询，列表按权重排序。请求亲和仍生效，权重份额不等于实际流量比例。',
+            '先选最高可用优先级，同档原生与转换候选共同按有效权重和共享进度轮询。低档保留为备用；亲和仍生效，权重份额不等于实际流量比例。',
         },
         count: '{count} 个',
         tableLabel: '候选分组路由解释',
@@ -535,7 +541,7 @@ export default {
         effective: '原始有效权重',
         null: 'null',
         none: '—',
-        group: '分组权重 {value}',
+        group: '权重 {value}',
       },
       excluded: {
         title: '排除分组',
@@ -572,6 +578,9 @@ export default {
       },
     },
     logs: {
+      ipColumn: 'IP 列',
+      copyIP: '复制 IP',
+      filterIP: '只看 IP {value} 的日志',
       loading: '正在加载请求日志…',
       loadFailed: '无法加载请求日志。',
       loadMore: '加载更多',
@@ -592,6 +601,7 @@ export default {
         partialFailed: '部分筛选选项暂时无法加载，日志查询仍可正常使用。',
       },
       filters: {
+        clientIP: 'IP',
         label: '请求日志筛选',
         timeRange: '时间范围',
         from: '开始时间',
@@ -671,6 +681,7 @@ export default {
         appliedCostState: '成本 {value}',
         appliedCompleteness: '计价 {value}',
         appliedRequestId: '请求 ID {value}',
+        appliedClientIP: 'IP {value}',
         timezone: '本地时区',
         lastRefreshed: '最近一次成功刷新',
         remove: '移除筛选条件 {value}',
@@ -816,6 +827,7 @@ export default {
         embeddings_create: '创建向量',
         rerank: '文档重排序',
         decisions_create: '创建判断',
+        audio_speech: '语音合成',
         mistral_ocr: 'OCR',
         mistral_fim: '代码补全',
         mistral_audio_transcription: '语音转写',
@@ -874,7 +886,7 @@ export default {
         statusCode: '状态码',
         duration: '耗时',
         firstResponse: '首响',
-        outputRate: '输出速率',
+        outputRate: '平均输出速度',
         attemptCount: '尝试次数',
         request: '客户端请求',
         finalExecution: '上游执行',
@@ -916,6 +928,17 @@ export default {
         modelObservation: '上游返回模型观测',
         requestedModel: '上游请求模型',
         reportedModel: '上游返回模型',
+        requestBody: {
+          title: '请求内容',
+          originalSize: '原始大小 {size}',
+          copy: '复制请求内容',
+          states: {
+            truncated: '超长字符串已截断，结构保持不变',
+            non_json: '不是 JSON 请求，未记录正文',
+            too_large: '请求体过大，未记录正文',
+            queue_full: '记录队列繁忙，未记录正文',
+          },
+        },
         usage: {
           title: '用量成本',
           description: '最终持久化的用量字段。成本始终为预估值，未知不代表免费。',
@@ -956,6 +979,7 @@ export default {
         },
       },
       columns: {
+        clientIP: 'IP',
         time: '时间',
         modelProtocol: '模型/协议',
         response: '响应',
@@ -1020,6 +1044,7 @@ export default {
         identity: '计价身份',
         historicalSchema1: '历史作用域',
         historicalSchema2: '历史全局价格',
+        advisor: 'Advisor（{model}）',
       },
       pricingMode: {
         fastLabel: 'Fast 模式计价',

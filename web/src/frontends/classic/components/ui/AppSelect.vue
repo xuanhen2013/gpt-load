@@ -15,6 +15,7 @@ import {
 import OverflowTooltip from './OverflowTooltip.vue'
 
 interface SelectOption {
+  disabled?: boolean
   value: string
   label: string
 }
@@ -33,7 +34,7 @@ const props = withDefaults(
     options: SelectOption[]
     disabled?: boolean
     variant?: 'default' | 'embedded'
-    size?: 'sm' | 'md' | 'compact'
+    size?: 'xs' | 'sm' | 'md' | 'compact'
   }>(),
   {
     modelValue: undefined,
@@ -91,12 +92,15 @@ const selectedLabel = computed(
           :key="`${props.options[index]?.value ?? option.value}:${index}`"
           class="app-select__item"
           :value="option.value"
+          :disabled="option.disabled"
           :data-value="props.options[index]?.value ?? option.value"
         >
           <SelectItemIndicator class="app-select__indicator">
             <Check :size="15" aria-hidden="true" />
           </SelectItemIndicator>
-          <SelectItemText>{{ option.label }}</SelectItemText>
+          <SelectItemText
+            ><slot name="option" :option="option">{{ option.label }}</slot></SelectItemText
+          >
         </SelectItem>
       </SelectContent>
     </SelectPortal>
@@ -149,6 +153,17 @@ const selectedLabel = computed(
   padding: 0 var(--space-2);
   color: var(--color-text-muted);
   font-size: var(--text-sm);
+}
+.app-select__trigger--xs {
+  min-width: 0;
+  min-height: var(--control-xxs);
+  height: var(--control-xxs);
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+.app-select__trigger--xs .app-select__chevron {
+  width: 14px;
+  height: 14px;
 }
 .app-select__trigger--sm {
   min-width: 0;
@@ -214,6 +229,7 @@ const selectedLabel = computed(
 }
 
 @media (max-width: 860px) {
+  .app-select__trigger--xs,
   .app-select__trigger--sm {
     min-height: var(--touch-target);
     height: var(--touch-target);

@@ -33,7 +33,7 @@ func TestLegacyForkUpgradePreservesExtensionsAndLogs(t *testing.T) {
 	if err := db.Omit(
 		"RequestAudit", "AuditCostNanoUSD", "AuditPricingCompleteness", "AffinityKind", "AutoDecision",
 		"DecisionModel", "DecisionCostNanoUSD", "DecisionPricingCompleteness", "DecisionGroupID",
-		"DecisionChannelID", "DecisionCredentialID",
+		"DecisionChannelID", "DecisionCredentialID", "ClientIP",
 	).Create(&request).Error; err != nil {
 		t.Fatal(err)
 	}

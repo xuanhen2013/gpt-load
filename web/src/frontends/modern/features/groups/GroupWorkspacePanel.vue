@@ -9,6 +9,7 @@ import GroupEditorSurface from './GroupEditorSurface.vue'
 const props = defineProps<{
   title: string
   description: string
+  hideDescription?: boolean
   dirty: boolean
   pending?: boolean
   loading?: boolean
@@ -32,9 +33,11 @@ useLoadingActivity(() => Boolean(props.loading || props.pending))
     :size="wide ? 'sheet' : 'default'"
     :title="title"
     :description="description"
+    :hide-description="hideDescription"
     @close="close"
   >
     <form class="modern-workspace-panel-form" novalidate @submit.prevent="emit('save')">
+      <slot name="toolbar" />
       <div class="modern-workspace-panel-body" :class="{ 'is-filled': fill }"><slot /></div>
       <footer class="modern-workspace-panel-footer">
         <div class="modern-workspace-panel-feedback"><slot name="feedback" /></div>

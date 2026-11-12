@@ -28,11 +28,20 @@ import {
   AppSelect,
 } from '@modern/components/ui'
 import { useApiClient } from '@shared/http/client-context'
+import type { CredentialTestOptions } from '@shared/credential-test-batch'
 import AppDraftGuard from '@modern/components/AppDraftGuard.vue'
 import { groupValidationModelOptions } from './group-model-options'
-const props = defineProps<{ groupId: number; row: CredentialRow }>()
-const emit = defineEmits<{ close: []; changed: [] }>()
+const props = defineProps<{ groupId: number; row?: CredentialRow; batchCount?: number }>()
+const emit = defineEmits<{ close: []; changed: []; start: [options: CredentialTestOptions] }>()
 const { t } = useI18n()
+const title = computed(() =>
+  t(props.batchCount ? 'credentialBatchTest.title' : 'credentialCards.test'),
+)
+const description = computed(() =>
+  props.batchCount
+    ? t('credentialBatchTest.description', { count: props.batchCount })
+    : (props.row?.label ?? ''),
+)
 const client = useApiClient()
 const settings = useQuery({
   queryKey: groupSettingsKey(props.groupId),
@@ -94,6 +103,11 @@ async function reloadSettings(): Promise<void> {
 }
 async function run(restore = false): Promise<void> {
   if (pending.value || (!restore && (!model.value.trim() || !protocol.value))) return
+  if (props.batchCount) {
+    emit('start', { protocol: protocol.value, model: model.value.trim() })
+    return
+  }
+  if (!props.row) return
   pending.value = true
   error.value = ''
   try {
@@ -141,10 +155,10 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
       }
     "
   >
-    <AppDialogContent :title="t('credentialCards.test')" :description="row.mask">
+    <AppDialogContent :title="title" :description="description">
       <AppDialogHeader
-        :title="t('credentialCards.test')"
-        :description="row.mask"
+        :title="title"
+        :description="description"
         :close-label="t('shell.close')"
         :close-disabled="pending"
         @close="close"
@@ -202,7 +216,10 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
             v-if="result.reason"
           >
             · {{ t('credentialCards.testReason.' + result.reason) }}</span
-          ></AppNotice
+          >
+          <div v-if="result.errorDetail" class="modern-credential-test-error">
+            {{ result.errorDetail }}
+          </div></AppNotice
         >
         <div class="modern-credential-test-actions">
           <AppButton :disabled="pending" @click="close">{{ t('shell.close') }}</AppButton
@@ -217,7 +234,7 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
             variant="primary"
             :loading="pending"
             :disabled="!model.trim() || !protocol || pending"
-            >{{ t('credentialCards.test') }}</AppButton
+            >{{ t(batchCount ? 'credentialBatchTest.start' : 'credentialCards.test') }}</AppButton
           >
         </div>
       </form>
@@ -231,6 +248,12 @@ useMessageSource(() => (error.value ? { text: error.value, tone: 'danger' } : un
   display: grid;
   gap: var(--modern-space-4);
   padding: var(--modern-space-5) var(--modern-space-6);
+}
+.modern-credential-test-error {
+  max-height: 8lh;
+  margin-top: var(--modern-space-2);
+  overflow: auto;
+  white-space: pre-wrap;
 }
 .modern-credential-test-actions {
   display: flex;

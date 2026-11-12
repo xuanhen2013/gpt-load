@@ -1,4 +1,5 @@
 import type { CodexLiveMode } from '@shared/codex-live'
+import type { ErrorRule } from '@shared/error-rules'
 import type { ProtocolValue } from './protocols'
 
 export type GroupProtocol = ProtocolValue
@@ -27,6 +28,9 @@ export type ProxyEffectiveMode = 'direct' | 'environment' | 'custom'
 export type ProxyEffectiveSource = 'credential' | 'group' | 'global' | 'environment' | 'default'
 
 export interface ProxyViewDto {
+  proxy_id?: number
+  proxy_name?: string
+  reference_state?: string
   configured_mode: ProxyConfiguredMode
   effective_mode: ProxyEffectiveMode
   effective_source: ProxyEffectiveSource
@@ -34,7 +38,7 @@ export interface ProxyViewDto {
   has_auth: boolean
 }
 
-export type ProxyConfigInput = { mode: 'direct' } | { mode: 'custom'; url: string }
+export type ProxyConfigInput = { mode: 'direct' } | { mode: 'custom'; proxy_id: number }
 export type ProxyMutation = ProxyConfigInput | null
 
 export interface GroupCollectionFilters {
@@ -54,6 +58,7 @@ export interface GroupCollectionSummaryDto {
 }
 
 export interface GroupCollectionItemDto {
+  priority: number
   concurrency: import('@shared/concurrency').ConcurrencyView
   id: number
   name: string
@@ -113,6 +118,7 @@ export interface ParameterOverrideRuleDto {
 }
 
 export interface GroupRuntimeConfigDto {
+  error_rules?: ErrorRule[]
   first_byte_timeout?: number
   request_timeout?: number
   stream_idle_timeout?: number
@@ -128,6 +134,7 @@ export interface GroupRuntimeConfigDto {
 }
 
 export interface GroupEffectiveConfigDto {
+  error_rules: ErrorRule[]
   first_byte_timeout: number
   request_timeout: number
   stream_idle_timeout: number
@@ -142,6 +149,8 @@ export interface GroupEffectiveConfigDto {
 }
 
 export interface GroupSettingsDto {
+  default_error_rules: ErrorRule[]
+  priority: number
   name: string
   price_multiplier: string
   channel_id: string
@@ -242,11 +251,24 @@ export interface CredentialObservationAccountSummaryDto {
 export type CredentialPlanLevel = 'free' | 'standard' | 'premium' | 'elite'
 
 export interface CredentialObservationSnapshotDto {
+  subscription?: {
+    state: 'confirmed' | 'error' | 'unavailable'
+    period_end_ms?: number
+    will_renew?: boolean
+  }
   plan_summary: { name?: string; level?: CredentialPlanLevel }
   account_summary?: CredentialObservationAccountSummaryDto
   quota_windows: CredentialQuotaWindowDto[]
+  credits?: CredentialCreditSummaryDto
   reset_credits_available?: number
   reset_credits?: CredentialResetCreditDto[]
+}
+
+export interface CredentialCreditSummaryDto {
+  balance?: string
+  has_credits?: boolean
+  unlimited?: boolean
+  observed_at_ms?: number
 }
 
 export interface CredentialResetCreditDto {
@@ -284,6 +306,8 @@ export interface ModelCooldownDto {
 
 export interface CredentialItemDto {
   account_concurrency_limit?: number
+  name: string
+  label: string
   model_cooldowns: ModelCooldownDto[]
   credential_id: number
   connection_type: ConnectionType
@@ -300,6 +324,7 @@ export interface CredentialItemDto {
   recent_failure_count: number
   consecutive_failure_count: number
   last_failure_category: FailureCategory
+  last_failure_summary?: string
   last_status_code: number | null
   cooldown_until_ms: number | null
   last_used_at_ms?: number
@@ -355,6 +380,7 @@ export interface CredentialTestResultDto {
   protocol: ProtocolValue
   latency_ms: number
   reason: CredentialTestReason | null
+  error_detail?: string
   can_restore: boolean
   restore_proof: string | null
   tested_at_ms: number
@@ -558,6 +584,7 @@ export interface AccessKeyDto {
   filters: AccessKeyFiltersDto
   expires_at_ms: number | null
   rpm_limit: number
+  record_request_body: boolean
   cost_limit_rules: AccessKeyCostLimitRuleDto[]
   cost_limit_status: AccessKeyCostLimitStatusDto | null
   created_at_ms: number

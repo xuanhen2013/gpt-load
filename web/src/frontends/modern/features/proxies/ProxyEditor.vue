@@ -1,0 +1,194 @@
+<script setup lang="ts">
+import { useMobileLayout } from '@modern/app/use-mobile-layout'
+import AppDraftGuard from '@modern/components/AppDraftGuard.vue'
+import { DialogRoot } from 'reka-ui'
+import { computed, onMounted, onScopeDispose, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { useQueryClient } from '@tanstack/vue-query'
+import { useApiClient } from '@shared/http/client-context'
+import { ApiError } from '@shared/http/errors'
+import { proxyListKey, revealProxy, saveProxy, type ProxyItem } from '@shared/proxies/api'
+import { validProxyURL } from '@modern/app/proxy'
+import {
+  AppButton,
+  AppCollectionState,
+  AppDialogContent,
+  AppDialogHeader,
+  AppNotice,
+  AppTextField,
+} from '@modern/components/ui'
+
+const props = defineProps<{ proxy?: ProxyItem }>()
+const emit = defineEmits<{ close: []; saved: [proxy: ProxyItem] }>()
+const { t } = useI18n()
+const isMobile = useMobileLayout()
+const guard = ref<InstanceType<typeof AppDraftGuard>>()
+const client = useApiClient()
+const cache = useQueryClient()
+const name = ref(props.proxy?.name ?? '')
+const url = ref('')
+const baseline = ref({ name: name.value, url: '' })
+const completed = ref(false)
+const dirty = computed(
+  () =>
+    !completed.value &&
+    !loading.value &&
+    (name.value !== baseline.value.name || url.value !== baseline.value.url),
+)
+const pending = ref(false)
+const error = ref('')
+const loading = ref(Boolean(props.proxy))
+const loadFailed = ref(false)
+const urlTouched = ref(false)
+const loadController = new AbortController()
+const valid = computed(() => !loading.value && !loadFailed.value && validProxyURL(url.value.trim()))
+async function load() {
+  if (!props.proxy) return
+  loading.value = true
+  loadFailed.value = false
+  try {
+    const proxy = await revealProxy(client, props.proxy.id, loadController.signal)
+    if (loadController.signal.aborted) return
+    name.value = proxy.name
+    url.value = proxy.url
+    baseline.value = { name: proxy.name, url: proxy.url }
+  } catch {
+    if (!loadController.signal.aborted) loadFailed.value = true
+  } finally {
+    loading.value = false
+  }
+}
+onMounted(() => {
+  if (props.proxy) void load()
+})
+onScopeDispose(() => {
+  loadController.abort()
+  url.value = ''
+})
+async function save() {
+  if (pending.value || !valid.value) return
+  pending.value = true
+  error.value = ''
+  try {
+    const proxy = await saveProxy(
+      client,
+      { name: name.value.trim(), url: url.value.trim() },
+      props.proxy?.id,
+    )
+    completed.value = true
+    url.value = ''
+    await cache.invalidateQueries({ queryKey: proxyListKey })
+    emit('saved', proxy)
+  } catch (cause) {
+    error.value = t(
+      cause instanceof ApiError && cause.code === 'DUPLICATE_RESOURCE'
+        ? 'proxies.duplicate'
+        : 'proxies.operationFailed',
+    )
+  } finally {
+    pending.value = false
+  }
+}
+async function close(): Promise<void> {
+  if (!pending.value && (!isMobile.value || (await guard.value?.confirm()))) emit('close')
+}
+</script>
+
+<template>
+  <DialogRoot :open="true" @update:open="!$event && close()">
+    <AppDialogContent
+      :title="t(proxy ? 'proxies.edit' : 'proxies.new')"
+      :description="t('proxies.addressHelp')"
+      placement="editor"
+    >
+      <AppDialogHeader
+        :close-label="t('ui.close')"
+        :title="t(proxy ? 'proxies.edit' : 'proxies.new')"
+        :close-disabled="pending"
+        @close="close"
+      />
+      <form class="modern-proxy-editor" @submit.prevent="save">
+        <div class="modern-proxy-editor-body">
+          <AppCollectionState v-if="loading" :title="t('ui.loading')" loading />
+          <AppCollectionState v-else-if="loadFailed" :title="t('proxies.loadFailed')" error>
+            <AppButton size="sm" @click="load">{{ t('ui.retry') }}</AppButton>
+          </AppCollectionState>
+          <template v-else>
+            <AppTextField
+              v-model="name"
+              :label="t('proxies.nameOptional')"
+              :placeholder="t('proxies.namePlaceholder')"
+              :disabled="pending"
+              size="sm"
+              maxlength="255"
+              autocomplete="off"
+            />
+            <AppTextField
+              v-model="url"
+              :label="t('proxies.address')"
+              placeholder="http://127.0.0.1:8080"
+              :hint="t('proxies.addressHelp')"
+              :disabled="pending"
+              type="url"
+              :error="
+                isMobile && urlTouched && url.trim() && !validProxyURL(url.trim())
+                  ? t('proxies.addressHelp')
+                  : undefined
+              "
+              required
+              size="sm"
+              autocomplete="off"
+              spellcheck="false"
+              @blur="urlTouched = true"
+            />
+            <AppNotice v-if="error" tone="danger">{{ error }}</AppNotice>
+          </template>
+        </div>
+        <footer class="modern-proxy-editor-footer">
+          <AppButton size="sm" :disabled="pending" variant="ghost" @click="close">{{
+            t('proxies.cancel')
+          }}</AppButton>
+          <AppButton
+            type="submit"
+            variant="primary"
+            size="sm"
+            :loading="pending"
+            :disabled="!valid"
+            >{{ t('proxies.save') }}</AppButton
+          >
+        </footer>
+      </form>
+    </AppDialogContent>
+  </DialogRoot>
+  <AppDraftGuard ref="guard" :dirty="isMobile && dirty" :pending="isMobile && pending" />
+</template>
+
+<style scoped>
+.modern-proxy-editor {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.modern-proxy-editor-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--modern-space-4);
+  padding: var(--modern-space-5);
+  overflow-y: auto;
+  scrollbar-gutter: var(--modern-scrollbar-gutter);
+  overscroll-behavior: contain;
+}
+.modern-proxy-editor-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--modern-space-2);
+  border-top: var(--modern-line-width) solid var(--modern-border);
+  padding: var(--modern-space-3) var(--modern-space-5);
+}
+</style>

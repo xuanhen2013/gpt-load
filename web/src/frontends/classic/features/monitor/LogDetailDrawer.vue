@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import OutboundIdentityHeadersPanel from './OutboundIdentityHeadersPanel.vue'
+import { customErrorRuleLabel } from '@shared/error-rules'
 import { ChevronRight } from '@lucide/vue'
 import { useQuery } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
@@ -18,13 +19,19 @@ import {
 import AppButton from '@/components/ui/AppButton.vue'
 import AppDateTime from '@/components/ui/AppDateTime.vue'
 import AppDrawer from '@/components/ui/AppDrawer.vue'
+import CodeBlock from '@/components/ui/CodeBlock.vue'
 import CopyButton from '@/components/ui/CopyButton.vue'
 import CopyChip from '@/components/ui/CopyChip.vue'
 import OverflowTooltip from '@/components/ui/OverflowTooltip.vue'
 import QueryFeedback from '@/components/ui/QueryFeedback.vue'
 import SkeletonSurface from '@/components/ui/SkeletonSurface.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { formatEstimatedCost, formatExactNanoUSD, formatPercent } from '@/lib/format'
+import {
+  formatByteSize,
+  formatEstimatedCost,
+  formatExactNanoUSD,
+  formatPercent,
+} from '@/lib/format'
 
 import { formatCacheHitRate } from '@/lib/cache-rate'
 import {
@@ -45,7 +52,7 @@ const props = defineProps<{
   groupNames?: Record<number, string>
   channels?: Record<string, ChannelDto>
 }>()
-defineEmits<{ 'update:open': [open: boolean] }>()
+defineEmits<{ 'update:open': [open: boolean]; 'filter-ip': [ip: string] }>()
 const client = useApiClient()
 const { locale, t, te } = useI18n()
 const query = useQuery(requestLogDetailQueryOptions(client, () => props.requestId))
@@ -113,18 +120,36 @@ const cacheRateLabel = computed(() => {
 })
 const formula = computed(() => {
   const lines = receipt.value?.line_items ?? []
-  const input = lines
+  const requestLines = lines.filter((line) => line.model_id === undefined)
+  const input = requestLines
     .filter((line) => line.code !== 'output')
     .map(formatFormulaLine)
     .join(' + ')
-  const output = lines
+  const output = requestLines
     .filter((line) => line.code === 'output')
     .map(formatFormulaLine)
     .join(' + ')
+  const advisors = new Map<string, string[]>()
+  for (const line of lines) {
+    if (line.model_id === undefined) continue
+    advisors.set(line.model_id, [...(advisors.get(line.model_id) ?? []), formatFormulaLine(line)])
+  }
   return {
     input: input || '—',
     output: output || '—',
+    advisors: [...advisors].map(([model, parts]) => ({ model, formula: parts.join(' + ') })),
   }
+})
+
+const requestBodySummary = computed(() => {
+  const recorded = log.value?.request_body
+  if (!recorded) return ''
+  const size = t('monitor.logs.drawer.requestBody.originalSize', {
+    size: formatByteSize(recorded.original_bytes, locale.value),
+  })
+  return recorded.state === 'original'
+    ? size
+    : `${t(`monitor.logs.drawer.requestBody.states.${recorded.state}`)} · ${size}`
 })
 
 const usageStateLabel = computed(() => {
@@ -399,6 +424,12 @@ function toggleAttemptErrorMessage(sequence: number): void {
   else next.add(sequence)
   expandedAttemptErrorMessages.value = next
 }
+function decisionRuleLabel(ruleID: string): string {
+  const rule = customErrorRuleLabel(ruleID)
+  return rule
+    ? t('errorRules.logRule', { source: t('errorRules.' + rule.source), number: rule.number })
+    : ruleID
+}
 </script>
 
 <template>
@@ -440,6 +471,7 @@ function toggleAttemptErrorMessage(sequence: number): void {
             {{ log.request_id }}
           </OverflowTooltip>
           <CopyButton
+            compact
             :value="log.request_id"
             :label="t('monitor.logs.drawer.copyRequestId')"
             :success-label="t('common.copied')"
@@ -451,6 +483,30 @@ function toggleAttemptErrorMessage(sequence: number): void {
       <section class="log-detail__section">
         <h3>{{ t('monitor.logs.drawer.summary') }}</h3>
         <dl class="log-detail__grid">
+          <div>
+            <dt>{{ t('monitor.logs.columns.clientIP') }}</dt>
+            <dd class="log-detail__ip">
+              <template v-if="log.client_ip">
+                <AppButton
+                  class="log-detail__ip-filter"
+                  variant="link"
+                  size="inline"
+                  :aria-label="t('monitor.logs.filterIP', { value: log.client_ip })"
+                  @click="$emit('filter-ip', log.client_ip)"
+                >
+                  {{ log.client_ip }}
+                </AppButton>
+                <CopyButton
+                  compact
+                  :value="log.client_ip"
+                  :label="t('monitor.logs.copyIP')"
+                  :success-label="t('common.copied')"
+                  :failure-label="t('common.copyFailed')"
+                />
+              </template>
+              <span v-else>—</span>
+            </dd>
+          </div>
           <div>
             <dt>{{ t('monitor.logs.drawer.status') }}</dt>
             <dd>
@@ -465,7 +521,11 @@ function toggleAttemptErrorMessage(sequence: number): void {
           <div v-if="log.stream">
             <dt>{{ t('monitor.logs.drawer.firstResponse') }}</dt>
             <dd>
-              {{ log.first_response_ms === null ? '—' : formatLogDuration(log.first_response_ms) }}
+              {{
+                log.first_response_ms === null || log.first_response_ms <= 0
+                  ? '—'
+                  : formatLogDuration(log.first_response_ms)
+              }}
             </dd>
           </div>
           <div>
@@ -539,6 +599,20 @@ function toggleAttemptErrorMessage(sequence: number): void {
             </dd>
           </div>
         </dl>
+      </section>
+
+      <section v-if="log.request_body" class="log-detail__section">
+        <h3>{{ t('monitor.logs.drawer.requestBody.title') }}</h3>
+        <p class="log-request-body__summary">{{ requestBodySummary }}</p>
+        <CodeBlock
+          v-if="log.request_body.body !== null"
+          class="log-request-body__code"
+          :code="log.request_body.body"
+          language="JSON"
+          :copy-label="t('monitor.logs.drawer.requestBody.copy')"
+          :copy-success-label="t('common.copied')"
+          :copy-failure-label="t('common.copyFailed')"
+        />
       </section>
 
       <section
@@ -660,7 +734,7 @@ function toggleAttemptErrorMessage(sequence: number): void {
                 appearance="plain"
               />
               <CopyChip
-                v-if="open && log.credential_name"
+                v-if="open && log.credential_name && revealsCredential"
                 :key="`${requestId}:${log.group_id}:${log.credential_id}`"
                 layout="icon"
                 :value="log.credential_name"
@@ -811,12 +885,16 @@ function toggleAttemptErrorMessage(sequence: number): void {
               <template v-if="receipt && usageDisplayState === 'reported'">
                 <span>{{ t('monitor.logs.receipt.input') }} = {{ formula.input }}</span>
                 <span>{{ t('monitor.logs.receipt.output') }} = {{ formula.output }}</span>
+                <span v-for="advisor in formula.advisors" :key="'advisor-' + advisor.model"
+                  >{{ t('monitor.logs.receipt.advisor', { model: advisor.model }) }} =
+                  {{ advisor.formula }}</span
+                >
               </template>
               <template
                 v-if="
                   receipt &&
                   usageDisplayState === 'reported' &&
-                  receipt.schema_version === 6 &&
+                  receipt.schema_version >= 6 &&
                   receipt.base_total_nano_usd !== undefined &&
                   receipt.price_multipliers
                 "
@@ -934,7 +1012,7 @@ function toggleAttemptErrorMessage(sequence: number): void {
               <div v-if="attempt.rule_id">
                 <dt>{{ t('monitor.logs.drawer.ruleId') }}</dt>
                 <dd>
-                  <code>{{ attempt.rule_id }}</code>
+                  <code>{{ decisionRuleLabel(attempt.rule_id) }}</code>
                 </dd>
               </div>
               <div>
@@ -1053,10 +1131,17 @@ function toggleAttemptErrorMessage(sequence: number): void {
   padding: 0;
 }
 
-.log-detail__request-id :deep(.copy-control button) {
-  width: 28px;
-  height: 28px;
-  border-color: transparent;
+.log-detail__ip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.log-detail__ip-filter {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-align: left;
 }
 
 .log-detail__section {
@@ -1105,6 +1190,20 @@ function toggleAttemptErrorMessage(sequence: number): void {
 
 .log-detail__wide {
   grid-column: 1 / -1;
+}
+
+.log-request-body__summary {
+  margin: 0 0 10px;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+}
+
+.log-request-body__summary:last-child {
+  margin-bottom: 0;
+}
+
+.log-request-body__code :deep(pre) {
+  max-height: 360px;
 }
 
 .log-error-message {

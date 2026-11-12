@@ -16,6 +16,7 @@ type CredentialTestDialogResult = Omit<CredentialTestResultDto, 'restore_proof'>
 const props = defineProps<{
   open: boolean
   mask: string
+  batchCount?: number
   model?: string
   models: string[]
   protocol?: AccessProtocol
@@ -60,15 +61,19 @@ function setOpen(open: boolean): void {
   <AppDialog
     appearance="ledger"
     :open="open"
-    :title="t('group.credentials.test.title')"
-    :description="t('group.credentials.test.description')"
+    :title="t(batchCount ? 'credentialBatchTest.title' : 'group.credentials.test.title')"
+    :description="
+      batchCount
+        ? t('credentialBatchTest.description', { count: batchCount })
+        : t('group.credentials.test.description')
+    "
     :close-label="t('group.credentials.test.close')"
     :dismissible="!busy"
     @update:open="setOpen"
   >
     <template #body>
       <div class="credential-test-dialog">
-        <p class="credential-test-dialog__credential">
+        <p v-if="!batchCount" class="credential-test-dialog__credential">
           <span>{{ t('group.credentials.test.fields.credential') }}</span>
           <strong>{{ mask }}</strong>
         </p>
@@ -117,7 +122,7 @@ function setOpen(open: boolean): void {
             <dt>{{ t('group.credentials.test.fields.latency') }}</dt>
             <dd>{{ t('group.credentials.test.latency', { value: n(result.latency_ms) }) }}</dd>
             <dt>{{ t('group.credentials.test.fields.reason') }}</dt>
-            <dd>{{ reasonLabel }}</dd>
+            <dd class="credential-test-dialog__error">{{ result.error_detail || reasonLabel }}</dd>
             <dt>{{ t('group.credentials.test.fields.testedAt') }}</dt>
             <dd>{{ formatLocalInstant(result.tested_at_ms, locale) }}</dd>
           </dl>
@@ -211,6 +216,12 @@ function setOpen(open: boolean): void {
   color: var(--color-text);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
+}
+
+.credential-test-dialog__error {
+  max-height: 8lh;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 @media (max-width: 480px) {

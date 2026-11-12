@@ -39,6 +39,9 @@ func (service *Service) List(ctx context.Context, input ListQuery) (Page, error)
 	if input.ToMS != nil {
 		query = query.Where("completed_at_ms < ?", *input.ToMS)
 	}
+	if input.ClientIP != "" {
+		query = query.Where(&models.RequestLog{ClientIP: &input.ClientIP})
+	}
 	if input.ClientModel != "" {
 		query = query.Where("client_model = ?", input.ClientModel)
 	}
@@ -98,6 +101,7 @@ func (service *Service) List(ctx context.Context, input ListQuery) (Page, error)
 	if input.RetryCountMax != nil {
 		query = query.Where(retryCountExpression+" <= ?", *input.RetryCountMax)
 	}
+	// 保留查询参数名称，首响筛选与页面的有效输出口径一致；旧日志空值不匹配。
 	query = applyNullableRange(query, "first_response_ms", input.FirstResponseMinMS, input.FirstResponseMaxMS)
 	query = applyNullableRange(query, "duration_ms", input.DurationMinMS, input.DurationMaxMS)
 	query = applyNullableRange(
@@ -391,6 +395,10 @@ func decodeRequestLogRows(rows []models.RequestLog) ([]Record, error) {
 			}
 		}
 		total := telemetry.TotalPricing(telemetry.PricingObservation{CostState: row.CostState, PricingCompleteness: row.PricingCompleteness, EstimatedCostNanoUSD: row.EstimatedCostNanoUSD}, decision, audit)
+		clientIP := ""
+		if row.ClientIP != nil {
+			clientIP = *row.ClientIP
+		}
 		records = append(records, Record{
 			AutoDecision:          decision,
 			RequestAudit:          audit,
@@ -400,6 +408,7 @@ func decodeRequestLogRows(rows []models.RequestLog) ([]Record, error) {
 			AccessKey:             AccessKeyRef{ID: row.AccessKeyID, Deleted: true},
 			Protocol:              protocol.Protocol(row.Protocol),
 			Operation:             execution.Operation(row.Operation),
+			ClientIP:              clientIP,
 			ClientModel:           row.ClientModel,
 			UpstreamModel:         row.UpstreamModel,
 			UpstreamReportedModel: row.UpstreamReportedModel,

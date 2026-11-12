@@ -51,6 +51,12 @@ func TestExtractErrorMessageUsesOnlySafeMessageShapes(t *testing.T) {
 			body: []byte(`auth_unavailable: no auth available`),
 			want: "auth_unavailable: no auth available",
 		},
+		{
+			name: "failed response message",
+			body: []byte(`{"type":"response.failed","response":{"error":{"message":"Selected model is at capacity."}}}`),
+			want: "Selected model is at capacity.",
+		},
+		{name: "response content is not an error", body: []byte(`{"response":{"message":"do not retain"}}`)},
 		{name: "unknown JSON", body: []byte(`{"debug":{"message":"do not retain"}}`)},
 		{name: "HTML", body: []byte(`<html><body>do not retain</body></html>`)},
 		{name: "binary", body: []byte("do not\x00retain")},
@@ -69,6 +75,30 @@ func TestRedactorDoesNotTreatAuthenticationTextAsCredentials(t *testing.T) {
 	input := "Basic authentication failed"
 	if got := New().String(input); got != input {
 		t.Fatalf("String() = %q, want %q", got, input)
+	}
+}
+
+func TestSanitizeErrorMessageTextPreservesDiagnosticPrefixes(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "redacted prefix", value: "[REDACTED] is invalid", want: "[REDACTED] is invalid"},
+		{name: "provider prefix", value: "  [provider] request failed  ", want: "[provider] request failed"},
+		{name: "JSON object", value: `{"message":"private diagnostic"}`},
+		{name: "JSON array", value: `["private diagnostic"]`},
+		{name: "HTML", value: " <html>private diagnostic</html>"},
+		{name: "null byte", value: "private\x00diagnostic"},
+		{name: "escape sequence", value: "private\x1b[31mdiagnostic"},
+		{name: "C1 control", value: "private\u0085diagnostic"},
+		{name: "invalid UTF-8", value: "private\xffdiagnostic"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := SanitizeErrorMessageText(test.value); got != test.want {
+				t.Fatalf("SanitizeErrorMessageText() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

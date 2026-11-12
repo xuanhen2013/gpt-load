@@ -15,6 +15,7 @@ import (
 
 	"gpt-load/internal/channel"
 	"gpt-load/internal/execution"
+	"gpt-load/internal/execution/responsemodel"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
 )
@@ -303,7 +304,13 @@ func (r *Runtime) executeConvertedResponses(
 	setTypedRequestURL(bifrostContext, prepared.typedURL)
 	outcomeChannel := make(chan responsesUnarySDKResult, 1)
 	go func() {
-		response, bifrostError := r.core.ResponsesRequest(bifrostContext, prepared.responsesRequest)
+		var response *schemas.BifrostResponsesResponse
+		var bifrostError *schemas.BifrostError
+		if r.usesCompatibleChat(spec) {
+			response, bifrostError = r.compatibleResponsesRequest(bifrostContext, prepared.responsesRequest)
+		} else {
+			response, bifrostError = r.core.ResponsesRequest(bifrostContext, prepared.responsesRequest)
+		}
 		outcomeChannel <- responsesUnarySDKResult{response: response, err: bifrostError}
 	}()
 
@@ -429,7 +436,7 @@ func convertedTypedTarget(
 	var resourcePath string
 	var upstreamProtocol protocol.Protocol
 	switch providerKind {
-	case channel.ProviderOpenAI, channel.ProviderOpenAICompatible:
+	case channel.ProviderOpenAI, channel.ProviderOpenAICompatible, channel.ProviderAlibaba:
 		resourcePath = "/chat/completions"
 		upstreamProtocol = protocol.OpenAICompletions
 		// Compatible targets are configured with Chat Completions only. Bifrost
@@ -531,7 +538,7 @@ func convertedListModelsTarget(providerKind channel.ProviderKind, baseURL string
 		resourcePath = "/models"
 	case channel.ProviderOpenRouter, channel.ProviderGroq, channel.ProviderXAI:
 		resourcePath = "/v1/models"
-	case channel.ProviderOpenAICompatible:
+	case channel.ProviderOpenAICompatible, channel.ProviderAlibaba:
 		if baseURL == "" {
 			return "", "", fmt.Errorf("compatible target is required")
 		}
@@ -601,6 +608,7 @@ func (r *Runtime) executeConvertedResponsesStream(
 	defer preResponse.stop()
 
 	bifrostContext := r.newStreamingSDKContext(callContext, spec, prepared.directKey)
+	captureStreamErrorStatus(bifrostContext, prepared.upstreamProtocol)
 	enableConvertedWireCapture(bifrostContext, prepared)
 	if prepared.request != nil && prepared.upstreamProtocol == protocol.Anthropic {
 		body, err := anthropic.BuildAnthropicChatRequestBody(bifrostContext, prepared.request, anthropic.AnthropicRequestBuildConfig{
@@ -621,7 +629,13 @@ func (r *Runtime) executeConvertedResponsesStream(
 	setTypedRequestURL(bifrostContext, prepared.typedURL)
 	outcomeChannel := make(chan responsesStreamSDKResult, 1)
 	go func() {
-		stream, bifrostError := r.core.ResponsesStreamRequest(bifrostContext, prepared.responsesRequest)
+		var stream chan *schemas.BifrostStreamChunk
+		var bifrostError *schemas.BifrostError
+		if r.usesCompatibleChat(spec) {
+			stream, bifrostError = r.compatibleResponsesStream(bifrostContext, prepared.responsesRequest)
+		} else {
+			stream, bifrostError = r.core.ResponsesStreamRequest(bifrostContext, prepared.responsesRequest)
+		}
 		outcomeChannel <- responsesStreamSDKResult{stream: stream, err: bifrostError}
 	}()
 
@@ -662,7 +676,8 @@ func (r *Runtime) executeConvertedResponsesStream(
 	encoder := newConvertedResponsesStreamEncoder(prepared.clientProtocol)
 	encoder.anthropicSource = wireUsage != nil
 	sequence := uint64(1)
-	model := spec.UpstreamModel
+	modelObserver := responsemodel.New(prepared.upstreamProtocol, spec.UpstreamModel)
+	model := ""
 	var usageEvidence *execution.UsageEvidence
 	idleTimer := newIdleTimer(spec.Timeouts.StreamIdle)
 	defer idleTimer.stop()
@@ -717,7 +732,8 @@ func (r *Runtime) executeConvertedResponsesStream(
 			var chunkUsage *execution.UsageEvidence
 			if response.Response != nil {
 				if response.Response.Model != "" {
-					model = response.Response.Model
+					modelObserver.ObserveModel(response.Response.Model)
+					model = modelObserver.Model
 				}
 				var err error
 				if err = wireUsage.applyResponses(response.Response.Usage); err != nil {

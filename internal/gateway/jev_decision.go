@@ -108,13 +108,14 @@ func (handler *Handler) executeJevDecision(ctx context.Context, snapshot *state.
 		decision.Reason = "proxy_unavailable"
 		return decision, result
 	}
-	body, _, err := selection.Group.ParameterOverrides.Apply(
+	body, _, err := selection.Group.ParameterOverrides.ApplyWithLimit(
 		protocol.Decisions,
 		execution.OperationDecisionsCreate,
 		model,
 		payload,
+		handler.RequestBodyLimit(),
 	)
-	if err != nil || int64(len(body)) > maxRequestBodyBytes {
+	if err != nil || int64(len(body)) > handler.RequestBodyLimit() {
 		decision.Reason = "parameter_override_unavailable"
 		return decision, result
 	}
@@ -173,6 +174,7 @@ func (handler *Handler) executeJevDecision(ctx context.Context, snapshot *state.
 	}
 	attemptNow := handler.now()
 	judgment := judgeUpstreamResult(result, attemptNow, health.DecisionContext{
+		ErrorRules:               selection.Group.ErrorRules,
 		DefaultRateLimitCooldown: fixedCooldown,
 		Method:                   http.MethodPost,
 		Operation:                execution.OperationDecisionsCreate,

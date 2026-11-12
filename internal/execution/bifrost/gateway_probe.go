@@ -28,6 +28,23 @@ func prepareGatewayProtocolProbe(
 	directKey schemas.Key,
 	secrets []string,
 ) (preparedAttempt, *execution.AttemptResult) {
+	path, body, failure := protocolProbeRequest(spec)
+	if failure != nil {
+		return preparedAttempt{}, failure
+	}
+	baseURL, configured, err := targetBaseURL(resolved.TargetConfig)
+	if err != nil || !configured {
+		failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "invalid multi-protocol gateway probe target")
+		return preparedAttempt{}, &failure
+	}
+	if resolved.ProviderKind == channel.ProviderOpenAICompatible {
+		path = strings.TrimPrefix(path, "/v1")
+	}
+	return protocolProbeAttempt(spec, provider, directKey, secrets, baseURL, path, body), nil
+}
+
+// protocolProbeRequest 返回各原生协议凭据测试的标准路径与最小请求体。
+func protocolProbeRequest(spec execution.AttemptSpec) (string, []byte, *execution.AttemptResult) {
 	var path string
 	var payload any
 	switch spec.ClientProtocol {
@@ -51,22 +68,26 @@ func prepareGatewayProtocolProbe(
 		payload = json.RawMessage(geminiEmbeddingsProbeBody)
 	default:
 		failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "unsupported multi-protocol gateway probe protocol")
-		return preparedAttempt{}, &failure
+		return "", nil, &failure
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		failure := notSentUnaryFailure(execution.ErrorKindInternal, "encode gateway protocol probe")
-		return preparedAttempt{}, &failure
+		return "", nil, &failure
 	}
-	baseURL, configured, err := targetBaseURL(resolved.TargetConfig)
-	if err != nil || !configured {
-		failure := notSentUnaryFailure(execution.ErrorKindInvalidRequest, "invalid multi-protocol gateway probe target")
-		return preparedAttempt{}, &failure
-	}
-	if resolved.ProviderKind == channel.ProviderOpenAICompatible {
-		// Compatible targets include the complete API prefix, such as Ark's /api/v3.
-		path = strings.TrimPrefix(path, "/v1")
-	}
+	return path, body, nil
+}
+
+// protocolProbeAttempt 构造原生凭据测试透传；upstreamURL 为空时使用 provider 自身的地址。
+func protocolProbeAttempt(
+	spec execution.AttemptSpec,
+	provider schemas.ModelProvider,
+	directKey schemas.Key,
+	secrets []string,
+	upstreamURL string,
+	path string,
+	body []byte,
+) preparedAttempt {
 	headers := safePassthroughHeaders(spec.Header)
 	headers["Content-Type"] = "application/json"
 	return preparedAttempt{
@@ -74,9 +95,9 @@ func prepareGatewayProtocolProbe(
 		clientProtocol: spec.ClientProtocol, directKey: directKey, secrets: secrets,
 		passthrough: &schemas.BifrostPassthroughRequest{
 			Provider: provider, Model: spec.UpstreamModel, Method: http.MethodPost,
-			Path: path, UpstreamURL: baseURL, Body: body, SafeHeaders: headers,
+			Path: path, UpstreamURL: upstreamURL, Body: body, SafeHeaders: headers,
 		},
-	}, nil
+	}
 }
 
 func normalizeGatewayProtocolProbeResult(spec execution.AttemptSpec, result *execution.AttemptResult) {

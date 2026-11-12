@@ -16,6 +16,7 @@ import (
 	"gpt-load/internal/channel"
 	"gpt-load/internal/connection"
 	"gpt-load/internal/execution"
+	"gpt-load/internal/health"
 	"gpt-load/internal/jev"
 	"gpt-load/internal/outboundproxy"
 	"gpt-load/internal/parameteroverride"
@@ -44,6 +45,7 @@ type CompileInput struct {
 }
 
 type GroupConfig struct {
+	Priority           int32
 	PriceMultiplier    *pricing.PriceMultiplier
 	ID                 uint
 	Name               string
@@ -78,6 +80,11 @@ type ModelConfig struct {
 	Alias string
 }
 
+// ExternalName 是客户端可见、访问密钥模型过滤使用的模型名。
+func (model ModelConfig) ExternalName() string {
+	return externalModelName(model)
+}
+
 func externalModelName(model ModelConfig) string {
 	if alias := strings.TrimSpace(model.Alias); alias != "" {
 		return alias
@@ -86,19 +93,20 @@ func externalModelName(model ModelConfig) string {
 }
 
 type AccessKeyConfig struct {
-	ConcurrencyLimit *int64
-	KeyPrefix        string
-	PriceMultiplier  *pricing.PriceMultiplier
-	ID               uint
-	Name             string
-	KeyHash          string
-	KeySuffix        string
-	Status           AccessKeyStatus
-	Filters          FilterSet
-	ExpiresAtMS      *int64
-	AllowedPeerCIDRs []netip.Prefix
-	RPMLimit         int64
-	CostLimitRules   []accessquota.Rule
+	ConcurrencyLimit  *int64
+	KeyPrefix         string
+	PriceMultiplier   *pricing.PriceMultiplier
+	ID                uint
+	Name              string
+	KeyHash           string
+	KeySuffix         string
+	Status            AccessKeyStatus
+	Filters           FilterSet
+	ExpiresAtMS       *int64
+	AllowedPeerCIDRs  []netip.Prefix
+	RPMLimit          int64
+	CostLimitRules    []accessquota.Rule
+	RecordRequestBody bool
 }
 
 type AccessKeyStatus string
@@ -153,6 +161,8 @@ func (rules HeaderRules) ConfiguredNames() []string {
 }
 
 type GroupView struct {
+	ErrorRules                health.ErrorRules
+	Priority                  int32
 	ConcurrencyLimit          int64
 	PriceMultiplier           pricing.PriceMultiplier
 	ID                        uint
@@ -179,6 +189,7 @@ type GroupView struct {
 }
 
 type GroupCatalogView struct {
+	Priority       int32
 	ID             uint
 	Name           string
 	ChannelID      channel.ID
@@ -188,18 +199,19 @@ type GroupCatalogView struct {
 }
 
 type AccessKeyView struct {
-	ConcurrencyLimit *int64
-	KeyPrefix        string
-	PriceMultiplier  pricing.PriceMultiplier
-	ID               uint
-	Name             string
-	KeySuffix        string
-	Status           AccessKeyStatus
-	Filters          FilterSet
-	ExpiresAtMS      *int64
-	AllowedPeerCIDRs []netip.Prefix
-	RPMLimit         int64
-	CostLimitRules   []accessquota.Rule
+	ConcurrencyLimit  *int64
+	KeyPrefix         string
+	PriceMultiplier   pricing.PriceMultiplier
+	ID                uint
+	Name              string
+	KeySuffix         string
+	Status            AccessKeyStatus
+	Filters           FilterSet
+	ExpiresAtMS       *int64
+	AllowedPeerCIDRs  []netip.Prefix
+	RPMLimit          int64
+	CostLimitRules    []accessquota.Rule
+	RecordRequestBody bool
 }
 
 type ConfigSnapshot struct {
@@ -328,7 +340,8 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 
 	for _, group := range input.Groups {
 		catalogView := GroupCatalogView{
-			ID: group.ID, Name: group.Name, Enabled: group.Enabled,
+			Priority: group.Priority,
+			ID:       group.ID, Name: group.Name, Enabled: group.Enabled,
 			ChannelID:      group.ChannelID,
 			ConnectionType: connection.Normalize(group.ConnectionType),
 			WeightManual:   cloneWeight(group.WeightManual),
@@ -350,6 +363,8 @@ func Compile(input CompileInput) (*ConfigSnapshot, error) {
 		}
 
 		view := GroupView{
+			ErrorRules:                resolved.ErrorRules,
+			Priority:                  group.Priority,
 			PriceMultiplier:           resolvePriceMultiplier(group.PriceMultiplier),
 			ID:                        group.ID,
 			Name:                      group.Name,
@@ -415,14 +430,15 @@ func newAccessKeyView(input AccessKeyConfig) AccessKeyView {
 	return AccessKeyView{
 		PriceMultiplier: resolvePriceMultiplier(input.PriceMultiplier),
 		ID:              input.ID, Name: input.Name, Status: input.Status,
-		KeySuffix:        input.KeySuffix,
-		KeyPrefix:        input.KeyPrefix,
-		Filters:          cloneFilterSet(input.Filters),
-		ExpiresAtMS:      cloneAccessKeyExpiry(input.ExpiresAtMS),
-		AllowedPeerCIDRs: cloneAllowedPeerCIDRs(input.AllowedPeerCIDRs),
-		RPMLimit:         input.RPMLimit,
-		ConcurrencyLimit: cloneAccessKeyExpiry(input.ConcurrencyLimit),
-		CostLimitRules:   rules,
+		KeySuffix:         input.KeySuffix,
+		KeyPrefix:         input.KeyPrefix,
+		Filters:           cloneFilterSet(input.Filters),
+		ExpiresAtMS:       cloneAccessKeyExpiry(input.ExpiresAtMS),
+		AllowedPeerCIDRs:  cloneAllowedPeerCIDRs(input.AllowedPeerCIDRs),
+		RPMLimit:          input.RPMLimit,
+		ConcurrencyLimit:  cloneAccessKeyExpiry(input.ConcurrencyLimit),
+		CostLimitRules:    rules,
+		RecordRequestBody: input.RecordRequestBody,
 	}
 }
 
@@ -502,10 +518,10 @@ func appendExecutionTargets(
 				execution.OperationImagesEdit,
 				execution.OperationEmbeddingsCreate, execution.OperationRerank,
 				execution.OperationDecisionsCreate,
+				execution.OperationAudioSpeech,
 				execution.OperationMistralOCR,
 				execution.OperationMistralFIM,
 				execution.OperationMistralAudioTranscription,
-				execution.OperationMistralAudioSpeech,
 				execution.OperationMistralModeration,
 				execution.OperationMistralChatModeration,
 				execution.OperationMistralClassification,

@@ -1,4 +1,6 @@
+import { credentialTestMessages } from '@shared/credential-test-messages'
 export default {
+  credentialBatchTest: credentialTestMessages['zh-CN'],
   groups: {
     title: '分组',
     collection: {
@@ -209,10 +211,6 @@ export default {
         headers: '上游请求头规则',
         danger: '危险区域',
       },
-      routing: {
-        description: '调整分组参与请求分配的相对权重。',
-        weightHelp: '默认 50，范围 1–100；与凭据权重相乘，决定分配比例。',
-      },
       headers: {
         description: '发往上游前设置、覆盖或移除的请求头规则；覆盖后将完整替换全局规则，不做合并。',
       },
@@ -313,7 +311,9 @@ export default {
         validationModel: '测试模型（可选）',
         validationModelPlaceholder: '搜索或输入模型 ID',
         validationModelHelp: '留空时使用分组的第一个模型；这里填上游模型 ID，不是别名。',
-        weight: '分组权重',
+        priority: '优先级',
+        priorityError: '请输入 -2147483648～2147483647 的整数',
+        weight: '权重',
         auto: '自动',
         manual: '手动',
         weightError: '请输入 1–100 之间的整数',
@@ -385,6 +385,12 @@ export default {
       settings: '设置',
     },
     credentials: {
+      name: '名称',
+      namePlaceholder: '可选，用于识别此凭据',
+      nameSaveFailed: '名称保存失败，请重试',
+      showAccount: '查看完整账号',
+      hideAccount: '隐藏完整账号',
+
       modelCooldown: {
         label: '模型冷却',
         count: '模型冷却 · {count}',
@@ -575,6 +581,8 @@ export default {
         moreActions: '更多操作',
         autoRenews: '使用时自动续期',
         resetCredits: '重置卡',
+        creditBalance: '点数',
+        creditUnlimited: '不限量',
         resetCreditsCount: '{count} 张可用',
         resetCreditsTooltipTitle: '重置卡明细',
         resetCreditsTooltipItem: '第 {index} 张：{expires}',
@@ -590,6 +598,13 @@ export default {
         consumeResetCreditFailed: '无法使用重置卡',
         consumeResetCreditSucceeded: '额度已重置，额度信息已更新',
         consumeResetCreditPending: '额度已重置，但额度信息刷新失败，请手动重试',
+        periodEnd: '订阅周期截止',
+        renewalEnabled: '自动续费',
+        renewalDisabled: '不自动续费',
+        renewalUnknown: '续费未知',
+        billingUnavailable: '上游未提供订阅信息',
+        billingFailed: '订阅信息暂不可用',
+        billingStale: '订阅同步失败，保留上次结果',
         tokenExpiresAt: '凭据到期',
         lastTokenRefresh: '上次凭据刷新',
         initialSyncTitle: '额度信息待获取',

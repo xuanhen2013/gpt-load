@@ -168,6 +168,21 @@ export default {
       limits: 'Limits',
       lastRequest: 'Last request',
       actions: 'Actions',
+      recordRequestBody: 'Body recording',
+    },
+    recordRequestBody: {
+      label: 'Record request bodies',
+      description:
+        'When enabled, the original client requests sent with this key are saved for troubleshooting.',
+      enabled: 'On',
+      disabled: 'Off',
+      confirmTitle: 'Enable request body recording?',
+      confirmDescription:
+        'Once enabled, the full content of every request sent with this key is saved to the database, including conversations, tool calls and images; oversized parts are truncated. {retention} This content may include personal information, passwords, keys or trade secrets. Enable it only while troubleshooting, turn it off as soon as you are done, and make sure you are authorized to record this content. People who hold this key will see a “recording enabled” notice when they sign in to the console and can view the recorded content; people who only call the API will not see the notice, so tell them separately.',
+      retentionDays: 'Saved content is deleted automatically after {days} days.',
+      retentionDefault:
+        'Saved content is deleted automatically according to the request log retention period.',
+      confirm: 'I understand, enable',
     },
     actions: {
       more: 'More actions',
@@ -199,14 +214,15 @@ export default {
       expirationTimezone: 'Enter a time in the current time zone, {timezone}.',
       expirationRequired: 'Choose an expiration time',
       expirationFuture: 'Expiration must be later than the current time',
-      sourceIP: 'Connection source IP',
-      sourceIPDescription: 'Restrict the address that connects directly to GPT-Load.',
+      sourceIP: 'Source IP',
+      sourceIPDescription:
+        'Restrict access by the resolved client IP, as recorded in request logs.',
       sourceAll: 'Any source',
       sourceRestricted: 'Specified IP/CIDR',
       allowedCIDRs: 'Allowed IP/CIDR',
       allowedCIDRsDescription: 'Enter one per line, up to 64. IPv4, IPv6, and CIDR are supported.',
       allowedCIDRsPlaceholder: '192.0.2.10\n2001:db8::/32',
-      proxyIPWarning: 'Behind a reverse proxy, the connection source is usually the proxy IP.',
+      proxyIPWarning: 'When using a proxy, verify that request logs show the expected client IP.',
       sourceRequired: 'Enter at least one IP or CIDR',
       sourceLimit: 'Up to 64 IP/CIDR entries are allowed',
       permissionScope: 'Permission scope',
@@ -262,9 +278,9 @@ export default {
         enableTotal: 'Enable total limit',
         enablePeriodic: 'Enable periodic limits',
         totalDescription:
-          'Limit cumulative estimated cost after Group and access key multipliers. The total limit does not reset automatically.',
+          'Limit cumulative estimated cost after Group and access key multipliers; unpriced requests are not counted. The total limit does not reset automatically.',
         periodicDescription:
-          'Limit adjusted estimated cost in fixed periods triggered by the first request. Up to 10 rules.',
+          'Limit adjusted estimated cost in fixed periods triggered by the first request; unpriced requests are not counted. Up to 10 rules.',
         addPeriodic: 'Add periodic limit',
         total: 'Total limit',
         periodic: 'Periodic limit',

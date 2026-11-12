@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ArrowLeft, ChevronRight, Layers, SlidersHorizontal } from '@lucide/vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import { computed, ref } from 'vue'
+import { computed, onMounted, onScopeDispose, ref } from 'vue'
+import { useMobileLayout } from '@modern/app/use-mobile-layout'
+import { useURLState } from '@modern/app/url-state'
 import { useMessages, useMessageSource } from '@modern/app/messages'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
@@ -16,6 +18,7 @@ import { getGroupUsage, getGroupWorkspace, groupQueryKey } from '@modern/api/gro
 import { getGroupUsageTrend } from '@modern/api/group-usage-trend'
 import { usePageRefresh } from '@modern/app/page-refresh'
 import {
+  AppSegmentedControl,
   AppBadge,
   AppButton,
   AppChannelIcon,
@@ -39,6 +42,37 @@ const router = useRouter()
 const { t, n } = useI18n()
 const client = useApiClient()
 const cache = useQueryClient()
+const isMobile = useMobileLayout()
+const workspace = ref<HTMLElement>()
+const compactLayout = ref(isMobile.value)
+// 按内容区宽度切换，收起导航栏或调整桌面窗口后也能访问全部设置。
+function updateLayout(width: number): void {
+  compactLayout.value = width <= 980
+}
+const workspaceObserver = new ResizeObserver(([entry]) => {
+  if (entry) updateLayout(entry.contentRect.width)
+})
+onMounted(() => {
+  if (!workspace.value) return
+  updateLayout(workspace.value.clientWidth)
+  workspaceObserver.observe(workspace.value)
+})
+onScopeDispose(() => workspaceObserver.disconnect())
+const mobileView = useURLState(
+  ['mobile_view'],
+  (query) => ({
+    tab: ['overview', 'settings'].includes(String(query.mobile_view))
+      ? String(query.mobile_view)
+      : 'credentials',
+  }),
+  (value) => (value.tab === 'credentials' ? {} : { mobile_view: value.tab }),
+)
+const mobileTab = computed({
+  get: () => mobileView.value.tab,
+  set: (value) => {
+    mobileView.value = { tab: value }
+  },
+})
 const id = computed(() => Number(route.params.id))
 const valid = computed(() => Number.isSafeInteger(id.value) && id.value > 0)
 const groups = useQuery({
@@ -220,7 +254,7 @@ useMessageSource(() =>
 </script>
 
 <template>
-  <div class="modern-group-workspace">
+  <div ref="workspace" class="modern-group-workspace">
     <AppCollectionState
       v-if="valid && groups.isPending.value"
       :title="t('collection.loading')"
@@ -238,7 +272,14 @@ useMessageSource(() =>
         ><RouterLink :to="returnTo">{{ t('groupDetail.back') }}</RouterLink></AppButton
       >
     </AppCollectionState>
-    <div v-else class="modern-group-workspace-layout">
+    <div
+      v-else
+      class="modern-group-workspace-layout"
+      :class="{
+        'is-compact': compactLayout,
+        'is-settings': compactLayout && mobileTab === 'settings',
+      }"
+    >
       <div class="modern-group-workspace-main">
         <header class="modern-group-workspace-header">
           <AppIconButton
@@ -263,7 +304,7 @@ useMessageSource(() =>
                 t('groups.connection.' + group.connectionType)
               }}</AppBadge>
             </div>
-            <div class="modern-group-workspace-meta">
+            <div v-if="!isMobile || mobileTab === 'overview'" class="modern-group-workspace-meta">
               <AppCopyValue
                 v-if="group.endpoint"
                 class="modern-group-workspace-endpoint"
@@ -272,12 +313,17 @@ useMessageSource(() =>
               />
               <span v-else>{{ group.channelName }}</span>
               <span class="modern-group-workspace-routing"
+                >{{ t('groups.edit.priority') }} {{ n(group.priority)
+                }}<span aria-hidden="true">·</span
                 >{{ t('groupDetail.weightValue', { value: n(group.weight) })
                 }}<span aria-hidden="true">·</span
                 >{{ t('groups.board.price', { value: group.priceMultiplier }) }}</span
               >
             </div>
-            <div v-if="channel?.nativeProtocols.length" class="modern-group-workspace-protocols">
+            <div
+              v-if="(!isMobile || mobileTab === 'overview') && channel?.nativeProtocols.length"
+              class="modern-group-workspace-protocols"
+            >
               <span>{{ t('groupDetail.supportedProtocols') }}</span>
               <div>
                 <AppProtocolTag
@@ -289,9 +335,32 @@ useMessageSource(() =>
             </div>
           </div>
         </header>
+        <AppSegmentedControl
+          v-if="compactLayout"
+          v-model="mobileTab"
+          class="modern-group-workspace-tabs"
+          :label="t('groupDetail.settings')"
+          :options="[
+            { value: 'credentials', label: t('groupDetail.credentials') },
+            { value: 'overview', label: t('groupDetail.overview') },
+            { value: 'settings', label: t('groupDetail.settings') },
+          ]"
+        />
+        <GroupOverview
+          v-if="compactLayout && mobileTab === 'overview'"
+          class="modern-group-workspace-overview"
+          :group="group"
+          :usage="groupUsage"
+          :trend="trend.data.value"
+          :loading="usage.isFetching.value || trend.isFetching.value"
+          :incomplete="usage.data.value?.incomplete ?? false"
+          :failed="usage.isError.value || trend.isError.value"
+          @retry="refreshUsage"
+        />
         <GroupCredentials
           :key="group.id"
           ref="credentials"
+          :visible="!compactLayout || mobileTab === 'credentials'"
           :group="group"
           :channel="channel"
           @add="panel = 'add'"
@@ -300,7 +369,11 @@ useMessageSource(() =>
           @updated-at="credentialsUpdatedAt = $event"
         />
       </div>
-      <aside class="modern-group-workspace-sidebar" :aria-label="t('groupDetail.settings')">
+      <aside
+        v-show="!compactLayout || mobileTab === 'settings'"
+        class="modern-group-workspace-sidebar"
+        :aria-label="t('groupDetail.settings')"
+      >
         <GroupBasicsForm
           :key="group.id"
           ref="basics"
@@ -311,7 +384,7 @@ useMessageSource(() =>
           @pending="basicsPending = $event"
           @updated-at="basicsUpdatedAt = $event"
         >
-          <template #overview
+          <template v-if="!compactLayout" #overview
             ><GroupOverview
               :group="group"
               :usage="groupUsage"
@@ -464,6 +537,14 @@ useMessageSource(() =>
   border-left: var(--modern-line-width) solid var(--modern-border);
   background: var(--modern-surface);
 }
+.modern-group-workspace-tabs {
+  flex: none;
+}
+.modern-group-workspace-overview {
+  min-height: 0;
+  align-content: start;
+  overflow-y: auto;
+}
 .modern-group-settings-links {
   display: grid;
   gap: var(--modern-space-1);
@@ -490,33 +571,50 @@ useMessageSource(() =>
   flex: none;
   color: var(--modern-muted);
 }
-@container modern-group-workspace (max-width: 980px) {
-  .modern-group-workspace-layout {
-    display: flex;
-    flex-direction: column;
-    overflow-y: auto;
-    gap: var(--modern-space-5);
-  }
-  .modern-group-workspace-main {
+.modern-group-workspace-layout.is-compact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--modern-space-3);
+}
+.modern-group-workspace-layout.is-compact .modern-group-workspace-main {
+  flex: 1;
+}
+.modern-group-workspace-layout.is-settings .modern-group-workspace-main {
+  flex: none;
+}
+.modern-group-workspace-layout.is-compact .modern-group-workspace-sidebar {
+  flex: 1;
+  border-left: 0;
+}
+@media (max-width: 760px) {
+  .modern-group-workspace {
     flex: none;
-    height: max(520px, calc(100dvh - var(--modern-topbar-height) - var(--modern-space-5)));
   }
-  .modern-group-workspace-sidebar {
+  .modern-group-workspace-layout.is-compact .modern-group-workspace-main,
+  .modern-group-workspace-layout.is-compact .modern-group-workspace-sidebar {
     flex: none;
-    border-left: 0;
-    border-top: var(--modern-line-width) solid var(--modern-border);
+  }
+  .modern-group-workspace-overview {
+    overflow: visible;
+  }
+  .modern-group-workspace-main :deep(.modern-list-scroll) {
+    overscroll-behavior-y: auto;
   }
 }
 @container modern-group-workspace (max-width: 420px) {
   .modern-group-workspace-header {
     gap: var(--modern-space-2);
     align-items: flex-start;
+    padding-block: var(--modern-space-3) var(--modern-space-2);
   }
   .modern-group-workspace-name h1 {
     flex-basis: 100%;
+    font-size: var(--modern-font-size-body);
+    line-height: var(--modern-leading-compact);
   }
   .modern-group-workspace-identity {
     padding-left: 0;
+    gap: var(--modern-space-1-5);
   }
 }
 </style>

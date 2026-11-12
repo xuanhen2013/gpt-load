@@ -24,6 +24,7 @@ func TestRequestTelemetryContractUsesExactFieldAllowlist(t *testing.T) {
 			"AccessKeyID",
 			"Protocol",
 			"Operation",
+			"ClientIP",
 			"ClientModel",
 			"UpstreamModel",
 			"UpstreamReportedModel",
@@ -40,6 +41,7 @@ func TestRequestTelemetryContractUsesExactFieldAllowlist(t *testing.T) {
 			"Reasoning",
 			"Attempts",
 			"Usage",
+			"RequestBody",
 		},
 		reflect.TypeOf(Attempt{}): {
 			"Sequence",

@@ -1,36 +1,32 @@
 <script setup lang="ts">
 import { LoaderCircle } from '@lucide/vue'
-import { onMounted, onUpdated, ref } from 'vue'
+import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppIcon from './AppIcon.vue'
-import { readListScroll, saveListScroll } from './list-scroll'
 
 const props = defineProps<{
   label: string
   loading?: boolean
-  scrollKey?: string
   flow?: boolean
+  mobileFlow?: boolean
 }>()
 const { t } = useI18n()
 const scroller = ref<HTMLElement>()
-// 遮罩和可交互状态跟随真实任务；防闪烁的延时只用于非阻塞的视觉提示。
-let restoreTo = readListScroll(props.scrollKey)
-function restoreScroll(): void {
-  if (restoreTo === undefined || props.loading || !scroller.value) return
-  scroller.value.scrollTop = restoreTo
-  restoreTo = undefined
-}
-function onScroll(): void {
-  if (restoreTo === undefined && scroller.value)
-    saveListScroll(props.scrollKey, scroller.value.scrollTop)
-}
-onMounted(restoreScroll)
-onUpdated(restoreScroll)
 defineExpose({
   scrollToTop: () => {
-    restoreTo = undefined
-    scroller.value?.scrollTo({ top: 0 })
-    saveListScroll(props.scrollKey, 0)
+    const element = scroller.value
+    element?.scrollTo({ top: 0 })
+    // 手机列表随页面滚动，翻页后也要回到列表顶部。
+    if (props.mobileFlow && element && element.scrollHeight <= element.clientHeight) {
+      let parent = element.parentElement
+      while (parent) {
+        if (['auto', 'scroll'].includes(getComputedStyle(parent).overflowY)) {
+          parent.scrollTo({ top: 0 })
+          break
+        }
+        parent = parent.parentElement
+      }
+    }
   },
 })
 </script>
@@ -38,7 +34,7 @@ defineExpose({
 <template>
   <section
     class="modern-list-frame"
-    :class="{ 'modern-list-frame--flow': flow }"
+    :class="{ 'modern-list-frame--flow': flow, 'modern-list-frame--mobile-flow': mobileFlow }"
     :aria-label="label"
   >
     <div class="modern-list-body">
@@ -49,7 +45,6 @@ defineExpose({
         :aria-label="label"
         :aria-busy="loading || undefined"
         tabindex="0"
-        @scroll="onScroll"
       >
         <div v-if="$slots.header" class="modern-list-header"><slot name="header" /></div>
         <slot />
@@ -77,7 +72,7 @@ defineExpose({
   position: sticky;
   z-index: var(--modern-layer-raised);
   top: 0;
-  background: var(--modern-surface);
+  background: var(--modern-list-header-background, var(--modern-surface));
 }
 .modern-list-body {
   position: relative;
@@ -91,6 +86,8 @@ defineExpose({
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  /* 数据行更新时不锚定旧行，避免新行被推到可视区域上方。 */
+  overflow-anchor: none;
   scrollbar-gutter: var(--modern-scrollbar-gutter);
   overscroll-behavior: contain;
 }
@@ -130,5 +127,21 @@ defineExpose({
   color: var(--modern-muted);
   font-size: var(--modern-font-size-secondary);
   box-shadow: var(--modern-shadow-control);
+}
+/* 手机页面随主内容滚动，避免筛选栏与分页挤掉列表；编辑浮层仍保留独立滚动。 */
+@media (max-width: 760px) {
+  .modern-list-frame--mobile-flow {
+    flex: none;
+  }
+  .modern-list-frame--mobile-flow .modern-list-body {
+    display: block;
+    flex: none;
+  }
+  .modern-list-frame--mobile-flow .modern-list-scroll {
+    overflow: visible;
+  }
+  .modern-list-frame--mobile-flow .modern-list-header {
+    position: static;
+  }
 }
 </style>

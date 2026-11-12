@@ -89,6 +89,7 @@ type ListQuery struct {
 	ToMS                *int64
 	GroupID             *uint
 	ChannelID           channel.ID
+	ClientIP            string
 	ClientModel         string
 	UpstreamModel       string
 	ModelConsistency    telemetry.ModelConsistency
@@ -144,6 +145,7 @@ type Record struct {
 	Protocol                protocol.Protocol
 	Operation               execution.Operation
 	UpstreamProtocol        protocol.Protocol
+	ClientIP                string
 	ClientModel             string
 	UpstreamModel           string
 	UpstreamReportedModel   string

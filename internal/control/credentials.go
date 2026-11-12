@@ -32,6 +32,7 @@ type CredentialImportResult struct {
 }
 
 type CredentialUpdateRequest struct {
+	Name                    optionalField[string]                 `json:"name"`
 	Status                  optionalField[state.CredentialStatus] `json:"status"`
 	WeightManual            optionalField[int]                    `json:"weight_manual"`
 	Proxy                   optionalField[outboundproxy.Config]   `json:"proxy"`
@@ -77,6 +78,7 @@ type CredentialAccountResponse struct {
 }
 
 type CredentialItemResponse struct {
+	Name                    string                         `json:"name"`
 	RPMPeakHour             *int64                         `json:"-"`
 	ModelCooldowns          []ModelCooldownResponse        `json:"model_cooldowns"`
 	CredentialID            uint                           `json:"credential_id"`
@@ -95,6 +97,7 @@ type CredentialItemResponse struct {
 	RecentFailureCount      uint64                         `json:"recent_failure_count"`
 	ConsecutiveFailureCount uint64                         `json:"consecutive_failure_count"`
 	LastFailureCategory     string                         `json:"last_failure_category"`
+	LastFailureSummary      string                         `json:"last_failure_summary,omitempty"`
 	LastStatusCode          *int                           `json:"last_status_code"`
 	CooldownUntilMS         *int64                         `json:"cooldown_until_ms"`
 	LastUsedAtMS            *int64                         `json:"last_used_at_ms,omitempty"`
@@ -437,6 +440,7 @@ func (s *Service) mapCredentialCollection(
 		if err != nil {
 			return CredentialCollectionResponse{}, err
 		}
+		item.Name = row.Name
 		item.ConnectionType = string(normalizeGroupConnectionType(observation.group.ConnectionType))
 		item.SecretVersion = row.SecretVersion
 		item.AuthState = string(row.AuthState)
@@ -463,7 +467,9 @@ func (s *Service) mapCredentialCollection(
 		}
 		peaks := s.rpmPeaks(ctx, rpm.Credential, ids, observation.observedAt)
 		for i := range records {
-			if peak, ok := peaks[records[i].item.CredentialID]; ok {
+			// 订阅卡固定展示 RPM：查询成功但无记录为 0，查询失败仍保持未知。
+			if peak, ok := peaks[records[i].item.CredentialID]; ok ||
+				(peaks != nil && records[i].item.ConnectionType == string(models.ConnectionTypeSubscription)) {
 				records[i].item.RPMPeakHour = &peak
 			}
 		}
@@ -523,7 +529,8 @@ func credentialCollectionMatches(record credentialCollectionRecord, query Creden
 		return true
 	}
 	queryValue := strings.ToLower(query.Query)
-	return strings.Contains(strings.ToLower(record.item.Mask), queryValue) ||
+	return strings.Contains(strings.ToLower(record.item.Name), queryValue) ||
+		strings.Contains(strings.ToLower(record.item.Mask), queryValue) ||
 		strings.Contains(strings.ToLower(record.item.Account.Email), queryValue)
 }
 

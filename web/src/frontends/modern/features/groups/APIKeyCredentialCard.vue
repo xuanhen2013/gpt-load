@@ -1,12 +1,13 @@
 <script setup lang="ts">
+import CredentialDisplay from '@modern/components/CredentialDisplay.vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { CredentialRow } from '@modern/api/group-detail'
+import type { CredentialBatchTestItem } from '@shared/credential-test-batch'
 import {
   AppBadge,
   AppButton,
   AppCheckbox,
-  AppCopyValue,
   AppOverflowText,
   AppSwitch,
   AppTooltip,
@@ -25,13 +26,48 @@ const props = defineProps<{
   selected: boolean
   disabled: boolean
   pending?: boolean
+  testState?: CredentialBatchTestItem
   error?: string
   resolveSecret: () => Promise<string>
+  saveName: (name: string) => Promise<void>
 }>()
-defineEmits<{ select: [value: boolean]; toggle: [value: boolean]; action: [value: string] }>()
+defineEmits<{
+  select: [value: boolean]
+  toggle: [value: boolean]
+  action: [value: string]
+  nameDirty: [value: boolean]
+}>()
 const { t, n, locale } = useI18n()
 const now = useClock()
 const state = computed(() => credentialStatus(props.row))
+const testTone = computed(() => {
+  switch (props.testState?.state) {
+    case 'passed':
+      return 'success'
+    case 'failed':
+      return 'danger'
+    case 'inconclusive':
+      return 'warning'
+    default:
+      return 'neutral'
+  }
+})
+const testLabel = computed(() => {
+  const result = props.testState
+  if (!result) return ''
+  return [
+    t('credentialBatchTest.states.' + result.state),
+    result.latency === undefined
+      ? ''
+      : t('credentialBatchTest.latency', { value: n(result.latency) }),
+    result.reason === 'request_failed'
+      ? t('credentialBatchTest.requestFailed')
+      : result.errorDetail ||
+        (result.reason ? t('credentialCards.testReason.' + result.reason) : ''),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+})
 const lastUsedFull = computed(() =>
   props.row.lastUsed
     ? dateFormatter(locale.value, {
@@ -62,22 +98,32 @@ const issues = computed(() =>
 )
 </script>
 <template>
-  <CredentialCardFrame :selected="selected" :pending="pending" compact>
+  <CredentialCardFrame
+    :selected="selected"
+    :pending="pending || testState?.state === 'running'"
+    compact
+  >
     <template #heading>
-      <AppTooltip :label="t('groupDetail.selectCredential', { name: row.mask })"
+      <AppTooltip :label="t('groupDetail.selectCredential', { name: row.label })"
         ><AppCheckbox
           :model-value="selected"
-          :label="t('groupDetail.selectCredential', { name: row.mask })"
+          :label="t('groupDetail.selectCredential', { name: row.label })"
           label-hidden
           :disabled="disabled"
           @update:model-value="$emit('select', $event)"
       /></AppTooltip>
       <div class="modern-api-card-secret">
-        <AppCopyValue
+        <CredentialDisplay
           :key="row.secretVersion"
+          :name="row.name"
+          detail
+          copy
+          :copy-label="t('credentialCards.copyKey')"
           :value="row.mask"
           :resolve-value="resolveSecret"
-          :label="t('credentialCards.copyKey')"
+          :save-name="saveName"
+          :disabled="disabled"
+          @dirty="$emit('nameDirty', $event)"
         />
       </div>
       <AppTooltip :label="issues || undefined">
@@ -118,7 +164,17 @@ const issues = computed(() =>
       </AppTooltip>
     </dl>
     <template #footer
-      ><CredentialOutcomeSummary :usage="row.daily" compact />
+      ><AppBadge
+        v-if="testState"
+        :tone="testTone"
+        variant="plain"
+        size="xs"
+        dot
+        class="modern-api-card-test"
+      >
+        <AppOverflowText :text="testLabel" />
+      </AppBadge>
+      <CredentialOutcomeSummary v-else :usage="row.daily" compact />
       <div class="modern-api-card-actions">
         <CredentialCardActions
           :row="row"
@@ -135,6 +191,11 @@ const issues = computed(() =>
   </CredentialCardFrame>
 </template>
 <style scoped>
+.modern-api-card-test {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
 .modern-api-card-secret {
   flex: 1;
   min-width: 0;

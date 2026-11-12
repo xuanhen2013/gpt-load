@@ -142,6 +142,7 @@ type RequestEvent struct {
 	AccessKeyID           uint
 	Protocol              protocol.Protocol
 	Operation             execution.Operation
+	ClientIP              string
 	ClientModel           string
 	UpstreamModel         string
 	UpstreamReportedModel string
@@ -158,6 +159,8 @@ type RequestEvent struct {
 	Reasoning             reasoning.Config
 	Attempts              []Attempt
 	Usage                 UsageObservation
+	// RequestBody 只在访问密钥开启请求内容记录时携带，是网关收到并解码后的客户端原始请求体。
+	RequestBody []byte
 }
 
 type RequestLogSink interface {

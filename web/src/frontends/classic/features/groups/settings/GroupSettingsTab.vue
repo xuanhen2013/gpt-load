@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isValidGroupPriority } from '@shared/group-priority'
 import { codexLiveModes, type CodexLiveMode } from '@shared/codex-live'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
@@ -32,6 +33,8 @@ import { useTransientFlag } from '@/app/use-transient-flag'
 import { groupDetailLocation } from '@/app/route-locations'
 import HeaderRulesEditor from '@/components/config/HeaderRulesEditor.vue'
 import ParameterOverrideRulesEditor from '@/components/config/ParameterOverrideRulesEditor.vue'
+import ErrorRulesEditor from '@/components/config/ErrorRulesEditor.vue'
+import { cloneErrorRules, validErrorRules, type ErrorRule } from '@shared/error-rules'
 import ProxyOverrideControl from '@/components/config/ProxyOverrideControl.vue'
 import SettingBlock from '@/components/config/SettingBlock.vue'
 import SettingRow from '@/components/config/SettingRow.vue'
@@ -129,6 +132,7 @@ const parameterOverrideOperations = new Set([
   'images_generate',
   'embeddings_create',
   'rerank',
+  'audio_speech',
 ])
 const parameterOverrideProtocols = computed<AccessProtocol[]>(() => [
   ...new Set(
@@ -143,6 +147,7 @@ const navItems = computed(() => [
   { id: 'settings-routing', label: t('group.settings.sections.routing') },
   { id: 'settings-runtime', label: t('group.settings.sections.runtime') },
   { id: 'settings-parameters', label: t('group.settings.sections.parameters') },
+  { id: 'settings-errors', label: t('errorRules.title') },
   { id: 'settings-headers', label: t('group.settings.sections.headers') },
   { id: 'settings-danger', label: t('group.settings.sections.danger') },
 ])
@@ -185,6 +190,7 @@ const dirty = computed(
   () =>
     !deleted.value &&
     (Object.keys(patch.value).length > 0 ||
+      (draft.value !== undefined && !isValidGroupPriority(draft.value.priority)) ||
       headerRulesInvalidEdits.value ||
       parameterOverridesInvalidEdits.value ||
       proxyState.value.dirty),
@@ -241,18 +247,24 @@ const valid = computed(
   () =>
     !nameError.value &&
     Object.keys(paramErrors.value).length === 0 &&
+    isValidGroupPriority(draft.value?.priority ?? '') &&
     weightValid.value &&
     isValidPriceMultiplier(draft.value?.price_multiplier ?? '') &&
     timeoutValid.value &&
     policyCountsValid.value &&
     headerRulesValid.value &&
     parameterOverridesValid.value &&
+    validErrorRules(draft.value?.overrides.error_rules ?? []) &&
     !proxyState.value.invalid,
 )
 function isPendingRestore(key: GroupTimeoutKey | GroupPolicyCountKey): boolean {
   return draft.value?.overrides[key] === undefined && saved.value?.overrides[key] !== undefined
 }
 const headerRulesOverridden = computed(() => draft.value?.overrides.header_rules !== undefined)
+const errorRulesOverridden = computed(() => draft.value?.overrides.error_rules !== undefined)
+const displayedErrorRules = computed(
+  () => draft.value?.overrides.error_rules ?? saved.value?.default_error_rules ?? [],
+)
 const headerRulesPendingRestore = computed(
   () => !headerRulesOverridden.value && saved.value?.overrides.header_rules !== undefined,
 )
@@ -372,6 +384,7 @@ function sectionFromID(id: string): GroupSettingsSection | undefined {
     value === 'routing' ||
     value === 'runtime' ||
     value === 'parameters' ||
+    value === 'errors' ||
     value === 'headers' ||
     value === 'danger'
     ? value
@@ -461,6 +474,21 @@ function updateParameterOverrides(value: ParameterOverrideRuleDto[]): void {
   const overrides = { ...draft.value.overrides }
   if (value.length === 0) delete overrides.parameter_overrides
   else overrides.parameter_overrides = value
+  draft.value = { ...draft.value, overrides }
+}
+
+function updateErrorRules(value: ErrorRule[]): void {
+  if (!draft.value) return
+  draft.value = {
+    ...draft.value,
+    overrides: { ...draft.value.overrides, error_rules: cloneErrorRules(value) },
+  }
+}
+function toggleErrorRules(): void {
+  if (!draft.value || !saved.value) return
+  const overrides = { ...draft.value.overrides }
+  if (errorRulesOverridden.value) delete overrides.error_rules
+  else overrides.error_rules = cloneErrorRules(saved.value.default_error_rules)
   draft.value = { ...draft.value, overrides }
 }
 
@@ -706,6 +734,7 @@ onBeforeUnmount(() => {
             :validation-protocol="draft.validation_protocol"
             :validation-protocols="saved?.validation_protocols ?? []"
             :models="modelsQuery.data.value?.items ?? []"
+            :priority="draft.priority"
             :weight-manual="draft.weight_manual"
             :price-multiplier="draft.price_multiplier"
             :enabled="draft.enabled"
@@ -718,6 +747,7 @@ onBeforeUnmount(() => {
             @update:name="draft.name = $event"
             @update:validation-model="draft.validation_model = $event"
             @update:validation-protocol="draft.validation_protocol = $event"
+            @update:priority="draft.priority = $event"
             @update:weight-manual="draft.weight_manual = $event"
             @update:price-multiplier="draft.price_multiplier = $event"
             @update:enabled="draft.enabled = $event"
@@ -735,6 +765,7 @@ onBeforeUnmount(() => {
             :validation-protocol="draft.validation_protocol"
             :validation-protocols="saved?.validation_protocols ?? []"
             :models="modelsQuery.data.value?.items ?? []"
+            :priority="draft.priority"
             :weight-manual="draft.weight_manual"
             :price-multiplier="draft.price_multiplier"
             :enabled="draft.enabled"
@@ -746,6 +777,7 @@ onBeforeUnmount(() => {
             @update:name="draft.name = $event"
             @update:validation-model="draft.validation_model = $event"
             @update:validation-protocol="draft.validation_protocol = $event"
+            @update:priority="draft.priority = $event"
             @update:weight-manual="draft.weight_manual = $event"
             @update:price-multiplier="draft.price_multiplier = $event"
             @update:enabled="draft.enabled = $event"
@@ -764,11 +796,6 @@ onBeforeUnmount(() => {
                   :disabled="mutationPending"
                   @update:model-value="setLiveMode"
                 />
-                <p>
-                  {{ t('settings.runtime.liveModeHelp') }} ·
-                  {{ t('settings.runtime.currentEffective') }}:
-                  {{ t('settings.runtime.liveModes.' + saved.effective.codex_live_mode) }}
-                </p>
               </div>
               <SettingRow
                 :label="t('group.settings.runtime.responses_websocket_enabled')"
@@ -1036,6 +1063,23 @@ onBeforeUnmount(() => {
               @update:invalid-edits="parameterOverridesInvalidEdits = $event"
               @update:model-value="updateParameterOverrides"
             />
+          </section>
+          <section id="settings-errors" class="group-settings__section">
+            <SettingBlock
+              :title="t('errorRules.title')"
+              :source-label="t(errorRulesOverridden ? 'errorRules.override' : 'errorRules.inherit')"
+              :action-label="t(errorRulesOverridden ? 'errorRules.inherit' : 'errorRules.override')"
+              :overridden="errorRulesOverridden"
+              :disabled="mutationPending"
+              @toggle="toggleErrorRules"
+            >
+              <ErrorRulesEditor
+                :model-value="displayedErrorRules"
+                :disabled="mutationPending"
+                :readonly="!errorRulesOverridden"
+                @update:model-value="updateErrorRules"
+              />
+            </SettingBlock>
           </section>
           <section id="settings-headers" class="group-settings__section">
             <SettingBlock

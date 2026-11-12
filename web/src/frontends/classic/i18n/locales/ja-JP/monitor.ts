@@ -11,6 +11,12 @@ export default {
     help: '説明を表示',
     scrollHint: '横方向にスクロールするとすべての列を確認できます。',
     currentState: '現在の状態',
+    autoRefresh: {
+      label: '自動更新',
+      off: '自動更新オフ',
+      seconds: '{count} 秒ごと',
+      minutes: '{count} 分ごと',
+    },
     tabs: {
       label: 'モニターのセクション',
       health: 'ヘルス',
@@ -415,10 +421,10 @@ export default {
         embeddings_create: '埋め込みを作成',
         rerank: 'ドキュメントを再ランキング',
         decisions_create: '判定を作成',
+        audio_speech: '音声合成',
         mistral_ocr: 'OCR',
         mistral_fim: '穴埋め補完',
         mistral_audio_transcription: '音声文字起こし',
-        mistral_audio_speech: '音声合成',
         mistral_moderation: 'テキスト審査',
         mistral_chat_moderation: 'チャット審査',
         mistral_classification: '分類',
@@ -500,9 +506,9 @@ export default {
         title: '候補グループ',
         description: {
           native_first:
-            'ネイティブルートを先に試し、利用可能な候補がない場合に変換を使用します。同じ階層では有効ウェイトと共有する割り当て進捗に基づいて順に選択し、階層とウェイト順に表示します。リクエスト親和性は引き続き有効で、ウェイト比率は実際のトラフィック比率とは異なります。',
+            '利用可能な最上位の優先度を選び、同じ階層ではネイティブを優先して有効ウェイトと共有進捗で順に選択します。下位は予備です。親和性も適用されるため、ウェイト比率は実際のトラフィック比率とは異なります。',
           weighted_mix:
-            '要求を満たすネイティブと変換候補を同じプールで有効ウェイトと共有する割り当て進捗に基づいて順に選択し、ウェイト順に表示します。リクエスト親和性は引き続き有効で、ウェイト比率は実際のトラフィック比率とは異なります。',
+            '利用可能な最上位の優先度を選び、同じ階層のネイティブと変換候補を有効ウェイトと共有進捗で順に選択します。下位は予備です。親和性も適用されるため、ウェイト比率は実際のトラフィック比率とは異なります。',
         },
         count: '{count} 件',
         tableLabel: '候補グループのルート説明',
@@ -554,7 +560,7 @@ export default {
         effective: '生の有効ウェイト',
         null: 'null',
         none: '—',
-        group: 'グループウェイト {value}',
+        group: '重み {value}',
       },
       excluded: {
         title: '除外グループ',
@@ -592,6 +598,9 @@ export default {
       },
     },
     logs: {
+      ipColumn: 'IP 列',
+      copyIP: 'IP をコピー',
+      filterIP: 'IP {value} のログのみ表示',
       loading: 'リクエストログを読み込み中…',
       loadFailed: 'リクエストログを読み込めません。',
       loadMore: 'さらに読み込む',
@@ -613,6 +622,7 @@ export default {
         partialFailed: '一部のフィルター選択肢を読み込めませんが、ログ検索は使用できます。',
       },
       filters: {
+        clientIP: 'IP',
         label: 'リクエストログのフィルター',
         timeRange: '時間範囲',
         from: '開始時刻',
@@ -692,6 +702,7 @@ export default {
         appliedCostState: 'コスト {value}',
         appliedCompleteness: '料金 {value}',
         appliedRequestId: 'リクエスト ID {value}',
+        appliedClientIP: 'IP {value}',
         timezone: 'ローカルタイムゾーン',
         lastRefreshed: '最終成功更新',
         remove: 'フィルター {value} を削除',
@@ -835,6 +846,7 @@ export default {
         embeddings_create: '埋め込みを作成',
         rerank: 'ドキュメントを再ランキング',
         decisions_create: '判定を作成',
+        audio_speech: '音声合成',
         mistral_ocr: 'OCR',
         mistral_fim: '穴埋め補完',
         mistral_audio_transcription: '音声文字起こし',
@@ -893,7 +905,7 @@ export default {
         statusCode: 'ステータスコード',
         duration: '所要時間',
         firstResponse: '初回応答',
-        outputRate: '出力速度',
+        outputRate: '平均出力速度',
         attemptCount: '試行回数',
         request: 'クライアントリクエスト',
         finalExecution: 'アップストリーム実行',
@@ -932,6 +944,17 @@ export default {
         modelObservation: 'アップストリーム応答モデルの観測',
         requestedModel: 'アップストリーム要求モデル',
         reportedModel: 'アップストリーム応答モデル',
+        requestBody: {
+          title: 'リクエスト内容',
+          originalSize: '元のサイズ {size}',
+          copy: 'リクエスト内容をコピー',
+          states: {
+            truncated: '長すぎる文字列は切り詰められています（構造は変わりません）',
+            non_json: 'JSON リクエストではないため、本文は記録されていません',
+            too_large: 'リクエスト本文が大きすぎるため、本文は記録されていません',
+            queue_full: '記録キューが混雑していたため、本文は記録されていません',
+          },
+        },
         usage: {
           title: '使用量・コスト',
           description:
@@ -974,6 +997,7 @@ export default {
         },
       },
       columns: {
+        clientIP: 'IP',
         time: '時刻',
         modelProtocol: 'モデル / プロトコル',
         response: '応答',
@@ -1039,6 +1063,7 @@ export default {
         identity: '価格識別情報',
         historicalSchema1: '履歴スコープ',
         historicalSchema2: '履歴グローバル価格',
+        advisor: 'Advisor（{model}）',
       },
       pricingMode: {
         fastLabel: 'Fast モード料金',

@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import { useMobileLayout } from '@modern/app/use-mobile-layout'
 import { protocolLabel } from '@modern/i18n/protocols'
 import { Eye, EyeOff, RefreshCw, Trash2 } from '@lucide/vue'
 import { useQuery } from '@tanstack/vue-query'
 import { DialogRoot } from 'reka-ui'
-import { computed, nextTick, onScopeDispose, ref, watch } from 'vue'
+import { computed, nextTick, onScopeDispose, ref, useId, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   accessDetailKey,
@@ -17,6 +18,7 @@ import {
   type AccessKey,
 } from '@modern/api/access-keys'
 import { getGroupWorkspace, groupQueryKey } from '@modern/api/groups'
+import { getSettings, settingsKey } from '@modern/api/settings'
 import { useMessageSource } from '@modern/app/messages'
 import {
   AppProtocolTag,
@@ -58,6 +60,8 @@ import {
   type AccessDraft,
 } from './access-key-draft'
 
+const isMobile = useMobileLayout()
+const mobileTab = ref('basic')
 const props = defineProps<{
   mode: 'create' | 'detail' | 'copy'
   id?: number
@@ -76,6 +80,13 @@ const groups = useQuery({
   queryKey: groupQueryKey,
   queryFn: ({ signal }) => getGroupWorkspace(client, signal),
 })
+// 预取日志保留天数，开启记录的确认框才能直接给出具体天数；读取失败时使用通用说明。
+const retention = useQuery({
+  queryKey: settingsKey,
+  queryFn: ({ signal }) => getSettings(client, signal),
+  select: (data) => data.values.request_log_retention_days,
+  gcTime: 0,
+})
 const base = ref<AccessKey>()
 const usageRow = computed(() => (props.mode === 'detail' ? query.data.value : undefined))
 const draft = ref<AccessDraft>(draftFor())
@@ -92,6 +103,16 @@ const showKey = ref(false)
 const revealing = ref(false)
 const deleteOpen = ref(false)
 const resetOpen = ref(false)
+const recordConfirmOpen = ref(false)
+const recordNoteId = useId()
+const recordConfirmDescription = computed(() =>
+  t('accessKeys.recordRequestBody.confirmDescription', {
+    retention:
+      retention.data.value === undefined
+        ? t('accessKeys.recordRequestBody.retentionDefault')
+        : t('accessKeys.recordRequestBody.retentionDays', { days: retention.data.value }),
+  }),
+)
 let submission: { payload: string; operation: string } | undefined
 const dirty = computed(
   () =>
@@ -236,13 +257,32 @@ function generate(): void {
     error.value = t('accessKeys.failed')
   }
 }
+function setRecordRequestBody(value: boolean): void {
+  if (pending.value) return
+  // 关闭立即生效；开启必须先在确认框中确认。
+  if (value && !draft.value.recordRequestBody) {
+    recordConfirmOpen.value = true
+    return
+  }
+  draft.value.recordRequestBody = value
+}
+function confirmRecordRequestBody(): void {
+  recordConfirmOpen.value = false
+  if (!pending.value) draft.value.recordRequestBody = true
+}
 async function requestSave(): Promise<void> {
   if (pending.value || revealing.value) return
   if (!dirty.value) return
   attempted.value = true
   if (Object.keys(errors.value).length) {
     await nextTick()
-    form.value?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus()
+    const invalid = form.value?.querySelector<HTMLElement>('[aria-invalid="true"]')
+    if (isMobile.value) {
+      mobileTab.value =
+        invalid?.closest<HTMLElement>('[data-mobile-section]')?.dataset.mobileSection ?? 'basic'
+      await nextTick()
+    }
+    invalid?.focus()
     return
   }
   const input = inputFor(draft.value)
@@ -409,8 +449,26 @@ onScopeDispose(() => {
         ><AppButton @click="query.refetch()">{{ t('ui.retry') }}</AppButton></AppCollectionState
       >
       <form v-else ref="form" class="modern-access-editor" novalidate @submit.prevent="requestSave">
+        <AppSegmentedControl
+          v-if="isMobile"
+          v-model="mobileTab"
+          class="modern-access-editor-tabs"
+          :label="t('accessKeys.edit')"
+          :options="[
+            { value: 'basic', label: t('accessKeys.basic') },
+            { value: 'scope', label: t('accessKeys.scope') },
+            { value: 'quota', label: t('accessKeys.limits') },
+            ...(usageRow ? [{ value: 'usage', label: t('accessKeys.usage') }] : []),
+          ]"
+        />
         <div class="modern-access-editor-body">
-          <AppFormSection v-if="usageRow" :title="t('accessKeys.usage')" compact>
+          <AppFormSection
+            v-if="usageRow"
+            v-show="!isMobile || mobileTab === 'usage'"
+            data-mobile-section="usage"
+            :title="t('accessKeys.usage')"
+            compact
+          >
             <template #actions
               ><AppBadge :tone="accessState(usageRow).tone" size="xs" dot>{{
                 t('accessKeys.' + accessState(usageRow).key)
@@ -452,8 +510,17 @@ onScopeDispose(() => {
               {{ t('accessKeys.lastUsed') }} · {{ accessTime(usageRow.last_request_at_ms, locale) }}
             </p>
           </AppFormSection>
-          <RPMTrend v-if="mode === 'detail' && base" :scope="{ kind: 'access_key', id: base.id }" />
-          <AppFormSection :title="t('accessKeys.basic')" compact>
+          <RPMTrend
+            v-if="mode === 'detail' && base"
+            v-show="!isMobile || mobileTab === 'usage'"
+            :scope="{ kind: 'access_key', id: base.id }"
+          />
+          <AppFormSection
+            v-show="!isMobile || mobileTab === 'basic'"
+            data-mobile-section="basic"
+            :title="t('accessKeys.basic')"
+            compact
+          >
             <template #actions
               ><AppSwitch
                 :model-value="draft.enabled"
@@ -540,6 +607,7 @@ onScopeDispose(() => {
             <AppDateTimePicker
               v-if="!draft.never"
               v-model="draft.expires"
+              :mobile="isMobile"
               :label="t('accessKeys.expires')"
               label-hidden
               :shortcuts="expiryShortcuts"
@@ -548,10 +616,33 @@ onScopeDispose(() => {
               :disabled="pending"
               :error="fieldError('expires')"
             />
+            <div class="modern-access-setting">
+              <span>{{ t('accessKeys.recordRequestBody.label') }}</span
+              ><AppSwitch
+                :model-value="draft.recordRequestBody"
+                :label="t('accessKeys.recordRequestBody.label')"
+                :aria-describedby="recordNoteId"
+                size="sm"
+                :disabled="pending"
+                @update:model-value="setRecordRequestBody"
+              />
+            </div>
+            <p :id="recordNoteId" class="modern-access-note">
+              {{ t('accessKeys.recordRequestBody.description') }}
+            </p>
           </AppFormSection>
           <AppFormSection
+            v-show="!isMobile || mobileTab === 'scope'"
+            data-mobile-section="scope"
             :title="t('accessKeys.scope')"
-            :description="t('accessKeys.scopeHelp')"
+            :hint="
+              [
+                t('accessKeys.scopeHelp'),
+                groups.data.value?.autoModels?.length ? t('autoModel.permissionsHint') : '',
+              ]
+                .filter(Boolean)
+                .join('\n')
+            "
             compact
           >
             <div class="modern-access-setting">
@@ -639,23 +730,27 @@ onScopeDispose(() => {
               :error="fieldError('models')"
             />
             <p v-if="modelMismatch" class="modern-access-note">{{ t('accessKeys.mismatch') }}</p>
-            <p v-if="groups.data.value?.autoModels?.length" class="modern-access-note">
-              {{ t('autoModel.permissionsHint') }}
-            </p>
           </AppFormSection>
           <AccessKeyQuotaEditor
+            v-show="!isMobile || mobileTab === 'quota'"
             v-model="draft.rules"
+            data-mobile-section="quota"
             :runtime="base?.cost_limit_status"
             :disabled="pending"
             :reset-disabled="dirty"
             :error="fieldError('rules')"
             @reset="openReset"
           />
-          <AppFormSection :title="t('accessKeys.policy')" compact>
+          <AppFormSection
+            v-show="!isMobile || mobileTab === 'scope'"
+            data-mobile-section="scope"
+            :title="t('accessKeys.policy')"
+            compact
+          >
             <AppTextField
               v-model="draft.concurrency"
               :label="t('concurrency.label')"
-              :description="t('concurrency.overrideHelp')"
+              :hint="t('concurrency.overrideHelp')"
               :placeholder="t('concurrency.inherit')"
               inputmode="numeric"
               size="sm"
@@ -666,7 +761,7 @@ onScopeDispose(() => {
               <AppTextField
                 v-model="draft.rpm"
                 :label="t('accessKeys.rpm')"
-                :description="t('accessKeys.rpmHelp')"
+                :hint="t('accessKeys.rpmHelp')"
                 inputmode="numeric"
                 size="sm"
                 :disabled="pending"
@@ -698,7 +793,7 @@ onScopeDispose(() => {
               v-if="draft.source !== 'all'"
               v-model="draft.cidrs"
               :label="t('accessKeys.cidrs')"
-              :description="t('accessKeys.cidrHelp')"
+              :hint="t('accessKeys.cidrHelp')"
               :rows="3"
               :disabled="pending"
               :error="fieldError('cidrs')"
@@ -769,8 +864,25 @@ onScopeDispose(() => {
     @close="resetOpen = false"
     @reset="quotaReset"
   />
+  <AppConfirmDialog
+    :open="recordConfirmOpen"
+    :title="t('accessKeys.recordRequestBody.confirmTitle')"
+    :description="recordConfirmDescription"
+    :confirm-label="t('accessKeys.recordRequestBody.confirm')"
+    tone="danger"
+    @cancel="recordConfirmOpen = false"
+    @confirm="confirmRecordRequestBody"
+  />
 </template>
 <style scoped>
+.modern-access-editor-tabs {
+  width: 100%;
+  border-radius: 0;
+  flex: none;
+  padding: var(--modern-space-2) var(--modern-space-4);
+  border-bottom: var(--modern-line-width) solid var(--modern-border);
+}
+
 .modern-access-editor {
   display: flex;
   flex-direction: column;

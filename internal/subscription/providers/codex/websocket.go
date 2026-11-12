@@ -44,13 +44,14 @@ type WSTurnResult struct {
 
 // WSError 暴露稳定分类和发送证据，错误文本不包含上游正文与凭据。
 type WSError struct {
-	Code          string
-	UpstreamType  string
-	UpstreamCode  string
-	HTTPStatus    int
-	RetryAfter    time.Duration
-	DispatchState string
-	cause         error
+	Code               string
+	UpstreamType       string
+	UpstreamCode       string
+	HTTPStatus         int
+	RetryAfter         time.Duration
+	DispatchState      string
+	TransientRateLimit bool
+	cause              error
 }
 
 func (err *WSError) Error() string { return "codex websocket: " + err.Code }
@@ -102,6 +103,14 @@ func (s *WSSession) Done() <-chan struct{} {
 	return bridge.Done()
 }
 
+func (s *WSSession) Interrupt(ctx context.Context, payload []byte) error {
+	var bridge *cpaembedded.CodexWSSession
+	if s != nil {
+		bridge = s.bridge
+	}
+	return wsErrorFromBridge(bridge.Interrupt(ctx, payload))
+}
+
 // Close 幂等关闭本 Session，不影响其他 Session。
 func (s *WSSession) Close() error {
 	if s == nil {
@@ -119,7 +128,8 @@ func wsErrorFromBridge(err error) error {
 		return &WSError{
 			Code: failure.Code, UpstreamType: failure.UpstreamType, UpstreamCode: failure.UpstreamCode,
 			HTTPStatus: failure.HTTPStatus, RetryAfter: failure.RetryAfter,
-			DispatchState: failure.DispatchState, cause: failure.Unwrap(),
+			TransientRateLimit: failure.TransientRateLimit,
+			DispatchState:      failure.DispatchState, cause: failure.Unwrap(),
 		}
 	}
 	return &WSError{Code: "internal_error", DispatchState: WSMaybeSent}

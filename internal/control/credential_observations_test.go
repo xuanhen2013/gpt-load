@@ -770,6 +770,7 @@ func TestRefreshClaudeCredentialObservationPublishesAccountAndQuota(t *testing.T
 	if err := fixture.db.Take(&credential, "group_id = ?", created.GroupID).Error; err != nil {
 		t.Fatal(err)
 	}
+	resetCredits := int64(2)
 	fixture.service.observeSubscriptionAccount = func(
 		_ context.Context,
 		channelID channel.ID,
@@ -791,7 +792,10 @@ func TestRefreshClaudeCredentialObservationPublishesAccountAndQuota(t *testing.T
 				DisplayName: "Owner", Email: "owner@example.com", OrganizationName: "Example Org",
 				OrganizationType: "claude_team", SeatTier: "team_standard", ExtraUsageEnabled: &extraUsage,
 			},
-			Usage: claude.Usage{FiveHour: &claude.UsageWindow{Utilization: &utilization, ResetsAt: &reset}},
+			Usage: claude.Usage{
+				FiveHour:    &claude.UsageWindow{Utilization: &utilization, ResetsAt: &reset},
+				ResetGrants: []claude.ResetGrant{{Remaining: resetCredits, ExpiresAt: &reset}},
+			},
 		})
 		return subscriptionruntime.Observation{Payload: payload}, normalizeErr
 	}
@@ -808,6 +812,30 @@ func TestRefreshClaudeCredentialObservationPublishesAccountAndQuota(t *testing.T
 	views := fixture.registry.Snapshot()
 	if len(views) != 1 || views[0].QuotaRemaining == nil || *views[0].QuotaRemaining != 0.75 {
 		t.Fatalf("Claude quota runtime = %#v", views)
+	}
+	for _, count := range []int64{2, 0} {
+		resetCredits = count
+		if count == 0 {
+			if _, err := fixture.service.RefreshCredentialObservation(t.Context(), created.GroupID, credential.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var stored models.CredentialObservation
+		if err := fixture.db.Take(&stored, "credential_id = ?", credential.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		var snapshot CredentialObservationSnapshot
+		if err := json.Unmarshal(stored.SnapshotJSON, &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.ResetCreditsAvailable == nil || *snapshot.ResetCreditsAvailable != count || len(snapshot.ResetCredits) != int(count) {
+			t.Fatalf("stored Claude reset credits = %s, want %d", stored.SnapshotJSON, count)
+		}
+		for _, credit := range snapshot.ResetCredits {
+			if credit.ExpiresAtMS == nil || *credit.ExpiresAtMS != now.Add(5*time.Hour).UnixMilli() {
+				t.Fatalf("stored credit expiration = %v", credit.ExpiresAtMS)
+			}
+		}
 	}
 }
 
@@ -1356,10 +1384,12 @@ func TestSubscriptionCredentialCollectionDefersActivityUntilDetailAndExposesEmai
 	now := time.UnixMilli(1_800_000_000_000)
 	fixture.service.now = func() time.Time { return now }
 	lastUsedAtMS := now.Add(-2 * time.Minute).UnixMilli()
+	const failureSummary = "Selected model is at capacity. Please try a different model."
 	reader := &recordingCredentialActivityReader{result: map[uint]requestlog.CredentialActivity{
 		credentialID: {
 			CredentialID: credentialID, LastUsedAtMS: &lastUsedAtMS,
 			SuccessCount: 12, FailureCount: 3, DataComplete: true,
+			LastFailureSummary: failureSummary,
 		},
 	}}
 	fixture.service.credentialActivity = reader
@@ -1397,6 +1427,9 @@ func TestSubscriptionCredentialCollectionDefersActivityUntilDetailAndExposesEmai
 		*detail.Credential.LastUsedAtMS != lastUsedAtMS || detail.Credential.DailyUsage == nil ||
 		detail.Credential.DailyUsage.SuccessCount != 12 || detail.Credential.DailyUsage.FailureCount != 3 {
 		t.Fatalf("detail activity = %#v / %#v", reader.queries, detail.Credential)
+	}
+	if detail.Credential.LastFailureSummary != failureSummary {
+		t.Fatalf("detail latest failure = %q", detail.Credential.LastFailureSummary)
 	}
 }
 

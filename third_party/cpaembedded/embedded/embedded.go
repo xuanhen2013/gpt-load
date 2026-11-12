@@ -195,8 +195,9 @@ type ExecuteStreamResponse struct {
 }
 
 type ExecuteStreamChunk struct {
-	Payload []byte
-	Err     error
+	Payload    []byte
+	Incomplete bool
+	Err        error
 }
 
 // BeginCodexBrowserAuthorization creates one browser OAuth challenge without
@@ -436,7 +437,7 @@ func (e *CodexHTTPExecutor) ExecuteCanonical(ctx context.Context, credentialID s
 	if request.RequestPath == "/v1/alpha/search" {
 		return e.executeSearchCanonical(ctx, credentialID, credential, request)
 	}
-	request.Headers = normalizedCodexHeaders(request.Headers)
+	request = prepareCodexExecutionRequest(request)
 	format := sdktranslator.FromString(request.Format)
 	endpoints, err := ResolveCodexAPIEndpoints(request.BaseURL)
 	if err != nil {
@@ -548,7 +549,7 @@ func normalizeCodexResponsesTokenCount(payload []byte) ([]byte, error) {
 // ExecuteStreamCanonical runs one streaming Codex request and forwards copied
 // chunks while retaining handshake and passive quota observations.
 func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credentialID string, credential CodexCredential, request ExecuteRequest) (*ExecuteStreamResponse, error) {
-	request.Headers = normalizedCodexHeaders(request.Headers)
+	request = prepareCodexExecutionRequest(request)
 	format := sdktranslator.FromString(request.Format)
 	endpoints, err := ResolveCodexAPIEndpoints(request.BaseURL)
 	if err != nil {
@@ -579,7 +580,7 @@ func (e *CodexHTTPExecutor) ExecuteStreamCanonical(ctx context.Context, credenti
 		defer close(chunks)
 		for chunk := range response.Chunks {
 			select {
-			case chunks <- ExecuteStreamChunk{Payload: append([]byte(nil), chunk.Payload...), Err: chunk.Err}:
+			case chunks <- ExecuteStreamChunk{Payload: append([]byte(nil), chunk.Payload...), Incomplete: chunk.Incomplete, Err: chunk.Err}:
 			case <-ctx.Done():
 				return
 			}
@@ -811,6 +812,15 @@ func ObserveCodexAccount(ctx context.Context, credential CodexCredential, baseUR
 	return requestCodexJSON(ctx, credential, http.MethodGet, strings.TrimRight(baseURL, "/")+"/wham/usage", nil, "usage", codexOptionsHTTPClient(options))
 }
 
+// ObserveCodexSubscription 查询当前账号的订阅周期，不执行续费或其他写操作。
+func ObserveCodexSubscription(ctx context.Context, credential CodexCredential, baseURL string, options ...Options) (AccountObservation, error) {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = defaultCodexAPIBase
+	}
+	target := strings.TrimRight(baseURL, "/") + "/subscriptions?account_id=" + url.QueryEscape(credential.AccountID)
+	return requestCodexJSON(ctx, credential, http.MethodGet, target, nil, "subscription", codexOptionsHTTPClient(options))
+}
+
 // ObserveCodexResetCredits fetches the reset-credit detail endpoint without
 // interpreting its evolving response schema.
 func ObserveCodexResetCredits(ctx context.Context, credential CodexCredential, baseURL string, options ...Options) (AccountObservation, error) {
@@ -972,6 +982,11 @@ func (t noRedirectRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 		_ = resp.Body.Close()
 		return nil, ErrRedirectNotAllowed
 	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.Body != nil {
+		if wrap, ok := req.Context().Value(streamBodyObserverKey{}).(func(io.ReadCloser, http.Header) io.ReadCloser); ok && wrap != nil {
+			resp.Body = wrap(resp.Body, resp.Header)
+		}
+	}
 	return resp, nil
 }
 
@@ -1062,6 +1077,11 @@ func (o *executionObservation) observe(request *http.Request) {
 		return
 	}
 	effort := thinking.ExtractTranslatedReasoningEffort(body, o.provider)
+	if o.provider == ProviderDevin {
+		effort = devinWireReasoningEffort(body)
+	}
+	// CPA 的零拷贝解析结果可能引用 body，清理请求体前保留独立副本。
+	effort = strings.Clone(effort)
 	mode, budget := extractReasoningDetails(body, o.provider)
 	clear(body)
 	if effort == "" && mode == "" && budget == nil {

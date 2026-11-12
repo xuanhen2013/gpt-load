@@ -21,6 +21,7 @@ import (
 	"gpt-load/internal/jev"
 	app_errors "gpt-load/internal/platform/errors"
 	"gpt-load/internal/platform/response"
+	"gpt-load/internal/platform/utils"
 	"gpt-load/internal/pricing"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
@@ -44,6 +45,7 @@ var requestLogChannelRegistry = channel.NewRegistry()
 type RequestLogReader interface {
 	List(context.Context, requestlog.ListQuery) (requestlog.Page, error)
 	Get(context.Context, string) (requestlog.Record, error)
+	GetRequestBody(context.Context, string) (*requestlog.RequestBody, error)
 }
 
 type requestLogCursorPayload struct {
@@ -65,6 +67,7 @@ type requestLogReasoningResponse struct {
 }
 
 type requestLogAttemptResponse struct {
+	credentialDisplayResponse
 	Sequence                int                                `json:"sequence"`
 	GroupID                 uint                               `json:"group_id"`
 	GroupName               string                             `json:"group_name"`
@@ -122,6 +125,7 @@ type requestLogPricingMultiplierResponse struct {
 
 type requestLogPricingLineResponse struct {
 	Code                  string                              `json:"code"`
+	ModelID               *string                             `json:"model_id,omitempty"`
 	Quantity              string                              `json:"quantity"`
 	RateNanoUSDPerMillion *string                             `json:"rate_nano_usd_per_million"`
 	Multiplier            requestLogPricingMultiplierResponse `json:"multiplier"`
@@ -144,6 +148,7 @@ type requestLogPricingReceiptResponse struct {
 }
 
 type requestLogItemResponse struct {
+	credentialDisplayResponse
 	RequestAudit              *requestAuditResponse        `json:"request_audit,omitempty"`
 	AutoDecision              *autoDecisionResponse        `json:"auto_decision,omitempty"`
 	TotalEstimatedCostNanoUSD string                       `json:"total_estimated_cost_nano_usd"`
@@ -155,6 +160,7 @@ type requestLogItemResponse struct {
 	Protocol                  string                       `json:"protocol"`
 	Operation                 *execution.Operation         `json:"operation"`
 	UpstreamProtocol          *protocol.Protocol           `json:"upstream_protocol"`
+	ClientIP                  *string                      `json:"client_ip"`
 	ClientModel               *string                      `json:"client_model"`
 	UpstreamModel             *string                      `json:"upstream_model"`
 	UpstreamReportedModel     *string                      `json:"upstream_reported_model"`
@@ -190,6 +196,7 @@ type requestLogItemResponse struct {
 }
 
 type autoDecisionResponse struct {
+	credentialDisplayResponse
 	automodel.Decision
 	PresetReasoning      *requestLogReasoningResponse      `json:"preset_reasoning"`
 	EstimatedCostNanoUSD string                            `json:"estimated_cost_nano_usd"`
@@ -237,7 +244,81 @@ func nullableInt64String(value *int64) *string {
 
 type requestLogDetailResponse struct {
 	requestLogItemResponse
-	Attempts []requestLogAttemptResponse `json:"attempts"`
+	Attempts    []requestLogAttemptResponse `json:"attempts"`
+	RequestBody *requestLogBodyResponse     `json:"request_body"`
+}
+
+// requestLogBodyResponse 返回记录下来的客户端原始请求体；正文缩进后便于查看，内容与存储一致。
+type requestLogBodyResponse struct {
+	State         requestlog.RequestBodyState `json:"state"`
+	OriginalBytes int64                       `json:"original_bytes"`
+	Body          *string                     `json:"body"`
+}
+
+func mapRequestLogBody(body *requestlog.RequestBody) *requestLogBodyResponse {
+	if body == nil {
+		return nil
+	}
+	response := &requestLogBodyResponse{State: body.State, OriginalBytes: body.OriginalBytes}
+	if body.Body != nil {
+		text := formatRequestLogBody(*body.Body)
+		response.Body = &text
+	}
+	return response
+}
+
+// maxFormattedRequestBodyBytes 限制详情里格式化后的正文大小。缩进量随嵌套层数增长，
+// 深层嵌套的小请求会按层数平方膨胀，超出预算时直接返回存储原文。
+const maxFormattedRequestBodyBytes = 1 << 20
+
+func formatRequestLogBody(text string) string {
+	if !indentedJSONFits(text, maxFormattedRequestBodyBytes) {
+		return text
+	}
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, []byte(text), "", "  "); err != nil {
+		return text
+	}
+	return indented.String()
+}
+
+// indentedJSONFits 估算两空格缩进后的大小上限：每个括号和逗号最多带来一次换行加当前层级的缩进，
+// 冒号后多一个空格；超过 limit 立即返回，不会生成完整输出。
+func indentedJSONFits(text string, limit int) bool {
+	size, depth := len(text), 0
+	inString, escaped := false, false
+	for index := 0; index < len(text); index++ {
+		char := text[index]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case char == '\\':
+				escaped = true
+			case char == '"':
+				inString = false
+			}
+			continue
+		}
+		switch char {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+			size += 1 + 2*depth
+		case '}', ']':
+			depth--
+			size += 1 + 2*depth
+		case ',':
+			size += 1 + 2*depth
+		case ':':
+			size++
+		}
+		if size > limit {
+			return false
+		}
+	}
+	return true
 }
 
 type requestLogPaginationResponse struct {
@@ -282,6 +363,21 @@ func (service *Service) GetRequestLog(ctx context.Context, requestID string) (re
 		return requestlog.Record{}, app_errors.ParseDBError(err)
 	}
 	return record, nil
+}
+
+// GetRequestLogBody 读取请求日志的原始请求体记录；调用方负责先确认可见范围。
+func (service *Service) GetRequestLogBody(ctx context.Context, requestID string) (*requestlog.RequestBody, error) {
+	if service.requestLogs == nil {
+		return nil, app_errors.ErrInternalServer
+	}
+	body, err := service.requestLogs.GetRequestBody(ctx, requestID)
+	if err != nil {
+		if requestWasCanceled(ctx, err) {
+			return nil, err
+		}
+		return nil, app_errors.ParseDBError(err)
+	}
+	return body, nil
 }
 
 func (service *Service) GetAccessKeyRequestLog(
@@ -338,6 +434,13 @@ func (s *Server) handleListRequestLogs(c *gin.Context) {
 		writeServiceError(c, "list_request_logs", err)
 		return
 	}
+	for index := range result.Items {
+		var autoID uint
+		if decision := page.Items[index].AutoDecision; decision != nil {
+			autoID = decision.CredentialID
+		}
+		s.service.decorateRequestLogCredential(&result.Items[index], autoID)
+	}
 	response.SuccessI18n(c, "common.success", result)
 }
 
@@ -369,6 +472,21 @@ func (s *Server) handleGetRequestLog(c *gin.Context) {
 	if err != nil {
 		writeServiceError(c, "get_request_log", err)
 		return
+	}
+	// 记录的是客户端自己发出的原始请求，管理员和该访问密钥本人都可查看。
+	body, err := s.service.GetRequestLogBody(c.Request.Context(), record.RequestID)
+	if err != nil {
+		writeServiceError(c, "get_request_log", err)
+		return
+	}
+	result.RequestBody = mapRequestLogBody(body)
+	var autoID uint
+	if record.AutoDecision != nil {
+		autoID = record.AutoDecision.CredentialID
+	}
+	s.service.decorateRequestLogCredential(&result.requestLogItemResponse, autoID)
+	for index := range result.Attempts {
+		result.Attempts[index].credentialDisplayResponse = s.service.credentialDisplay(result.Attempts[index].CredentialID)
 	}
 	response.SuccessI18n(c, "common.success", result)
 }
@@ -456,7 +574,7 @@ func parseRequestLogQuery(rawQuery string) (requestlog.ListQuery, *app_errors.AP
 	}
 	allowed := map[string]struct{}{
 		"from_ms": {}, "to_ms": {}, "group_id": {}, "channel_id": {}, "credential_id": {},
-		"client_model": {}, "upstream_model": {}, "model_consistency": {}, "access_key_id": {},
+		"client_ip": {}, "client_model": {}, "upstream_model": {}, "model_consistency": {}, "access_key_id": {},
 		"status": {}, "request_id": {}, "protocol": {}, "operation": {}, "stream": {}, "final_status_code": {},
 		"audit_status": {}, "audit_rule": {},
 		"usage_state": {}, "cost_state": {}, "pricing_completeness": {}, "cache_present": {},
@@ -527,6 +645,13 @@ func parseRequestLogQuery(rawQuery string) (requestlog.ListQuery, *app_errors.AP
 			return requestlog.ListQuery{}, apiErr
 		}
 		query.CredentialID = &parsed
+	}
+	if value, ok := singleQueryValue(values, "client_ip"); ok {
+		address, err := utils.NormalizeIP(value)
+		if err != nil {
+			return requestlog.ListQuery{}, app_errors.ErrValidation
+		}
+		query.ClientIP = address
 	}
 	if value, ok := singleQueryValue(values, "client_model"); ok {
 		if !validUsageModel(value) {
@@ -1162,6 +1287,7 @@ func mapRequestLogItemResponse(
 		Protocol:                string(record.Protocol),
 		Operation:               operation,
 		UpstreamProtocol:        upstreamProtocol,
+		ClientIP:                nullableRequestLogModel(record.ClientIP),
 		ClientModel:             nullableRequestLogModel(record.ClientModel),
 		UpstreamModel:           nullableRequestLogModel(record.UpstreamModel),
 		UpstreamReportedModel:   nullableRequestLogModel(record.UpstreamReportedModel),
@@ -1447,6 +1573,10 @@ func mapRequestLogPricingReceipt(
 			},
 			State: line.State,
 		}
+		if line.ModelID != "" {
+			value := line.ModelID
+			mapped.ModelID = &value
+		}
 		if line.RateNanoUSDPerMillion != nil {
 			value := strconv.FormatInt(*line.RateNanoUSDPerMillion, 10)
 			mapped.RateNanoUSDPerMillion = &value
@@ -1487,11 +1617,14 @@ func nullableRequestLogID(value uint, field string) (*uint, error) {
 	return &value, nil
 }
 
+// legacyMistralAudioSpeechOperation 是语音合成并入 audio-speech 协议前写入日志的操作名，只用于读取历史记录。
+const legacyMistralAudioSpeechOperation execution.Operation = "mistral_audio_speech"
+
 func nullableRequestLogOperation(value execution.Operation) (*execution.Operation, error) {
 	if value == "" {
 		return nil, nil
 	}
-	if !value.Valid() {
+	if !value.Valid() && value != legacyMistralAudioSpeechOperation {
 		return nil, fmt.Errorf("invalid operation")
 	}
 	return &value, nil
